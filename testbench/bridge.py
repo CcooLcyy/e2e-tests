@@ -100,7 +100,6 @@ class TestbenchBridge:
     def _environment(self):
         if self.environment_path.is_file():
             return load_environment(self.environment_path).to_dict()
-        installed = Path(r"C:\software\MskDSP Upper\mskdsp-upper.exe")
         candidates = list((self.root / ".tools" / "msedgedriver").glob("**/msedgedriver.exe"))
         def version(path):
             try:
@@ -108,7 +107,7 @@ class TestbenchBridge:
             except ValueError:
                 return (0,)
         driver = str(max(candidates, key=version)) if candidates else ""
-        return Environment(name="本机测试环境", app_path=str(installed) if installed.is_file() else "",
+        return Environment(name="本机测试环境",
                            driver_path=driver,
                            workspace_path=str(self.root / "local" / "workspaces" / "default")).to_dict()
 

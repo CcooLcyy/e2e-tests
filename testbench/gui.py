@@ -270,9 +270,6 @@ class TestbenchApp:
         self.close_var.set(bool(data.get("close_app", True)))
 
     def _load_initial_environment(self):
-        app = Path(r"C:\software\MskDSP Upper\mskdsp-upper.exe")
-        if app.is_file():
-            self.fields["app_path"].set(str(app))
         drivers = list((self.root / ".tools" / "msedgedriver").glob("**/msedgedriver.exe"))
         if drivers:
             def version(path):
