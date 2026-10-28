@@ -1,11 +1,11 @@
 """启动 React + Tauri 测试上位机，错误时给出中文提示。"""
 
 import logging
-import os
 from pathlib import Path
-import subprocess
 import sys
 import traceback
+
+from testbench.launcher import start_desktop
 
 
 def main():
@@ -14,17 +14,13 @@ def main():
     local.mkdir(exist_ok=True)
     logging.basicConfig(filename=local / "gui.log", level=logging.INFO, encoding="utf-8", format="%(asctime)s %(levelname)s %(message)s")
     try:
-        candidates = [root / "src-tauri" / "target" / "release" / "mskdsp-testbench.exe",
-                      root / "target" / "release" / "mskdsp-testbench.exe"]
-        executable = next((path for path in candidates if path.is_file()), None)
-        if executable is None:
-            raise RuntimeError("尚未构建新版界面。请在仓库目录运行 npm install，然后运行 npm run desktop:build。")
-        subprocess.Popen([str(executable)], cwd=root, env=dict(os.environ, TESTBENCH_ROOT=str(root)),
-                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        start_desktop(root, build_only="--build-only" in sys.argv[1:])
     except Exception as error:
         logging.exception("测试上位机发生错误")
         if sys.stderr is not None:
             traceback.print_exc()
+            print(f"\n详细日志：{local / 'gui.log'}\n构建日志：{local / 'desktop-build.log'}", file=sys.stderr)
+            return 1
         import tkinter as tk
         from tkinter import messagebox
         window = tk.Tk()

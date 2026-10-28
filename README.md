@@ -6,17 +6,19 @@
 
 运行要求：Windows、仓库内准备好的 Python 3.11+ 虚拟环境、WebView2 Runtime 和匹配驱动。当前 Release 使用仓库中的 Python 内核，尚未制作脱离仓库的独立安装包。
 
-首次从源码构建还需要 Node.js 22.12+、Rust 和 Windows C++ 构建工具；准备依赖与驱动需要联网。
+按需构建需要 Node.js 22.12+、Rust 和 Windows C++ 构建工具；准备依赖与驱动需要联网。
 
 ```powershell
 cd 'C:\storage\repo\dsp迁移\e2e-tests'
 .\scripts\setup.ps1
-npm install
-npm run desktop:build
 .\.venv\Scripts\python.exe start_gui.py
 ```
 
-构建完成后，双击仓库根目录的 **启动测试上位机.cmd** 即可打开新版。Release 程序位于 src-tauri/target/release/mskdsp-testbench.exe，保留在仓库目录中运行。
+环境准备好后，双击仓库根目录的 **启动测试上位机.cmd** 即可使用。启动器会检查源码内容：首次使用或界面、Rust、构建配置有变化时，自动准备 Node 依赖并构建；没有变化就直接打开 Release。只修改 Python 内核或用例不需要编译：内核修改后重新打开测试上位机，用例修改后在界面刷新用例即可。
+
+构建时命令行显示进度；失败会停留并提示原因，不会继续打开旧版本。需要构建时请先关闭已打开的测试上位机。成功记录和日志在本机 local/ 下；首次使用此启动器会构建一次建立记录。只想检查并完成构建而暂不打开界面，可执行 `.\.venv\Scripts\python.exe start_gui.py --build-only`。判定规则详见 [按需构建启动器](docs/按需构建启动器.md)。
+
+Release 程序位于 src-tauri/target/release/mskdsp-testbench.exe，保留在仓库目录中运行。此启动器更新的是测试上位机；测试环境中选择的上位机 exe 仍使用你配置的路径。
 
 开发时可执行 `npm run desktop:dev`，同时启动前端热更新与桌面外壳。
 
