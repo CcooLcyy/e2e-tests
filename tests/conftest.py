@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,3 +43,23 @@ def desktop(request):
             app.failure = app.failure or "用例断言失败，详见任务报告"
     if app.cleanup_failure:
         pytest.fail(app.cleanup_failure)
+
+
+@pytest.fixture
+def login_memory(request):
+    """登录记忆用例始终独立运行，并保护系统中已有的平台凭据。"""
+    from testbench.login_page import load_login_account, require_fresh_login_environment, PlatformLoginPage
+    from testbench.login_credentials import WindowsCredentialGuard, cleanup_login_credentials
+
+    require_fresh_login_environment(os.environ.get("TESTBENCH_TASK"))
+    account = load_login_account(Path(__file__).resolve().parents[1] / "local" / "login-account.json")
+    app = request.getfixturevalue("desktop")
+    page = PlatformLoginPage(app)
+    with app.step("确认专用测试账号没有已有保存凭据"):
+        guard = WindowsCredentialGuard(page.endpoint(), account.username)
+        guard.__enter__()
+    try:
+        yield SimpleNamespace(desktop=app, page=page, account=account, credentials=guard)
+    finally:
+        # 先停止可能仍在保存密码的请求，再删凭据；清理不能被取消标记跳过。
+        cleanup_login_credentials(app, guard)

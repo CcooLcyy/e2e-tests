@@ -35,6 +35,8 @@ class ReleaseDesktop:
         self.runtime = Path(workspace_path).resolve() if mode == "workspace" else self.artifacts / "runtime"
         self.copied_app = self.runtime / self.source.name
         self.metadata = {"源程序": str(self.source), "开始时间": self.started}
+        self._debug_port = None
+        self._launch_count = 0
 
     def __enter__(self):
         self.artifacts.mkdir(parents=True, exist_ok=True)
@@ -52,56 +54,66 @@ class ReleaseDesktop:
                 (self.runtime / "webview").mkdir(exist_ok=True)
                 (self.artifacts / "temp").mkdir(exist_ok=True)
 
-            with self.step("启动独立 Release 并等待 WebView2 调试端口"):
-                with socket.socket() as listener:
-                    listener.bind(("127.0.0.1", 0))
-                    port = listener.getsockname()[1]
-                child_env = dict(os.environ)
-                child_env.update({
-                    "WEBVIEW2_USER_DATA_FOLDER": str(self.runtime / "webview"),
-                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": f"--remote-debugging-port={port}",
-                    "TEMP": str(self.artifacts / "temp"),
-                    "TMP": str(self.artifacts / "temp"),
-                })
-                self.application_log = (self.artifacts / "application.log").open("wb")
-                self.process = subprocess.Popen(
-                    [str(self.copied_app)], cwd=self.copied_app.parent, env=child_env,
-                    stdout=self.application_log, stderr=subprocess.STDOUT,
-                )
-                self.metadata["测试进程PID"] = self.process.pid
-                opener = build_opener(ProxyHandler({}))
-                deadline = time.monotonic() + self.timeout
-                while time.monotonic() < deadline:
-                    self._check_stop()
-                    if self.process.poll() is not None:
-                        raise RuntimeError(f"上位机提前退出，退出码：{self.process.returncode}")
-                    try:
-                        with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
-                            version = json.load(response)
-                        if version.get("webSocketDebuggerUrl"):
-                            break
-                    except OSError:
-                        pass
-                    time.sleep(0.2)
-                else:
-                    raise TimeoutError("Release 已启动，但 WebView2 调试端口未在规定时间内就绪")
-
-            with self.step("外部 WebDriver 接管本次测试窗口"):
-                options = webdriver.EdgeOptions()
-                options.use_webview = True
-                options.debugger_address = f"127.0.0.1:{port}"
-                service = Service(
-                    executable_path=str(self.driver_path),
-                    env=child_env,
-                    log_output=str(self.artifacts / "webdriver.log"),
-                )
-                self.driver = webdriver.Edge(service=service, options=options)
-                self.wait = CancellableWait(self.driver, self.timeout)
-                self.metadata["WebView2版本"] = self.driver.capabilities.get("browserVersion")
+            self._launch()
             return self
         except BaseException:
             self.close()
             raise
+
+    def _launch(self):
+        """复用当前副本和数据启动新进程，保留每次启动证据。"""
+        self._check_stop()
+        self._launch_count += 1
+        with self.step("启动独立 Release 并等待 WebView2 调试端口"):
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+            self._debug_port = port
+            child_env = dict(os.environ)
+            child_env.update({
+                "WEBVIEW2_USER_DATA_FOLDER": str(self.runtime / "webview"),
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": f"--remote-debugging-port={port}",
+                "TEMP": str(self.artifacts / "temp"),
+                "TMP": str(self.artifacts / "temp"),
+            })
+            self.application_log = (self.artifacts / "application.log").open("ab")
+            self.process = subprocess.Popen(
+                [str(self.copied_app)], cwd=self.copied_app.parent, env=child_env,
+                stdout=self.application_log, stderr=subprocess.STDOUT,
+            )
+            self.metadata["测试进程PID"] = self.process.pid
+            self.metadata.setdefault("启动历史", []).append({"序号": self._launch_count, "PID": self.process.pid, "调试端口": port})
+            opener = build_opener(ProxyHandler({}))
+            deadline = time.monotonic() + self.timeout
+            while time.monotonic() < deadline:
+                self._check_stop()
+                if self.process.poll() is not None:
+                    raise RuntimeError(f"上位机提前退出，退出码：{self.process.returncode}")
+                try:
+                    with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
+                        version = json.load(response)
+                    if version.get("webSocketDebuggerUrl"):
+                        break
+                except OSError:
+                    pass
+                time.sleep(0.2)
+            else:
+                raise TimeoutError("Release 已启动，但 WebView2 调试端口未在规定时间内就绪")
+
+        with self.step("外部 WebDriver 接管本次测试窗口"):
+            options = webdriver.EdgeOptions()
+            options.use_webview = True
+            options.debugger_address = f"127.0.0.1:{port}"
+            service = Service(
+                executable_path=str(self.driver_path),
+                env=child_env,
+                # 驱动默认日志包含密码输入及回填响应，关闭驱动命令日志以保护凭据。
+                service_args=["--log-level=OFF"],
+                log_output=str(self.artifacts / f"webdriver-{self._launch_count}.log"),
+            )
+            self.driver = webdriver.Edge(service=service, options=options)
+            self.wait = CancellableWait(self.driver, self.timeout)
+            self.metadata["WebView2版本"] = self.driver.capabilities.get("browserVersion")
 
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_value is not None:
@@ -198,6 +210,68 @@ class ReleaseDesktop:
         target = self.artifacts / f"{name}.png"
         if not self.driver.save_screenshot(str(target)):
             raise RuntimeError(f"截图保存失败：{target.name}")
+
+    def restart(self):
+        """正常关闭本用例窗口并重开，保留登录设置和 WebView2 数据。"""
+        try:
+            with self.step("正常关闭并重开同一测试副本，保留登录数据"):
+                self._close_owned_window()
+                if self.driver is not None:
+                    self.driver.quit()
+                    self.driver = None
+                if self.application_log is not None:
+                    self.application_log.close()
+                    self.application_log = None
+                self._wait_debug_port_closed()
+                self.process = None
+                self._launch()
+        except BaseException as error:
+            self.failure = self.failure or f"重开测试副本失败：{type(error).__name__}"
+            self.close()
+            raise
+
+    def _close_owned_window(self):
+        """路径和 PID 同时匹配才发送 WM_CLOSE，不能以注销或强杀替代正常退出。"""
+        if self.process is None or self.process.poll() is not None:
+            raise RuntimeError("本次上位机进程已退出，不能验证正常关闭后的重开")
+        env = dict(os.environ, MSKDSP_E2E_APP_PATH=str(self.copied_app), MSKDSP_E2E_APP_PID=str(self.process.pid))
+        command = (
+            "$ErrorActionPreference='Stop'; "
+            "$owned=Get-CimInstance Win32_Process | Where-Object { "
+            "$_.ExecutablePath -eq $env:MSKDSP_E2E_APP_PATH -and "
+            "$_.ProcessId -eq [int]$env:MSKDSP_E2E_APP_PID }; "
+            "if(!$owned){exit 7}; "
+            "$app=Get-Process -Id $owned.ProcessId; "
+            "if(!$app.CloseMainWindow()){exit 8}"
+        )
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            env=env, capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        if result.returncode:
+            raise RuntimeError("无法确认本次窗口归属或发送正常关闭请求失败")
+        deadline = time.monotonic() + self.timeout
+        while self.process.poll() is None:
+            self._check_stop()
+            if time.monotonic() >= deadline:
+                raise TimeoutError("测试窗口未按时正常退出，停止重开验证")
+            time.sleep(0.1)
+
+    def _wait_debug_port_closed(self):
+        """等待旧 WebView2 释放调试端口，避免复用仍存活的浏览器实例。"""
+        if self._debug_port is None:
+            return
+        deadline = time.monotonic() + self.timeout
+        while True:
+            self._check_stop()
+            with socket.socket() as connection:
+                connection.settimeout(0.2)
+                if connection.connect_ex(("127.0.0.1", self._debug_port)) != 0:
+                    self._debug_port = None
+                    return
+            if time.monotonic() >= deadline:
+                raise TimeoutError("旧 WebView2 调试端口未释放，停止重开验证")
+            time.sleep(0.1)
 
     def close(self):
         try:
