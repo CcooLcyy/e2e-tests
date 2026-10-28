@@ -12,7 +12,10 @@ def test_no_remember_requires_password_after_reopen(login_memory):
     case.desktop.restart()
     case.page.form(case.account, remember=False, auto=False, filled=False)
     case.desktop.check("没有保存测试账号凭据", case.credentials.exists(), False)
-    case.desktop.capture("no-remember-after-reopen")
+    case.desktop.capture("no-remember-after-reopen",
+        description="未记住密码时重开后的登录表单",
+        expected="保留原账号，密码为空；记住密码和自动登录均未勾选，等待手动登录",
+        actual="已验证账号保留、密码为空、两项均未勾选，且没有保存测试凭据")
 
 
 def test_remember_password_requires_manual_login_after_reopen(login_memory):
@@ -21,11 +24,17 @@ def test_remember_password_requires_manual_login_after_reopen(login_memory):
     badge = case.page.login(case.account, remember=True)
     case.desktop.restart()
     case.page.form(case.account, remember=True, auto=False, filled=True)
-    case.desktop.capture("remember-password-after-reopen")
+    case.desktop.capture("remember-password-after-reopen",
+        description="仅记住密码时重开后的登录表单",
+        expected="回填原账号和密码，密码保持掩码；仅勾选记住密码，等待手动登录",
+        actual="已验证账号和密码回填、密码掩码及两项勾选状态，页面仍等待手动登录")
     with case.desktop.step("直接使用回填密码点击登录"):
         case.page.submit()
     case.page.workspace(badge)
-    case.desktop.capture("remember-password-manual-login")
+    case.desktop.capture("remember-password-manual-login",
+        description="直接使用回填密码手动登录后的工作台",
+        expected="点击登录后进入原账号工作台",
+        actual="已验证工作台可见、退出入口可见，且登录账号与重开前一致")
 
 
 def test_auto_login_enters_same_account_after_reopen(login_memory):
@@ -35,7 +44,10 @@ def test_auto_login_enters_same_account_after_reopen(login_memory):
     case.desktop.restart()
     # 重开后不填表、不点击登录，直接等待工作台作为通过条件。
     case.page.workspace(badge)
-    case.desktop.capture("auto-login-after-reopen")
+    case.desktop.capture("auto-login-after-reopen",
+        description="自动登录后进入原账号工作台",
+        expected="重开后无需填表或点击登录，自动进入原账号工作台",
+        actual="重开后未操作登录表单，已验证工作台及退出入口可见，账号与重开前一致")
     case.page.logout()
     case.page.form(case.account, remember=True, auto=False, filled=True)
 
@@ -55,7 +67,10 @@ def test_auto_login_and_remember_password_checkbox_linkage(login_memory):
     case.page.workspace()
     case.desktop.restart()
     case.page.form(case.account, remember=True, auto=False, filled=True)
-    case.desktop.capture("checkbox-linkage-persisted")
+    case.desktop.capture("checkbox-linkage-persisted",
+        description="取消自动登录后重开的登录表单",
+        expected="仍回填原账号和掩码密码，记住密码已勾选、自动登录未勾选",
+        actual="已验证账号和密码回填、密码保持掩码、记住密码已勾选，且等待手动登录")
 
 
 def test_forget_password_clears_saved_password_and_auto_login(login_memory):
@@ -74,7 +89,10 @@ def test_forget_password_clears_saved_password_and_auto_login(login_memory):
     # 不重新登录或保存连接设置，证明取消操作本身已持久化。
     case.desktop.restart()
     case.page.form(case.account, remember=False, auto=False, filled=False)
-    case.desktop.capture("forget-password-after-reopen")
+    case.desktop.capture("forget-password-after-reopen",
+        description="取消记住密码后重开的登录表单",
+        expected="保留原账号，密码为空，记住密码和自动登录均未勾选",
+        actual="取消记住密码后未重新登录，重开后已验证密码为空、两项均未勾选，并等待手动登录")
 
 
 def test_explicit_logout_disables_auto_login_but_keeps_password(login_memory):
@@ -85,7 +103,10 @@ def test_explicit_logout_disables_auto_login_but_keeps_password(login_memory):
     case.page.form(case.account, remember=True, auto=False, filled=True)
     case.desktop.restart()
     case.page.form(case.account, remember=True, auto=False, filled=True)
-    case.desktop.capture("explicit-logout-after-reopen")
+    case.desktop.capture("explicit-logout-after-reopen",
+        description="主动退出后重开的登录表单",
+        expected="保留账号和掩码密码，仅记住密码已勾选，重开不自动登录",
+        actual="已验证账号和密码回填、密码掩码、自动登录未勾选，并仍停留在登录页")
 
 
 def test_changing_account_does_not_reuse_saved_password(login_memory):
@@ -101,9 +122,15 @@ def test_changing_account_does_not_reuse_saved_password(login_memory):
         case.desktop.wait.until(lambda _: case.page.username_input().get_attribute("value") == other
                                 and case.page.password_input().get_attribute("value") == "")
         case.page.check_password("")
-        case.desktop.capture("different-account-empty-password")
+        case.desktop.capture("different-account-empty-password",
+            description="切换为其他账号后的空密码表单",
+            expected="切换账号时清空原账号密码",
+            actual="已等待账号切换完成并验证密码为空")
     with case.desktop.step("切回原测试账号，确认原密码仍可回填"):
         username = case.page.username_input()
         case.page.replace_text(username, case.account.username)
     case.page.form(case.account, remember=True, auto=False, filled=True)
-    case.desktop.capture("original-account-password-restored")
+    case.desktop.capture("original-account-password-restored",
+        description="切回原账号后的密码回填表单",
+        expected="恢复原账号后回填原密码，保持掩码显示，等待手动登录",
+        actual="已验证原账号和密码回填、密码保持掩码及登录选项，页面仍等待手动登录")

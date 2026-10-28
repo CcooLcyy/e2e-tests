@@ -150,7 +150,8 @@ class TestbenchBridge:
 
     def _case_details(self, value):
         directory = self._artifact_directory(value)
-        screenshots = []
+        report = self._read_object(directory / "report.json")
+        images = {}
         for path in sorted(directory.glob("*.png")):
             resolved = path.resolve(strict=True)
             if not resolved.is_relative_to((self.root / "artifacts").resolve()):
@@ -160,9 +161,36 @@ class TestbenchBridge:
             data = resolved.read_bytes()
             if not data.startswith(b"\x89PNG\r\n\x1a\n"):
                 continue
-            screenshots.append({"name": path.name, "path": str(resolved),
-                                "data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii")})
-        return {"report": self._read_object(directory / "report.json"), "screenshots": screenshots}
+            images[path.name] = {"path": str(resolved),
+                                 "data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii")}
+        screenshots = []
+        records = report.get("截图", [])
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict):
+                continue
+            name = str(record.get("name", "未命名截图"))
+            # 文件只从当前目录的安全枚举中匹配，不按报告内容读取路径。
+            image = images.pop(name, None)
+            missing = record.get("capture_status") == "missing" or image is None
+            shot = self._screenshot_description(name, record)
+            shot.update({"capture_status": "missing" if missing else "saved",
+                         "path": "" if missing else image["path"],
+                         "data_url": "" if missing else image["data_url"]})
+            if missing and not shot["error"]:
+                shot["error"] = "截图文件缺失或无法读取"
+            screenshots.append(shot)
+        for name, image in images.items():
+            screenshots.append({**self._screenshot_description(name, {}), **image, "capture_status": "saved"})
+        logging.getLogger(__name__).debug("已读取用例截图证据，共 %s 条", len(screenshots))
+        return {"report": report, "screenshots": screenshots}
+
+    @staticmethod
+    def _screenshot_description(name, record):
+        return {"name": name, "description": record.get("description") or "旧记录未提供截图含义",
+                "expected": record.get("expected", "未提供预期现象"),
+                "actual": record.get("actual", "未提供实际现象"),
+                "status": record.get("status", "unknown"), "error": record.get("error", ""),
+                "time": record.get("time", "")}
 
 
 def respond(bridge, request):

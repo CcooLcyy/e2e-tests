@@ -8,12 +8,8 @@ import pytest
 from desktop_demo import ReleaseDesktop
 
 
-def pytest_addoption(parser):
-    for option, default in (("--app-path", ""), ("--driver-path", ""), ("--artifacts-dir", ""), ("--ui-timeout", "20")):
-        try:
-            parser.addoption(option, default=default)
-        except ValueError:
-            pass
+# 直接运行 pytest 与界面工作进程共用同一套自动证据和报告逻辑。
+pytest_plugins = ("testbench.pytest_plugin",)
 
 
 @pytest.fixture
@@ -36,6 +32,9 @@ def desktop(request):
         artifacts_dir=Path(getattr(request.node, "_bench_artifacts", request.config.getoption("--artifacts-dir"))),
         timeout=float(request.config.getoption("--ui-timeout")), **options,
     )
+    request.node._bench_desktop = app
+    app.metadata["用例"] = (getattr(request.node.obj, "__doc__", "") or request.node.name).strip()
+    app.metadata["用例ID"] = request.node.nodeid
     with app:
         yield app
         reports = getattr(request.node, "_bench_reports", [])

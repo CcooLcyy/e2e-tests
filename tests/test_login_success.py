@@ -43,4 +43,7 @@ def test_valid_account_enters_workspace(desktop):
         account_badge = desktop.wait.until(EC.visibility_of_element_located(
             (By.CSS_SELECTOR, 'header .ant-badge-status-text')))
         desktop.check("工作台显示已登录账号", bool(account_badge.text.strip()), True)
-        desktop.capture("successful-login-workspace")
+        desktop.capture("successful-login-workspace",
+            description="正确账号登录后显示的工作台及退出入口",
+            expected="登录页消失，工作台显示账号信息和退出入口",
+            actual="已等待登录页消失，并验证退出入口可见、工作台账号信息非空")

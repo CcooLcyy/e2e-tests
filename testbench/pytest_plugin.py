@@ -4,9 +4,11 @@ import logging
 import os
 from pathlib import Path
 import time
+from datetime import datetime
 import pytest
 from .events import emit
 from .case_order import order_case_ids
+from .reporting import STATUS_LABELS, write_case_report
 
 
 def pytest_configure(config):
@@ -63,9 +65,11 @@ def pytest_runtest_setup(item):
         pytest.exit("测试任务已停止", returncode=2)
     item.config._bench_started[item.nodeid] = time.monotonic()
     task_path = os.environ.get("TESTBENCH_TASK")
-    if task_path:
+    artifacts = item.config.getoption("--artifacts-dir", default="")
+    if task_path or artifacts:
         import hashlib
-        directory = Path(task_path).parent / "cases" / hashlib.sha256(item.nodeid.encode()).hexdigest()[:16]
+        root = Path(task_path).parent if task_path else Path(artifacts)
+        directory = root / "cases" / hashlib.sha256(item.nodeid.encode()).hexdigest()[:16]
         directory.mkdir(parents=True, exist_ok=True)
         item._bench_artifacts = str(directory)
     os.environ["TESTBENCH_CASE_ID"] = item.nodeid
@@ -80,6 +84,14 @@ def pytest_runtest_makereport(item, call):
     reports = getattr(item, "_bench_reports", [])
     reports.append(report)
     item._bench_reports = reports
+    app = getattr(item, "_bench_desktop", None)
+    if app is not None and (report.when == "call" or report.failed or (report.when == "setup" and report.skipped)):
+        status = "failed" if report.failed else "skipped" if report.skipped else "passed"
+        stop = os.environ.get("TESTBENCH_STOP")
+        if stop and Path(stop).exists():
+            status = "cancelled"
+        app.finish_case(status, str(report.longrepr) if report.failed else "",
+                        f"{app.metadata.get('用例', item.name)}：{report.when} 阶段失败现场")
     if report.when != "teardown":
         return
     status = "passed"
@@ -93,6 +105,30 @@ def pytest_runtest_makereport(item, call):
     stop = os.environ.get("TESTBENCH_STOP")
     if stop and Path(stop).exists():
         status, message = "cancelled", "用户停止了测试任务"
+    directory = getattr(item, "_bench_artifacts", "")
+    if directory:
+        result = {}
+        path = Path(directory) / "report.json"
+        if path.exists():
+            result = json.loads(path.read_text(encoding="utf-8"))
+        if app is not None:
+            result.update(app.metadata)
+            result.update({"步骤": app.steps, "截图": app.screenshots})
+        elif status == "failed" and not result.get("截图"):
+            result["截图"] = [{"name": "case-failure.png", "description": "用例失败现场",
+                "expected": "未提供业务预期现象", "actual": message or "未建立桌面测试实例",
+                "status": status, "capture_status": "missing", "error": "未建立桌面测试实例，无法保存现场",
+                "time": datetime.now().astimezone().isoformat(timespec="seconds")}]
+        result.setdefault("截图", [])
+        result.update({"用例ID": item.nodeid, "用例": (getattr(item.obj, "__doc__", "") or item.name).strip(),
+                       "结果": STATUS_LABELS[status], "步骤": result.get("步骤", []),
+                       "阶段结果": [{"阶段": part.when, "结果": "失败" if part.failed else "跳过" if part.skipped else "通过",
+                                   "错误": str(part.longrepr) if not part.passed else ""} for part in reports],
+                       "结束时间": datetime.now().astimezone().isoformat(timespec="seconds")})
+        if message:
+            result["错误"] = message
+        write_case_report(directory, result)
+        print(f"[报告] 已保存用例报告：{item.nodeid}（{STATUS_LABELS[status]}）", flush=True)
     event = {"type": "case_finished", "case_id": item.nodeid, "status": status,
              "duration": round(time.monotonic() - item.config._bench_started.get(item.nodeid, time.monotonic()), 3),
              "message": message, "artifacts_dir": getattr(item, "_bench_artifacts", "")}

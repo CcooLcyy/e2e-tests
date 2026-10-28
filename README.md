@@ -76,10 +76,11 @@ def test_expected_output(desktop):
     with desktop.step("检查结果"):
         actual = desktop.driver.title
         desktop.check("窗口标题", actual, "MskDSP Upper")
-        desktop.capture("result")
+        desktop.capture("result", description="业务结果页面及窗口标题",
+                        expected="窗口标题为 MskDSP Upper", actual=f"窗口标题为 {actual}")
 ```
 
-desktop fixture 负责运行环境、Selenium 会话、清理及本用例报告。desktop.step() 用于记录业务步骤，desktop.check() 记录预期和实际并断言；desktop.capture() 保存截图。登录、协议配置等新业务动作可逐步封装复用。故障日志用于定位，业务通过条件应基于系统外部可观察的结果。
+desktop fixture 负责运行环境、Selenium 会话、清理及本用例报告。desktop.step() 用于记录业务步骤，desktop.check() 记录预期和实际并断言；用例自行决定何时调用 desktop.capture()，并提供画面含义及预期/实际现象。通过、跳过或停止时不强制补拍结束截图，框架仅在失败时尽可能保留现场。未主动截图的通过用例仍自动生成报告；截图判定来自记录的检查，不能仅凭图片宣称业务通过。详见 [截图与用例报告](docs/自动截图与用例报告.md)。登录、协议配置等新业务动作可逐步封装复用。故障日志用于定位，业务通过条件应基于系统外部可观察的结果。
 
 每项用例使用独立产物子目录，任务保存实时事件、汇总和 JUnit 报告。测试失败不会伪装成成功，独立后续用例仍会执行。
 

@@ -28,7 +28,10 @@ def test_empty_login_reports_required_fields(desktop):
         messages = desktop.wait.until(visible_messages)
         desktop.check("账号必填提示", "请输入平台账号" in messages, True)
         desktop.check("密码必填提示", "请输入密码" in messages, True)
-        desktop.capture("empty-login-validation")
+        desktop.capture("empty-login-validation",
+            description="提交空表单后的账号和密码必填提示",
+            expected="同时显示“请输入平台账号”和“请输入密码”",
+            actual="已等待两项必填提示出现，并逐项验证提示文本")
 
     with desktop.step("确认仍停留在登录页"):
         desktop.check("登录页可见", desktop.driver.find_element(
