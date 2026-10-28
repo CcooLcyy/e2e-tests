@@ -1,0 +1,30 @@
+{
+  "groups": [
+    {
+      "name": "基础登录",
+      "cases": [
+        "tests/test_login_success.py::test_valid_account_enters_workspace",
+        "tests/test_login_validation.py::test_empty_login_reports_required_fields",
+        "tests/test_wrong_password.py::test_wrong_password_reports_explicit_credentials_error"
+      ]
+    },
+    {
+      "name": "启动与界面",
+      "cases": [
+        "tests/test_release_smoke.py::test_release_platform_settings_expand_and_collapse"
+      ]
+    },
+    {
+      "name": "密码记忆与自动登录",
+      "cases": [
+        "tests/test_session_preferences.py::test_no_remember_requires_password_after_reopen",
+        "tests/test_session_preferences.py::test_remember_password_requires_manual_login_after_reopen",
+        "tests/test_session_preferences.py::test_auto_login_enters_same_account_after_reopen",
+        "tests/test_session_preferences.py::test_auto_login_and_remember_password_checkbox_linkage",
+        "tests/test_session_preferences.py::test_forget_password_clears_saved_password_and_auto_login",
+        "tests/test_session_preferences.py::test_explicit_logout_disables_auto_login_but_keeps_password",
+        "tests/test_session_preferences.py::test_changing_account_does_not_reuse_saved_password"
+      ]
+    }
+  ]
+}

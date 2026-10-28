@@ -8,7 +8,7 @@ export function caseGroup(item: GroupCase): string {
   return item.group?.trim() || '未分组';
 }
 
-/** 分组只用于展示与选择，完整列表中的用例顺序保持不变。 */
+/** 分组顺序来自后端顺序清单，组内用例保持清单中的相对顺序。 */
 export function summarizeGroups(
   cases: readonly GroupCase[], selected: ReadonlySet<string>, records: Record<string, CaseRecord>,
 ): GroupSummary[] {
@@ -50,9 +50,9 @@ export function selectionState(ids: readonly string[], selected: ReadonlySet<str
   return { checked: ids.length > 0 && count === ids.length, indeterminate: count > 0 && count < ids.length };
 }
 
-/** 执行顺序始终来自原始用例列表，不采用勾选集合的插入顺序。 */
+/** 执行顺序与分组展示一致：先分组，再组内顺序，忽略勾选先后。 */
 export function selectedCaseIds(cases: readonly GroupCase[], selected: ReadonlySet<string>): string[] {
-  return cases.filter(item => selected.has(item.id)).map(item => item.id);
+  return summarizeGroups(cases, selected, {}).flatMap(group => group.ids.filter(id => selected.has(id)));
 }
 
 export function reconcileSelection(

@@ -36,10 +36,10 @@ def test_last():
 ''')
     cases = discover_cases(tmp_path)
     assert [case.id for case in cases] == [
-        "tests/test_groups.py::test_first", "tests/test_groups.py::test_second[2]",
-        "tests/test_groups.py::test_second[1]", "tests/test_groups.py::test_last",
+        "tests/test_groups.py::test_first", "tests/test_groups.py::test_last",
+        "tests/test_groups.py::test_second[2]", "tests/test_groups.py::test_second[1]",
     ]
-    assert [case.group for case in cases] == ["文件默认", "单项分组", "单项分组", "文件默认"]
+    assert [case.group for case in cases] == ["文件默认", "文件默认", "单项分组", "单项分组"]
 
 
 @pytest.mark.parametrize("arguments", ["", '""', '"   "', "None", "12", '["分组"]',
@@ -53,12 +53,13 @@ def test_invalid_group_declaration_fails_discovery(tmp_path, arguments):
 
 
 def test_current_cases_keep_ids_order_and_expected_group_counts():
-    """真实十一项业务用例仅补元数据，标识和全局顺序保持原样，分组三七一项。"""
+    """真实十一项业务用例保留标识，按分组清单与组内顺序归并，分组三七一项。"""
     root = Path(__file__).resolve().parents[1]
     cases = discover_cases(root)
     assert [case.id for case in cases] == [
         "tests/test_login_success.py::test_valid_account_enters_workspace",
         "tests/test_login_validation.py::test_empty_login_reports_required_fields",
+        "tests/test_wrong_password.py::test_wrong_password_reports_explicit_credentials_error",
         "tests/test_release_smoke.py::test_release_platform_settings_expand_and_collapse",
         "tests/test_session_preferences.py::test_no_remember_requires_password_after_reopen",
         "tests/test_session_preferences.py::test_remember_password_requires_manual_login_after_reopen",
@@ -67,7 +68,6 @@ def test_current_cases_keep_ids_order_and_expected_group_counts():
         "tests/test_session_preferences.py::test_forget_password_clears_saved_password_and_auto_login",
         "tests/test_session_preferences.py::test_explicit_logout_disables_auto_login_but_keeps_password",
         "tests/test_session_preferences.py::test_changing_account_does_not_reuse_saved_password",
-        "tests/test_wrong_password.py::test_wrong_password_reports_explicit_credentials_error",
     ]
     assert Counter(case.group for case in cases) == {
         "基础登录": 3, "密码记忆与自动登录": 7, "启动与界面": 1,

@@ -2,12 +2,14 @@
 import ctypes
 from datetime import datetime
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
 import uuid
+from .catalog import discover_cases
 
 
 class TaskController:
@@ -38,11 +40,17 @@ class TaskController:
         # nodeid 必须来自真实用例目录，避免把用户输入解释为 pytest 参数。
         if any(not case.startswith("tests/") or ".." in Path(case.split("::")[0]).parts for case in case_ids):
             raise ValueError("用例标识必须来自 tests 目录")
+        available = [case.id for case in discover_cases(self.root)]
+        requested = set(case_ids)
+        if not requested.issubset(available):
+            raise ValueError("所选用例已经变化，请刷新用例列表后重试")
+        case_ids = [case_id for case_id in available if case_id in requested]
+        logging.getLogger(__name__).info("按分组及组内顺序准备执行 %s 项用例", len(case_ids))
         self.run_dir = self.root / "artifacts" / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
         self.run_dir.mkdir(parents=True)
         task_path = self.run_dir / "task.json"
         task_path.write_text(json.dumps({"root": str(self.root), "environment": environment.to_dict(),
-                                        "case_ids": list(dict.fromkeys(case_ids))}, ensure_ascii=False, indent=2), encoding="utf-8")
+                                        "case_ids": case_ids}, ensure_ascii=False, indent=2), encoding="utf-8")
         worker = Path(__file__).resolve().with_name("worker.py")
         command = [sys.executable, str(worker), "--task", str(task_path)]
         if sys.platform == "win32" and ctypes.windll.shell32.IsUserAnAdmin():

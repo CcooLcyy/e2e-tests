@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 import pytest
 from .events import emit
+from .case_order import order_case_ids
 
 
 def pytest_configure(config):
@@ -13,7 +14,7 @@ def pytest_configure(config):
         config.addinivalue_line("markers", "case_group(name): 声明用例所属的一级功能分组")
 
 
-def pytest_collection_modifyitems(items):
+def pytest_collection_modifyitems(config, items):
     for item in items:
         groups = []
         for marker in item.iter_markers("case_group"):
@@ -23,7 +24,13 @@ def pytest_collection_modifyitems(items):
             groups.append(marker.args[0].strip())
         # pytest 按距离用例由近到远返回标记，单项声明自然覆盖文件默认分组。
         item._bench_group = groups[0] if groups else "未分组"
-    logging.getLogger(__name__).info("已采集 %s 项用例的分组信息，保留原始发现顺序", len(items))
+    try:
+        ordered = order_case_ids([(item.nodeid, item._bench_group) for item in items], config.rootpath)
+    except ValueError as error:
+        raise pytest.UsageError(str(error)) from None
+    ranks = {case_id: position for position, case_id in enumerate(ordered)}
+    items.sort(key=lambda item: ranks[item.nodeid])
+    logging.getLogger(__name__).info("已按分组及组内清单顺序整理 %s 项用例", len(items))
 
 
 def pytest_addoption(parser):

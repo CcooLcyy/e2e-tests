@@ -73,7 +73,7 @@ test('选择当前可见项时保留隐藏选择，不变更原集合', () => {
 test('整组选择不受搜索影响，取消整组只删除该组用例', () => {
   const group = summarizeGroups(cases, new Set(), {})[0];
   const selected = toggleCases(new Set(['remember']), group.ids, true);
-  assert.deepEqual(selectedCaseIds(cases, selected), ['login', 'remember', 'wrong']);
+  assert.deepEqual(selectedCaseIds(cases, selected), ['login', 'wrong', 'remember']);
   assert.deepEqual([...toggleCases(selected, group.ids, false)], ['remember']);
 });
 
@@ -84,8 +84,9 @@ test('全选半选空组选中状态准确且不受其他组选择影响', () =>
   assert.deepEqual(selectionState([], new Set(['wrong'])), { checked: false, indeterminate: false });
 });
 
-test('按完整原列表生成执行顺序，忽略勾选顺序与陈旧标识', () => {
-  assert.deepEqual(selectedCaseIds(cases, new Set(['wrong', 'remember', 'login', 'removed'])), ['login', 'remember', 'wrong']);
+test('按分组及组内顺序生成执行顺序，忽略勾选先后与陈旧标识', () => {
+  assert.deepEqual(selectedCaseIds(cases, new Set(['wrong', 'remember', 'login', 'removed'])), ['login', 'wrong', 'remember']);
+  assert.deepEqual(selectedCaseIds(cases, new Set(['remember', 'layout', 'wrong', 'login'])), ['login', 'wrong', 'layout', 'remember']);
   assert.deepEqual(selectedCaseIds(cases, new Set()), []);
 });
 
@@ -98,13 +99,13 @@ test('刷新保留已有选择和未选状态，删除消失项并选中新用�
   assert.deepEqual([...reconcileSelection(cases, [], selected)], []);
 });
 
-test('分组标题默认全部收起，组内保留原序号顺序而执行仍采用完整列表顺序', () => {
+test('分组标题默认全部收起，执行顺序与分组展示顺序一致', () => {
   const sections = groupedSections(cases, new Set(['wrong', 'layout', 'login']), {}, new Set());
   assert.deepEqual(sections.map(group => [group.name, group.open]), [
     ['基础登录', false], ['启动与界面', false], ['密码记忆', false],
   ]);
   assert.deepEqual(sections[0].cases.map(item => item.id), ['login', 'wrong']);
-  assert.deepEqual(selectedCaseIds(cases, new Set(['wrong', 'layout', 'login'])), ['login', 'layout', 'wrong']);
+  assert.deepEqual(selectedCaseIds(cases, new Set(['wrong', 'layout', 'login'])), ['login', 'wrong', 'layout']);
 });
 
 test('只展开指定分组，展开和收起操作不修改原状态集合', () => {
@@ -147,7 +148,7 @@ test('搜索和折叠不缩减整组勾选及统计范围，输入列表和状�
   assert.deepEqual({ids: group.ids, total: group.total, selected: group.selected, passed: group.passed, failed: group.failed},
     {ids: ['login', 'wrong'], total: 2, selected: 1, passed: 1, failed: 1});
   assert.equal(group.open, false);
-  assert.deepEqual(selectedCaseIds(cases, toggleCases(selected, group.ids, true)), ['login', 'remember', 'wrong']);
+  assert.deepEqual(selectedCaseIds(cases, toggleCases(selected, group.ids, true)), ['login', 'wrong', 'remember']);
   assert.equal(JSON.stringify({cases, records, selected: [...selected], expanded: [...expanded]}), snapshot);
 });
 
