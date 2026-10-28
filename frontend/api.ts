@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { BenchEvent } from './state';
 export interface Environment { name: string; app_path: string; driver_path: string; mode: 'fresh' | 'workspace'; workspace_path: string; baseline_path: string; timeout: number; close_app: boolean }
-export interface CaseInfo { id: string; name: string; description: string }
+export interface CaseInfo { id: string; name: string; description: string; group?: string }
 export interface History { id: string; status: string; environment_name: string; created_at: string; case_count: number; passed: number; failed: number; run_dir: string }
 export interface Shot { name: string; path: string; data_url: string }
 export interface Detail { report: Record<string, unknown>; screenshots: Shot[] }

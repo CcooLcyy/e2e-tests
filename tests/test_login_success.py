@@ -3,8 +3,11 @@
 import json
 from pathlib import Path
 
+import pytest
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
+
+pytestmark = pytest.mark.case_group("基础登录")
 
 
 def test_valid_account_enters_workspace(desktop):

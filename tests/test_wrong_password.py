@@ -3,11 +3,13 @@ import re
 import secrets
 import unicodedata
 
+import pytest
 from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 
 from testbench.login_page import LoginAccount
 
+pytestmark = pytest.mark.case_group("基础登录")
 
 
 def _is_explicit_password_error(message):

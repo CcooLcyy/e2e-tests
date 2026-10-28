@@ -56,6 +56,7 @@ class CaseInfo:
     id: str
     name: str
     description: str = ""
+    group: str = "未分组"
 
 
 def save_environment(path, environment):

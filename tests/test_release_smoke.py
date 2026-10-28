@@ -1,5 +1,8 @@
+import pytest
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
+
+pytestmark = pytest.mark.case_group("启动与界面")
 
 
 def test_release_platform_settings_expand_and_collapse(desktop):

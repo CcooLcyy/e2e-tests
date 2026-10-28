@@ -4,12 +4,23 @@ import { call, choose, desktop, openArtifact } from './api';
 import type { Bootstrap, CaseInfo, Detail, Environment, History, Poll, Shot } from './api';
 import { applyEvents, counts, initialRecords, labels } from './state';
 import type { BenchEvent, CaseRecord, Step } from './state';
+import { caseGroup, summarizeGroups, visibleCases, toggleCases, selectionState, selectedCaseIds, reconcileSelection, groupedSections, toggleExpandedGroup } from './case-groups';
 
 type Page = 'execution' | 'environment' | 'history';
 const emptyEnvironment: Environment = {name:'本机测试环境',app_path:'',driver_path:'',mode:'fresh',workspace_path:'',baseline_path:'',timeout:20,close_app:true};
 const duration = (value?: number) => value === undefined ? '—' : `${value.toFixed(2)} s`;
 const valueText = (value: unknown) => value === undefined || value === null ? '—' : typeof value === 'string' ? value || '空字符串' : JSON.stringify(value);
 function Status({ status, text = true }: {status: string; text?: boolean}) { return <span className={`status ${status}`}><i />{text && (labels[status] || status)}{status === 'running' && <LoaderCircle size={12} className="spin"/>}</span>; }
+
+function SelectionCheckbox({ids, selected, disabled, label, onChange}: {
+  ids: string[]; selected: ReadonlySet<string>; disabled: boolean; label: string; onChange: (checked: boolean) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const state = selectionState(ids, selected);
+  useEffect(() => { if (input.current) input.current.indeterminate = state.indeterminate; }, [state.indeterminate]);
+  return <input ref={input} type="checkbox" aria-label={label} aria-checked={state.indeterminate ? 'mixed' : state.checked}
+    checked={state.checked} disabled={disabled || !ids.length} onChange={event => onChange(event.target.checked)}/>;
+}
 
 export default function App() {
   const [page,setPage] = useState<Page>('execution');
@@ -24,6 +35,8 @@ export default function App() {
   const [selected,setSelected] = useState<Set<string>>(new Set());
   const [focused,setFocused] = useState('');
   const [search,setSearch] = useState('');
+  const [expandedGroups,setExpandedGroups] = useState<Set<string>>(new Set());
+  const [searchCollapsed,setSearchCollapsed] = useState<Set<string>>(new Set());
   const [active,setActive] = useState(false);
   const [stopping,setStopping] = useState(false);
   const [busy,setBusy] = useState(false);
@@ -86,11 +99,11 @@ export default function App() {
   },[historyFocus]);
   useEffect(()=>{if(!preview)return;const handler=(event:KeyboardEvent)=>{if(event.key==='Escape')setPreview(null);};window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);},[preview]);
 
-  async function refreshCases(){setLoading(true);try{const list=await call<CaseInfo[]>('discover');setCases(list);setSelected(new Set(list.map(c=>c.id)));setRecords(initialRecords(list.map(c=>c.id)));setTaskIds([]);setTaskStatus('pending');setFocused(list[0]?.id||'');}catch(e){setError(String(e));}finally{setLoading(false);}}
+  async function refreshCases(){setLoading(true);try{const list=await call<CaseInfo[]>('discover');setSelected(old=>reconcileSelection(cases,list,old));setCases(list);setExpandedGroups(old=>new Set(list.map(caseGroup).filter(name=>old.has(name))));setSearchCollapsed(new Set());setRecords(initialRecords(list.map(c=>c.id)));setTaskIds([]);setTaskStatus('pending');setFocused(list[0]?.id||'');}catch(e){setError(String(e));}finally{setLoading(false);}}
   async function start(){
     if(disabled || !selected.size)return;
     setBusy(true);starting.current=true;setError('');setNotice('');
-    const ids=cases.filter(c=>selected.has(c.id)).map(c=>c.id);
+    const ids=selectedCaseIds(cases,selected);
     try{await call('save_environment',{environment});const result=await call<{run_dir:string}>('start',{environment,case_ids:ids});setRecords(initialRecords(cases.map(c=>c.id)));setLogs([]);setDetail(null);setTaskIds(ids);setRunDir(result.run_dir);setTaskStatus('running');setActive(true);setStopping(false);setPage('execution');}
     catch(e){setError(String(e));}finally{starting.current=false;setBusy(false);}
   }
@@ -102,7 +115,20 @@ export default function App() {
   const stats=counts(records,taskIds.length?taskIds:cases.map(c=>c.id));
   const progress=stats.total?Math.round(stats.done/stats.total*100):0;
   const currentCase=cases.find(c=>c.id===focused);
-  const visible=cases.filter(c=>(c.name+c.description).toLowerCase().includes(search.toLowerCase()));
+  const visible=visibleCases(cases,'',search);
+  const groups=summarizeGroups(cases,selected,records);
+  const sections=groupedSections(cases,selected,records,expandedGroups,search,searchCollapsed);
+  function toggleGroup(name: string) {
+    if(search.trim()) setSearchCollapsed(old=>toggleExpandedGroup(old,name));
+    else setExpandedGroups(old=>toggleExpandedGroup(old,name));
+    console.info('切换用例组展开状态：',name);
+  }
+  function expandAll(open: boolean) {
+    if(search.trim()) setSearchCollapsed(new Set(open?[]:groups.map(item=>item.name)));
+    else setExpandedGroups(new Set(open?groups.map(item=>item.name):[]));
+    console.info(open?'展开全部用例组':'折叠全部用例组');
+  }
+  function chooseCases(ids: string[], checked: boolean) { setSelected(old=>toggleCases(old,ids,checked)); console.info('批量选择用例：', ids.length, checked ? '选中' : '取消'); }
   const screens=detail?.screenshots||[];
   const steps=record?.steps||[];
 
@@ -131,9 +157,21 @@ export default function App() {
           <div className="stat-grid"><Stat label="用例总数" value={stats.total} icon={<ListChecks size={18}/>} hint="本次测试范围"/><Stat label="已完成" value={stats.done} icon={<Activity size={18}/>} hint={`${progress}% 已完成`} accent="blue"/><Stat label="通过" value={stats.passed} icon={<CheckCheck size={18}/>} hint="符合预期结果" accent="green"/><Stat label="失败" value={stats.failed} icon={<X size={18}/>} hint="需要进一步检查" accent="red"/></div>
           <div className="execution-grid">
             <section className="panel case-panel"><div className="panel-heading"><div><h2>测试用例 <span>{cases.length}</span></h2><p>按顺序执行所选用例</p></div><span className={`task-badge ${taskStatus}`} data-testid="task-status">{stopping?'正在停止':labels[taskStatus]||taskStatus}</span></div>
-              <div className="case-toolbar"><label className="search"><Search size={15}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索测试用例" aria-label="搜索测试用例"/></label><span className="selection-count">已选 {selected.size} 项</span></div>
-              <div className="case-table"><div className="table-head"><label><input type="checkbox" aria-label="选择全部用例" disabled={disabled} checked={cases.length>0&&selected.size===cases.length} onChange={e=>setSelected(new Set(e.target.checked?cases.map(c=>c.id):[]))}/></label><span>用例名称</span><span>执行状态</span><span>耗时</span></div>
-              {visible.map((item,index)=><div key={item.id} role="button" tabIndex={0} data-testid="case-row" data-case-id={item.id} data-status={records[item.id]?.status||'pending'} className={`case-row ${focused===item.id?'focused':''}`} onClick={()=>setFocused(item.id)} onKeyDown={e=>{if(e.key==='Enter')setFocused(item.id);}}><label onClick={e=>e.stopPropagation()}><input aria-label={`选择${item.name}`} type="checkbox" disabled={disabled} checked={selected.has(item.id)} onChange={e=>setSelected(old=>{const next=new Set(old);if(e.target.checked)next.add(item.id);else next.delete(item.id);return next;})}/></label><div className="case-name"><span className="case-number">{String(index+1).padStart(2,'0')}</span><span><strong>{item.name.replace(/。$/,'')}</strong><small>{item.description===item.name?'桌面端功能验证':item.description}</small></span></div><Status status={records[item.id]?.status||'pending'}/><span className="elapsed">{duration(records[item.id]?.duration)}</span></div>)}
+              <div className="case-toolbar"><label className="search"><Search size={15}/><input value={search} onChange={e=>{setSearch(e.target.value);setSearchCollapsed(new Set());}} placeholder="搜索分组、用例名称或说明" aria-label="搜索测试用例"/></label><span className="selection-count">匹配 {visible.length} 项 · 已选 {selected.size} 项</span></div>
+              <div className="case-list-actions"><span>{sections.length} 个分组</span><button className="text-button" disabled={!sections.length} data-testid="groups-expand-all" onClick={()=>expandAll(true)}>全部展开</button><button className="text-button" disabled={!sections.length} data-testid="groups-collapse-all" onClick={()=>expandAll(false)}>全部折叠</button></div>
+              <div className="case-table"><div className="table-head"><label><SelectionCheckbox ids={visible.map(item=>item.id)} selected={selected} disabled={disabled} label="选择当前搜索结果" onChange={checked=>chooseCases(visible.map(item=>item.id),checked)}/></label><span>用例名称</span><span>执行状态</span><span>耗时</span></div>
+              {sections.map(section=>{const contentId=`group-cases-${cases.findIndex(item=>caseGroup(item)===section.name)}`;return <section className="case-group-section" key={section.name}>
+                <div className="case-group-heading" data-testid="case-group" data-group={section.name}>
+                  <SelectionCheckbox ids={section.ids} selected={selected} disabled={disabled} label={`选择整组${section.name}`} onChange={checked=>chooseCases(section.ids,checked)}/>
+                  <button className="case-group-toggle" type="button" data-testid="case-group-toggle" data-group={section.name} aria-expanded={section.open} aria-controls={contentId} onClick={()=>toggleGroup(section.name)}>
+                    <ChevronRight size={15}/><span className="group-title">{section.name}<strong>{section.total}</strong></span>
+                    <span className="group-summary">已选 {section.selected}/{section.total}<span className="group-passed">通过 {section.passed}</span><span className="group-failed">失败 {section.failed}</span></span>
+                  </button>
+                </div>
+                <div id={contentId} hidden={!section.open} data-testid="case-group-content">
+                  {section.open&&section.cases.map(item=><div key={item.id} role="button" tabIndex={0} data-testid="case-row" data-case-id={item.id} data-status={records[item.id]?.status||'pending'} className={`case-row ${focused===item.id?'focused':''}`} onClick={()=>setFocused(item.id)} onKeyDown={e=>{if(e.key==='Enter')setFocused(item.id);}}><label onClick={e=>e.stopPropagation()}><input aria-label={`选择${item.name}`} type="checkbox" disabled={disabled} checked={selected.has(item.id)} onChange={e=>chooseCases([item.id],e.target.checked)}/></label><div className="case-name"><span className="case-number">{String(cases.findIndex(entry=>entry.id===item.id)+1).padStart(2,'0')}</span><span><strong>{item.name.replace(/。$/,'')}</strong><small>{item.description===item.name?'桌面端功能验证':item.description}</small></span></div><Status status={records[item.id]?.status||'pending'}/><span className="elapsed">{duration(records[item.id]?.duration)}</span></div>)}
+                </div>
+              </section>;})}
               {!visible.length&&<div className="empty"><ListChecks size={30}/><strong>{search?'没有匹配的用例':'暂无测试用例'}</strong><span>{search?'尝试其他关键词':'在 tests 目录添加 Python 用例，然后点击刷新。'}</span></div>}</div>
               <div className="case-footer"><div className="legend"><Status status="pending"/><Status status="passed"/><Status status="failed"/></div><span>{stats.done} / {stats.total} 已完成</span></div><div className="progress-track"><div style={{width:`${progress}%`}}/></div>
             </section>

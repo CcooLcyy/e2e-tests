@@ -1,6 +1,8 @@
 """通过真实桌面重开验证记住密码与下次自动登录，全部用例独立准备状态。"""
 
+import pytest
 
+pytestmark = pytest.mark.case_group("密码记忆与自动登录")
 
 
 def test_no_remember_requires_password_after_reopen(login_memory):

@@ -1,10 +1,29 @@
 """用例发现、实时状态、取消及任务汇总的 pytest 插件。"""
 import json
+import logging
 import os
 from pathlib import Path
 import time
 import pytest
 from .events import emit
+
+
+def pytest_configure(config):
+    if not any(value.startswith("case_group(") for value in config.getini("markers")):
+        config.addinivalue_line("markers", "case_group(name): 声明用例所属的一级功能分组")
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        groups = []
+        for marker in item.iter_markers("case_group"):
+            if (len(marker.args) != 1 or marker.kwargs or not isinstance(marker.args[0], str)
+                    or not marker.args[0].strip()):
+                raise pytest.UsageError(f"用例分组声明无效：{item.nodeid}；case_group 需要且仅接受一个非空字符串参数")
+            groups.append(marker.args[0].strip())
+        # pytest 按距离用例由近到远返回标记，单项声明自然覆盖文件默认分组。
+        item._bench_group = groups[0] if groups else "未分组"
+    logging.getLogger(__name__).info("已采集 %s 项用例的分组信息，保留原始发现顺序", len(items))
 
 
 def pytest_addoption(parser):
@@ -21,7 +40,8 @@ def pytest_collection_finish(session):
             name = description.splitlines()[0] if description else item.name
             if "[" in item.name:
                 name += " " + item.name[item.name.index("["):]
-            items.append({"id": item.nodeid, "name": name, "description": description})
+            items.append({"id": item.nodeid, "name": name, "description": description,
+                          "group": getattr(item, "_bench_group", "未分组")})
         Path(output).write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
 
 

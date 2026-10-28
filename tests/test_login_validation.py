@@ -1,7 +1,10 @@
 """登录页外部行为用例，不需要平台账号或连接下位机。"""
 
+import pytest
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
+
+pytestmark = pytest.mark.case_group("基础登录")
 
 
 def test_empty_login_reports_required_fields(desktop):
