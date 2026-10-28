@@ -1,0 +1,65 @@
+"""执行内核的真实独立工作进程回归，不依赖设备或账号。"""
+from pathlib import Path
+import sys
+import time
+import uuid
+
+from testbench.catalog import discover_cases
+from testbench.controller import TaskController
+from testbench.model import Environment
+
+
+def make_suite(tmp_path, source):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_flow.py").write_text(source, encoding="utf-8")
+    return Environment(app_path=sys.executable, driver_path=sys.executable)
+
+
+def accessible_root():
+    """使用项目产物目录，继承可供普通用户读取的权限。"""
+    root = Path(__file__).resolve().parents[1] / "artifacts" / ("selftest-" + uuid.uuid4().hex)
+    root.mkdir(parents=True)
+    return root
+
+
+def wait_task(controller, timeout=25):
+    events = []
+    deadline = time.monotonic() + timeout
+    while controller.active and time.monotonic() < deadline:
+        events.extend(controller.poll())
+        time.sleep(0.1)
+    assert not controller.active, "测试工作进程未按时退出"
+    return events
+
+
+def test_runner_keeps_failure_and_continues(tmp_path):
+    """真实子进程失败后继续执行后续独立用例，不将失败误报为成功。"""
+    tmp_path = accessible_root()
+    env = make_suite(tmp_path, 'def test_fail():\n    assert False, "预期失败"\ndef test_pass():\n    assert True\n')
+    cases = discover_cases(tmp_path)
+    controller = TaskController(tmp_path)
+    controller.start(env, [case.id for case in cases])
+    events = wait_task(controller)
+    assert [event["status"] for event in events if event["type"] == "case_finished"] == ["failed", "passed"]
+    assert [event["status"] for event in events if event["type"] == "task_finished"] == ["failed"]
+
+
+def test_runner_cancel_leaves_next_case_unexecuted(tmp_path):
+    """停止卡在业务步骤的任务，不能继续执行下一用例。"""
+    tmp_path = accessible_root()
+    env = make_suite(tmp_path, 'import time\ndef test_slow():\n    time.sleep(30)\ndef test_never():\n    assert True\n')
+    controller = TaskController(tmp_path)
+    controller.start(env, [case.id for case in discover_cases(tmp_path)])
+    deadline = time.monotonic() + 15
+    events = []
+    while time.monotonic() < deadline:
+        events.extend(controller.poll())
+        if any(event["type"] == "case_started" for event in events):
+            break
+        time.sleep(0.1)
+    assert any(event["type"] == "case_started" for event in events)
+    controller.stop()
+    events.extend(wait_task(controller, 10))
+    assert len([event for event in events if event["type"] == "case_started"]) == 1
+    assert [event["status"] for event in events if event["type"] == "task_finished"] == ["cancelled"]

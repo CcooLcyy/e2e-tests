@@ -1,0 +1,284 @@
+"""真实 Windows Release 的 WebView2 测试会话与证据收集。"""
+
+from contextlib import contextmanager
+from datetime import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import subprocess
+import time
+from urllib.request import ProxyHandler, build_opener
+
+from selenium import webdriver
+from selenium.webdriver.edge.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+
+
+class ReleaseDesktop:
+    def __init__(self, app_path: Path, driver_path: Path, artifacts_dir: Path, timeout: float,
+                 mode="fresh", workspace_path="", baseline_path="", close_app=True):
+        self.source = app_path.resolve(strict=True)
+        self.driver_path = driver_path.resolve(strict=True)
+        self.artifacts = artifacts_dir.resolve()
+        self.timeout = timeout
+        self.mode, self.baseline_path, self.close_app = mode, baseline_path, close_app
+        self.driver = None
+        self.process = None
+        self.application_log = None
+        self.cleanup_failure = None
+        self.steps = []
+        self.failure = None
+        self.started = datetime.now().astimezone().isoformat(timespec="seconds")
+        self.runtime = Path(workspace_path).resolve() if mode == "workspace" else self.artifacts / "runtime"
+        self.copied_app = self.runtime / self.source.name
+        self.metadata = {"源程序": str(self.source), "开始时间": self.started}
+
+    def __enter__(self):
+        self.artifacts.mkdir(parents=True, exist_ok=True)
+        try:
+            with self.step("准备独立的 Release 副本与数据目录"):
+                self._check_legacy_cache()
+                self._prepare_runtime()
+                shutil.copy2(self.source, self.copied_app)
+                with self.source.open("rb") as source:
+                    source_hash = hashlib.file_digest(source, "sha256").hexdigest()
+                with self.copied_app.open("rb") as copied:
+                    assert hashlib.file_digest(copied, "sha256").hexdigest() == source_hash
+                self.metadata["SHA256"] = source_hash
+                self.metadata["测试副本"] = str(self.copied_app)
+                (self.runtime / "webview").mkdir(exist_ok=True)
+                (self.artifacts / "temp").mkdir(exist_ok=True)
+
+            with self.step("启动独立 Release 并等待 WebView2 调试端口"):
+                with socket.socket() as listener:
+                    listener.bind(("127.0.0.1", 0))
+                    port = listener.getsockname()[1]
+                child_env = dict(os.environ)
+                child_env.update({
+                    "WEBVIEW2_USER_DATA_FOLDER": str(self.runtime / "webview"),
+                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": f"--remote-debugging-port={port}",
+                    "TEMP": str(self.artifacts / "temp"),
+                    "TMP": str(self.artifacts / "temp"),
+                })
+                self.application_log = (self.artifacts / "application.log").open("wb")
+                self.process = subprocess.Popen(
+                    [str(self.copied_app)], cwd=self.copied_app.parent, env=child_env,
+                    stdout=self.application_log, stderr=subprocess.STDOUT,
+                )
+                self.metadata["测试进程PID"] = self.process.pid
+                opener = build_opener(ProxyHandler({}))
+                deadline = time.monotonic() + self.timeout
+                while time.monotonic() < deadline:
+                    self._check_stop()
+                    if self.process.poll() is not None:
+                        raise RuntimeError(f"上位机提前退出，退出码：{self.process.returncode}")
+                    try:
+                        with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
+                            version = json.load(response)
+                        if version.get("webSocketDebuggerUrl"):
+                            break
+                    except OSError:
+                        pass
+                    time.sleep(0.2)
+                else:
+                    raise TimeoutError("Release 已启动，但 WebView2 调试端口未在规定时间内就绪")
+
+            with self.step("外部 WebDriver 接管本次测试窗口"):
+                options = webdriver.EdgeOptions()
+                options.use_webview = True
+                options.debugger_address = f"127.0.0.1:{port}"
+                service = Service(
+                    executable_path=str(self.driver_path),
+                    env=child_env,
+                    log_output=str(self.artifacts / "webdriver.log"),
+                )
+                self.driver = webdriver.Edge(service=service, options=options)
+                self.wait = CancellableWait(self.driver, self.timeout)
+                self.metadata["WebView2版本"] = self.driver.capabilities.get("browserVersion")
+            return self
+        except BaseException:
+            self.close()
+            raise
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_value is not None:
+            self.failure = str(exc_value)
+        self.close()
+
+    @staticmethod
+    def _check_legacy_cache():
+        """旧版本会自动迁移共享缓存，存在时停止，避免碰到用户数据。"""
+        import ctypes
+
+        if ctypes.windll.shell32.IsUserAnAdmin():
+            raise RuntimeError("请通过 run_demo.py 以普通权限运行；WebView2 会忽略管理员进程的调试环境参数")
+        buffer = ctypes.create_unicode_buffer(32768)
+        result = ctypes.windll.shell32.SHGetFolderPathW(None, 0x001C, None, 0, buffer)
+        if result != 0:
+            raise RuntimeError("无法确定 Windows 本地数据目录，不能确认测试隔离范围")
+        legacy = Path(buffer.value) / "com.mskdsp.upper" / "lower-update"
+        if legacy.exists():
+            raise RuntimeError("发现上位机旧版共享更新缓存；为避免启动时自动迁移，该次测试停止")
+
+    def _prepare_runtime(self):
+        """固定工作区必须由测试上位机创建，已有运行实例不接管。"""
+        if self.runtime == self.source.parent or self.source.parent.is_relative_to(self.runtime):
+            raise ValueError("测试工作区不能覆盖原安装目录")
+        if self.mode == "workspace":
+            marker = self.runtime / ".testbench-workspace.json"
+            if self.runtime.exists() and any(self.runtime.iterdir()) and not marker.is_file():
+                raise ValueError("工作区非空且不是测试上位机创建的专用目录")
+            env = dict(os.environ, TESTBENCH_APP=str(self.copied_app))
+            command = "$p=Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $env:TESTBENCH_APP }; if($p){exit 7}"
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                env=env, capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+            if result.returncode:
+                raise RuntimeError("固定工作区已有运行实例或无法确认进程状态，请关闭该测试实例后再执行")
+            self.runtime.mkdir(parents=True, exist_ok=True)
+            initialized = marker.exists()
+            marker.write_text(json.dumps({"source": str(self.source)}), encoding="utf-8")
+        else:
+            self.runtime.mkdir(parents=True, exist_ok=False)
+            initialized = False
+        if self.baseline_path and not initialized:
+            data = self.runtime / "data"
+            data.mkdir(exist_ok=True)
+            # 只导入显式选择的 JSON 配置，不导入登录配置、缓存和系统凭据。
+            for source in Path(self.baseline_path).glob("*.json"):
+                if source.name.casefold() != "platform-login.json":
+                    shutil.copy2(source, data / source.name)
+
+    @staticmethod
+    def _check_stop():
+        stop = os.environ.get("TESTBENCH_STOP")
+        if stop and Path(stop).exists():
+            raise InterruptedError("测试任务已停止")
+
+    @contextmanager
+    def step(self, name, expected=None, actual=None):
+        from testbench.events import emit
+        self._check_stop()
+        entry = {"步骤": name, "状态": "执行中"}
+        if expected is not None:
+            entry["预期"] = expected
+        if actual is not None:
+            entry["实际"] = actual
+        emit({"type": "step", "case_id": os.environ.get("TESTBENCH_CASE_ID", ""), "name": name,
+              "status": "running", "expected": expected, "actual": actual})
+        self.steps.append(entry)
+        begin = time.monotonic()
+        print(f"[步骤] {name}", flush=True)
+        try:
+            yield
+            entry["状态"] = "通过"
+        except BaseException as error:
+            entry["状态"] = "失败"
+            self.failure = f"{type(error).__name__}: {str(error)[:1500]}"
+            entry["错误"] = self.failure
+            if self.driver is not None:
+                try:
+                    self.capture("failure")
+                except Exception:
+                    pass
+            raise
+        finally:
+            entry["耗时秒"] = round(time.monotonic() - begin, 3)
+            emit({"type": "step", "case_id": os.environ.get("TESTBENCH_CASE_ID", ""), "name": name,
+                  "status": "passed" if entry["状态"] == "通过" else "failed", "expected": expected,
+                  "actual": actual, "duration": entry["耗时秒"]})
+
+    def check(self, name, actual, expected):
+        with self.step(name, expected=expected, actual=actual):
+            assert actual == expected, f"{name}：预期 {expected!r}，实际 {actual!r}"
+
+    def capture(self, name):
+        target = self.artifacts / f"{name}.png"
+        if not self.driver.save_screenshot(str(target)):
+            raise RuntimeError(f"截图保存失败：{target.name}")
+
+    def close(self):
+        try:
+            if self.driver is not None:
+                self.driver.quit()
+        except Exception as error:
+            self.cleanup_failure = f"关闭测试会话失败：{error}"
+            self.failure = self.failure or self.cleanup_failure
+        finally:
+            self.driver = None
+            if self.process is not None and (self.close_app or self.failure):
+                self._stop_owned_app()
+            if self.application_log is not None:
+                self.application_log.close()
+                self.application_log = None
+            self._write_report()
+
+    def _stop_owned_app(self):
+        """只清理执行路径等于本次副本的进程，不按程序名清理。"""
+        env = dict(os.environ, MSKDSP_E2E_APP_PATH=str(self.copied_app), MSKDSP_E2E_APP_PID=str(self.process.pid))
+        command = (
+            "$ErrorActionPreference='Stop'; "
+            "$owned=Get-CimInstance Win32_Process | "
+            "Where-Object { $_.ExecutablePath -eq $env:MSKDSP_E2E_APP_PATH -and $_.ProcessId -eq [int]$env:MSKDSP_E2E_APP_PID }; "
+            "foreach($p in $owned){ Stop-Process -Id $p.ProcessId -ErrorAction Stop }"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                env=env, capture_output=True, timeout=20,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if result.returncode:
+                raise RuntimeError("按本次副本路径清理进程失败")
+        except Exception as error:
+            self.cleanup_failure = f"清理测试进程失败：{error}"
+            self.failure = self.failure or self.cleanup_failure
+        if self.process is not None:
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.cleanup_failure = "测试实例未在规定时间内退出"
+                self.failure = self.failure or self.cleanup_failure
+
+    def _write_report(self):
+        result = {
+            **self.metadata,
+            "结果": "失败" if self.failure else "通过",
+            "步骤": self.steps,
+            "结束时间": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "范围": "上位机真实 Release 外部行为；具体范围由所选用例定义",
+        }
+        if self.failure:
+            result["错误"] = self.failure
+        (self.artifacts / "report.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        lines = ["# 上位机用例测试报告", "", f"结果：**{result['结果']}**", ""]
+        lines.extend(f"- {key}：{value}" for key, value in self.metadata.items())
+        lines.extend(["", "| 步骤 | 结果 | 预期 | 实际 | 耗时（秒） |", "| --- | --- | --- | --- | --- |"])
+        def cell(value):
+            return str(value).replace("|", "\\|").replace("\n", " ")
+        lines.extend(f"| {cell(step['步骤'])} | {step['状态']} | {cell(step.get('预期', '—'))} | {cell(step.get('实际', '—'))} | {step['耗时秒']} |" for step in self.steps)
+        if self.failure:
+            lines.extend(["", "```text", self.failure, "```"])
+        for screenshot in sorted(self.artifacts.glob("*.png")):
+            lines.extend(["", f"![{screenshot.stem}]({screenshot.name})"])
+        lines.extend(["", result["范围"], ""])
+        (self.artifacts / "report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+class CancellableWait(WebDriverWait):
+    """每次轮询前检查取消，避免界面等待期间无法停止。"""
+    def until(self, method, message=""):
+        def condition(driver):
+            ReleaseDesktop._check_stop()
+            return method(driver)
+        return super().until(condition, message)
+
+    def until_not(self, method, message=""):
+        def condition(driver):
+            ReleaseDesktop._check_stop()
+            return method(driver)
+        return super().until_not(condition, message)

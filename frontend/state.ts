@@ -1,0 +1,30 @@
+export type Status = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'cancelled';
+export interface Step { name: string; status: string; expected?: unknown; actual?: unknown; duration?: number }
+export interface CaseRecord { status: Status; steps: Step[]; duration?: number; message?: string; artifacts_dir?: string }
+export interface BenchEvent { type: string; case_id?: string; status?: string; name?: string; expected?: unknown; actual?: unknown; duration?: number; message?: string; artifacts_dir?: string; time?: string }
+export function initialRecords(ids: string[]): Record<string, CaseRecord> { return Object.fromEntries(ids.map(id => [id, {status: 'pending', steps: []}])); }
+export function applyEvents(records: Record<string, CaseRecord>, events: BenchEvent[]): Record<string, CaseRecord> {
+  const next = Object.fromEntries(Object.entries(records).map(([id, record]) => [id, { ...record, steps: [...record.steps] }]));
+  for (const event of events) {
+    const row = event.case_id ? next[event.case_id] : undefined;
+    if (row) {
+      if (event.type === 'case_started') row.status = 'running';
+      if (event.type === 'case_finished') Object.assign(row, event, { status: event.status as Status });
+      if (event.type === 'step') {
+        const step: Step = {name: event.name || '执行步骤', status: event.status || 'running', expected: event.expected, actual: event.actual, duration: event.duration};
+        const index = row.steps.findLastIndex(s => s.name === step.name && s.status === 'running');
+        if (step.status !== 'running' && index >= 0) row.steps[index] = step; else row.steps.push(step);
+      }
+    }
+    if (event.type === 'task_finished') for (const record of Object.values(next)) {
+      if (record.status === 'running') record.status = event.status === 'cancelled' ? 'cancelled' : 'failed';
+    }
+  }
+  return next;
+}
+export function counts(records: Record<string, CaseRecord>, ids: string[]) {
+  const rows = ids.map(id => records[id]).filter(Boolean);
+  return { total: ids.length, done: rows.filter(r => !['pending', 'running'].includes(r.status)).length,
+    passed: rows.filter(r => r.status === 'passed').length, failed: rows.filter(r => r.status === 'failed').length };
+}
+export const labels: Record<string, string> = {pending:'未执行', running:'运行中', passed:'通过', failed:'失败', skipped:'已跳过', cancelled:'已停止'};
