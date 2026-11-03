@@ -14,9 +14,13 @@ def write_case_report(directory, result):
         return str(value).replace("|", "\\|").replace("\n", " ")
     lines = ["# 上位机用例测试报告", "", f"结果：**{result['结果']}**", ""]
     lines.extend(f"- {key}：{value}" for key, value in result.items() if key not in ("步骤", "截图", "错误"))
-    lines.extend(["", "| 步骤 | 结果 | 预期 | 实际 | 耗时（秒） |", "| --- | --- | --- | --- | --- |"])
+    lines.extend(["", "| 序号 | 步骤 | 结果 | 预期 | 实际 | 耗时（秒） | 截图 |", "| --- | --- | --- | --- | --- | --- | --- |"])
     for step in result.get("步骤", []):
-        lines.append(f"| {cell(step['步骤'])} | {step['状态']} | {cell(step.get('预期', '未提供'))} | {cell(step.get('实际', '未提供'))} | {step.get('耗时秒', '—')} |")
+        shots = [shot for shot in result.get("截图", [])
+                 if step.get("序号") is not None and shot.get("step_id") == step["序号"]]
+        evidence = "；".join(f"[查看截图]({shot['name']})" if shot["capture_status"] == "saved"
+                            else f"证据缺失：{cell(shot['error'])}" for shot in shots)
+        lines.append(f"| {step.get('序号', '—')} | {cell(step['步骤'])} | {step['状态']} | {cell(step.get('预期', '未提供'))} | {cell(step.get('实际', '未提供'))} | {step.get('耗时秒', '—')} | {evidence or '旧记录未关联截图'} |")
     if result.get("错误"):
         lines.extend(["", "```text", str(result["错误"]), "```"])
     shots = result.get("截图", [])

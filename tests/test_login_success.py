@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -22,26 +23,41 @@ def test_valid_account_enters_workspace(desktop):
             raise RuntimeError("本机测试账号的 username 和 password 必须是非空字符串")
 
     with desktop.step("在登录页填写正确账号密码"):
-        username_input = desktop.wait.until(EC.element_to_be_clickable(
-            (By.CSS_SELECTOR, 'input[placeholder="平台账号"]')))
-        username_input.clear()
-        username_input.send_keys(username)
-        password_input = desktop.wait.until(EC.element_to_be_clickable(
-            (By.CSS_SELECTOR, 'input[placeholder="请输入密码"]')))
-        password_input.clear()
-        password_input.send_keys(password)
+        with desktop.step("等待平台账号输入框可点击"):
+            username_input = desktop.wait.until(EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, 'input[placeholder="平台账号"]')))
+        with desktop.step("清空平台账号输入框"):
+            username_input.clear()
+        with desktop.step("填写正确平台账号"):
+            username_input.send_keys(username)
+        with desktop.step("等待密码输入框可点击"):
+            password_input = desktop.wait.until(EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, 'input[placeholder="请输入密码"]')))
+        with desktop.step("清空密码输入框"):
+            password_input.clear()
+        with desktop.step("填写正确密码"):
+            try:
+                password_input.send_keys(password)
+            except WebDriverException:
+                # 步骤异常会进入报告，先屏蔽驱动可能附带的密码参数。
+                raise RuntimeError("密码输入失败，请检查本次测试驱动和窗口状态") from None
         desktop.check("登录账号", username_input.get_attribute("value"), username)
 
     with desktop.step("提交登录并等待进入配置工作台"):
-        desktop.wait.until(EC.element_to_be_clickable(
-            (By.CSS_SELECTOR, '.platform-login-form-panel button[type="submit"]'))).click()
-        desktop.wait.until(EC.invisibility_of_element_located(
-            (By.CSS_SELECTOR, 'main.platform-login-screen')))
-        logout = desktop.wait.until(EC.visibility_of_element_located(
-            (By.XPATH, '//header//button[normalize-space(.)="退出"]')))
+        with desktop.step("等待登录按钮可点击"):
+            action_button = desktop.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.platform-login-form-panel button[type="submit"]')))
+        with desktop.step("点击登录按钮"):
+            action_button.click()
+        with desktop.step("等待登录页消失"):
+            desktop.wait.until(EC.invisibility_of_element_located(
+                (By.CSS_SELECTOR, 'main.platform-login-screen')))
+        with desktop.step("等待工作台退出入口可见"):
+            logout = desktop.wait.until(EC.visibility_of_element_located(
+                (By.XPATH, '//header//button[normalize-space(.)="退出"]')))
         desktop.check("工作台账号退出入口可见", logout.is_displayed(), True)
-        account_badge = desktop.wait.until(EC.visibility_of_element_located(
-            (By.CSS_SELECTOR, 'header .ant-badge-status-text')))
+        with desktop.step("等待工作台账号信息可见"):
+            account_badge = desktop.wait.until(EC.visibility_of_element_located(
+                (By.CSS_SELECTOR, 'header .ant-badge-status-text')))
         desktop.check("工作台显示已登录账号", bool(account_badge.text.strip()), True)
         desktop.capture("successful-login-workspace",
             description="正确账号登录后显示的工作台及退出入口",

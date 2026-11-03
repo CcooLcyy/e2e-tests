@@ -13,6 +13,46 @@ test('步骤事件开始和完成合并，零和false不丢失', () => {
   assert.equal(state.a.steps[0].actual, false);
   assert.equal(state.a.steps[0].expected, 0);
 });
+
+test('同名嵌套步骤按序号完成，不会把外层结果写到内层', () => {
+  const state = applyEvents(initialRecords(['a']), [
+    { type: 'step', case_id: 'a', step_id: 1, name: '检查', status: 'running' },
+    { type: 'step', case_id: 'a', step_id: 2, name: '检查', status: 'running' },
+    { type: 'step', case_id: 'a', step_id: 1, name: '检查', status: 'failed', actual: '外层失败' },
+  ]);
+  assert.deepEqual(state.a.steps.map(step => [step.step_id, step.status, step.actual]), [
+    [1, 'failed', '外层失败'], [2, 'running', undefined],
+  ]);
+});
+
+test('重复步骤事件按序号更新且保持开始顺序，旧快照不被修改', () => {
+  const original = applyEvents(initialRecords(['a']), [
+    { type: 'step', case_id: 'a', step_id: 1, name: '点击', status: 'running' },
+    { type: 'step', case_id: 'a', step_id: 2, name: '点击', status: 'running' },
+  ]);
+  const state = applyEvents(original, [
+    { type: 'step', case_id: 'a', step_id: 2, name: '点击', status: 'passed', actual: false },
+    { type: 'step', case_id: 'a', step_id: 1, name: '点击', status: 'passed', actual: 0 },
+    { type: 'step', case_id: 'a', step_id: 1, name: '点击', status: 'passed', actual: 0 },
+  ]);
+  assert.deepEqual(state.a.steps.map(step => [step.step_id, step.status, step.actual]), [
+    [1, 'passed', 0], [2, 'passed', false],
+  ]);
+  assert.deepEqual(original.a.steps.map(step => step.status), ['running', 'running']);
+});
+
+test('带序号事件不合并到无序号的旧步骤，同一序号按用例隔离', () => {
+  const state = applyEvents(initialRecords(['a', 'b']), [
+    { type: 'step', case_id: 'a', name: '检查', status: 'running' },
+    { type: 'step', case_id: 'a', step_id: 1, name: '检查', status: 'passed' },
+    { type: 'step', case_id: 'b', step_id: 1, name: '检查', status: 'failed' },
+  ]);
+  assert.equal(state.a.steps.length, 2);
+  assert.equal(state.a.steps[0].status, 'running');
+  assert.equal(state.a.steps[1].status, 'passed');
+  assert.equal(state.b.steps.length, 1);
+  assert.equal(state.b.steps[0].status, 'failed');
+});
 test('停止后的当前项取消、后续未执行，不能误计通过', () => {
   const state = applyEvents(initialRecords(['a', 'b']), [
     { type: 'case_started', case_id: 'a' }, { type: 'task_finished', status: 'cancelled' },

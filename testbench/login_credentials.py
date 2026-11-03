@@ -90,19 +90,24 @@ def cleanup_login_credentials(desktop, guard):
     errors = []
     try:
         # 登录记忆用例必须先关闭实例，避免未完成的登录请求重新保存密码。
-        desktop.close_app = True
-        desktop.close()
-        if desktop.cleanup_failure:
-            errors.append("关闭本次测试实例失败，请检查进程清理报告")
-        process = desktop.process
-        if process is not None and process.poll() is None:
-            errors.append("关闭本次测试实例失败，进程仍在运行")
+        with desktop.step("关闭本次登录测试实例", cancellable=False):
+            desktop.close_app = True
+            desktop.close()
+        with desktop.step("确认本次登录测试实例已关闭", cancellable=False):
+            if desktop.cleanup_failure:
+                errors.append("关闭本次测试实例失败，请检查进程清理报告")
+            process = desktop.process
+            if process is not None and process.poll() is None:
+                errors.append("关闭本次测试实例失败，进程仍在运行")
+            if errors:
+                raise RuntimeError("；".join(errors))
     except BaseException:
         # 包括取消和键盘中断，也必须继续尝试精确删除测试凭据。
         errors.append("关闭本次测试实例失败，请确认测试进程已退出")
     finally:
         try:
-            guard.__exit__(None, None, None)
+            with desktop.step("删除本次测试账号的保存凭据", cancellable=False):
+                guard.__exit__(None, None, None)
         except BaseException:
             errors.append("删除本次测试账号的保存凭据失败")
     if errors:

@@ -80,7 +80,11 @@ def test_login_ready_accepts_ant_design_chinese_button_spacing():
         assert result, "登录表单应已就绪"
         return result
 
-    page = PlatformLoginPage(SimpleNamespace(driver=driver, wait=SimpleNamespace(until=until)))
+    @contextmanager
+    def step(*args):
+        yield
+
+    page = PlatformLoginPage(SimpleNamespace(driver=driver, wait=SimpleNamespace(until=until), step=step))
     page.wait_ready()
 
 

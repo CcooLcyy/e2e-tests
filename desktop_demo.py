@@ -46,17 +46,22 @@ class ReleaseDesktop:
         self.artifacts.mkdir(parents=True, exist_ok=True)
         try:
             with self.step("准备独立的 Release 副本与数据目录"):
-                self._check_legacy_cache()
-                self._prepare_runtime()
-                shutil.copy2(self.source, self.copied_app)
-                with self.source.open("rb") as source:
-                    source_hash = hashlib.file_digest(source, "sha256").hexdigest()
-                with self.copied_app.open("rb") as copied:
-                    assert hashlib.file_digest(copied, "sha256").hexdigest() == source_hash
+                with self.step("检查运行权限与旧版共享缓存"):
+                    self._check_legacy_cache()
+                with self.step("准备本次测试数据目录与配置基线"):
+                    self._prepare_runtime()
+                with self.step("复制上位机 Release 程序"):
+                    shutil.copy2(self.source, self.copied_app)
+                with self.step("校验源程序和测试副本 SHA256 一致"):
+                    with self.source.open("rb") as source:
+                        source_hash = hashlib.file_digest(source, "sha256").hexdigest()
+                    with self.copied_app.open("rb") as copied:
+                        assert hashlib.file_digest(copied, "sha256").hexdigest() == source_hash
                 self.metadata["SHA256"] = source_hash
                 self.metadata["测试副本"] = str(self.copied_app)
-                (self.runtime / "webview").mkdir(exist_ok=True)
-                (self.artifacts / "temp").mkdir(exist_ok=True)
+                with self.step("准备 WebView2 与临时目录"):
+                    (self.runtime / "webview").mkdir(exist_ok=True)
+                    (self.artifacts / "temp").mkdir(exist_ok=True)
 
             self._launch()
             return self
@@ -81,28 +86,30 @@ class ReleaseDesktop:
                 "TMP": str(self.artifacts / "temp"),
             })
             self.application_log = (self.artifacts / "application.log").open("ab")
-            self.process = subprocess.Popen(
-                [str(self.copied_app)], cwd=self.copied_app.parent, env=child_env,
-                stdout=self.application_log, stderr=subprocess.STDOUT,
-            )
+            with self.step("运行上位机测试副本进程"):
+                self.process = subprocess.Popen(
+                    [str(self.copied_app)], cwd=self.copied_app.parent, env=child_env,
+                    stdout=self.application_log, stderr=subprocess.STDOUT,
+                )
             self.metadata["测试进程PID"] = self.process.pid
             self.metadata.setdefault("启动历史", []).append({"序号": self._launch_count, "PID": self.process.pid, "调试端口": port})
             opener = build_opener(ProxyHandler({}))
             deadline = time.monotonic() + self.timeout
-            while time.monotonic() < deadline:
-                self._check_stop()
-                if self.process.poll() is not None:
-                    raise RuntimeError(f"上位机提前退出，退出码：{self.process.returncode}")
-                try:
-                    with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
-                        version = json.load(response)
-                    if version.get("webSocketDebuggerUrl"):
-                        break
-                except OSError:
-                    pass
-                time.sleep(0.2)
-            else:
-                raise TimeoutError("Release 已启动，但 WebView2 调试端口未在规定时间内就绪")
+            with self.step("等待本次 WebView2 调试端口就绪"):
+                while time.monotonic() < deadline:
+                    self._check_stop()
+                    if self.process.poll() is not None:
+                        raise RuntimeError(f"上位机提前退出，退出码：{self.process.returncode}")
+                    try:
+                        with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
+                            version = json.load(response)
+                        if version.get("webSocketDebuggerUrl"):
+                            break
+                    except OSError:
+                        pass
+                    time.sleep(0.2)
+                else:
+                    raise TimeoutError("Release 已启动，但 WebView2 调试端口未在规定时间内就绪")
 
         with self.step("外部 WebDriver 接管本次测试窗口"):
             options = webdriver.EdgeOptions()
@@ -174,16 +181,18 @@ class ReleaseDesktop:
             raise InterruptedError("测试任务已停止")
 
     @contextmanager
-    def step(self, name, expected=None, actual=None):
+    def step(self, name, expected=None, actual=None, *, cancellable=True):
         from testbench.events import emit
-        self._check_stop()
-        entry = {"步骤": name, "状态": "执行中"}
+        if cancellable:
+            self._check_stop()
+        step_id = len(self.steps) + 1
+        entry = {"序号": step_id, "步骤": name, "状态": "执行中"}
         if expected is not None:
             entry["预期"] = expected
         if actual is not None:
             entry["实际"] = actual
         emit({"type": "step", "case_id": os.environ.get("TESTBENCH_CASE_ID", ""), "name": name,
-              "status": "running", "expected": expected, "actual": actual})
+              "step_id": step_id, "status": "running", "expected": expected, "actual": actual})
         self.steps.append(entry)
         self._active_steps.append(entry)
         begin = time.monotonic()
@@ -191,18 +200,20 @@ class ReleaseDesktop:
         try:
             yield
             entry["状态"] = "通过"
+            self._capture_evidence(f"step-{step_id:04d}", entry, "passed",
+                                   description=f"步骤 {step_id} 完成：{name}")
         except BaseException as error:
             entry["状态"] = "失败"
-            self.failure = f"{type(error).__name__}: {str(error)[:1500]}"
-            entry["错误"] = self.failure
-            self._capture_evidence("failure", entry, "failed", required=False,
-                                   description=f"步骤失败现场：{name}")
+            entry["错误"] = f"{type(error).__name__}: {str(error)[:1500]}"
+            self.failure = self.failure or entry["错误"]
+            self._capture_evidence(f"step-{step_id:04d}-failure", entry, "failed", required=False,
+                                   description=f"步骤 {step_id} 失败现场：{name}")
             raise
         finally:
             self._active_steps.pop()
             entry["耗时秒"] = round(time.monotonic() - begin, 3)
             emit({"type": "step", "case_id": os.environ.get("TESTBENCH_CASE_ID", ""), "name": name,
-                  "status": "passed" if entry["状态"] == "通过" else "failed", "expected": expected,
+                  "step_id": step_id, "status": "passed" if entry["状态"] == "通过" else "failed", "expected": expected,
                   "actual": actual, "duration": entry["耗时秒"]})
 
     def check(self, name, actual, expected):
@@ -230,11 +241,14 @@ class ReleaseDesktop:
             suffix += 1
         expected = entry.get("预期", "未提供业务预期现象")
         actual = entry.get("实际", "未提供结构化实际现象")
-        if status == "failed" and self.failure:
-            actual = f"{actual}\n异常：{self.failure}"
+        failure = entry.get("错误") or self.failure
+        if status == "failed" and failure:
+            actual = f"{actual}\n异常：{failure}"
         shot = {"name": target.name, "description": description or f"{entry.get('步骤', '用例执行现场')}（{safe_name}）",
                 "expected": expected, "actual": actual, "status": status, "capture_status": "missing",
                 "error": "", "time": datetime.now().astimezone().isoformat(timespec="seconds")}
+        if "序号" in entry:
+            shot["step_id"] = entry["序号"]
         self.screenshots.append(shot)
         try:
             self.artifacts.mkdir(parents=True, exist_ok=True)
@@ -268,14 +282,18 @@ class ReleaseDesktop:
         """正常关闭本用例窗口并重开，保留登录设置和 WebView2 数据。"""
         try:
             with self.step("正常关闭并重开同一测试副本，保留登录数据"):
-                self._close_owned_window()
+                with self.step("正常关闭本次窗口并等待进程退出"):
+                    self._close_owned_window()
                 if self.driver is not None:
-                    self.driver.quit()
-                    self.driver = None
+                    with self.step("断开重开前的 WebDriver"):
+                        self.driver.quit()
+                        self.driver = None
                 if self.application_log is not None:
-                    self.application_log.close()
-                    self.application_log = None
-                self._wait_debug_port_closed()
+                    with self.step("关闭重开前的应用日志"):
+                        self.application_log.close()
+                        self.application_log = None
+                with self.step("等待旧 WebView2 调试端口释放"):
+                    self._wait_debug_port_closed()
                 self.process = None
                 self._launch()
         except BaseException as error:
@@ -331,18 +349,24 @@ class ReleaseDesktop:
             self.finish_case("failed" if self.failure else "passed")
         try:
             if self.driver is not None:
-                self.driver.quit()
+                with self.step("关闭本次测试驱动", cancellable=False):
+                    try:
+                        self.driver.quit()
+                    finally:
+                        self.driver = None
         except Exception as error:
             self.cleanup_failure = f"关闭测试会话失败：{error}"
             self.failure = self.failure or self.cleanup_failure
             self.finish_case("failed", self.cleanup_failure, "关闭测试会话失败现场")
         finally:
             self.driver = None
-            if self.process is not None and (self.close_app or self.failure):
-                self._stop_owned_app()
+            if self.process is not None and self.process.poll() is None and (self.close_app or self.failure):
+                with self.step("清理本次上位机测试进程", cancellable=False):
+                    self._stop_owned_app()
             if self.application_log is not None:
-                self.application_log.close()
-                self.application_log = None
+                with self.step("关闭本次应用日志", cancellable=False):
+                    self.application_log.close()
+                    self.application_log = None
             if self.cleanup_failure:
                 self.finish_case("failed", self.cleanup_failure, "清理测试实例失败现场")
             self._write_report()

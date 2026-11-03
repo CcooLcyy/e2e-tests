@@ -57,7 +57,8 @@ def test_wrong_password_reports_explicit_credentials_error(login_memory):
             return False
 
     with desktop.step("等待错误密码的界面提示"):
-        actual_message = desktop.wait.until(visible_error, message="错误密码提交后未显示登录错误提示")
+        with desktop.step("等待错误密码认证提示显示"):
+            actual_message = desktop.wait.until(visible_error, message="错误密码提交后未显示登录错误提示")
 
     with desktop.step("验证拒绝登录后仍可重新输入账号密码"):
         desktop.check("仍停留在登录页", desktop.driver.find_element(*page.SCREEN).is_displayed(), True)

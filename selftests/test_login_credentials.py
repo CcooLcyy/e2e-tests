@@ -2,6 +2,7 @@
 
 import ctypes
 import hashlib
+from contextlib import contextmanager
 from unittest.mock import Mock
 
 import pytest
@@ -134,6 +135,11 @@ def owned_fixture(close_error=None, cleanup_error=None, running=False):
     events = []
     desktop = SimpleNamespace(close_app=False, cleanup_failure=None,
                               process=SimpleNamespace(poll=lambda: None if running else 0))
+    @contextmanager
+    def step(name, *, cancellable=True):
+        assert cancellable is False, "清理步骤必须忽略停止标记"
+        yield
+    desktop.step = step
     guard = SimpleNamespace()
     def close():
         events.append(("close", desktop.close_app))
@@ -171,10 +177,11 @@ def test_cleanup_ignores_cancellation_flag_and_final_keep_window_setting(tmp_pat
     stop.touch()
     monkeypatch.setenv("TESTBENCH_STOP", str(stop))
     desktop, guard, events = owned_fixture()
-    desktop.step = Mock(side_effect=AssertionError("清理不能进入可取消步骤"))
+    desktop.step = Mock(wraps=desktop.step)
     cleanup_login_credentials(desktop, guard)
     assert events == [("close", True), ("delete",)]
-    desktop.step.assert_not_called()
+    assert desktop.step.call_count >= 3
+    assert all(call.kwargs.get("cancellable") is False for call in desktop.step.call_args_list)
 
 
 def test_cleanup_failure_property_is_not_reported_as_success(capsys):

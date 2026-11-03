@@ -1,7 +1,7 @@
 export type Status = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'cancelled';
-export interface Step { name: string; status: string; expected?: unknown; actual?: unknown; duration?: number }
+export interface Step { name: string; status: string; step_id?: number; expected?: unknown; actual?: unknown; duration?: number }
 export interface CaseRecord { status: Status; steps: Step[]; duration?: number; message?: string; artifacts_dir?: string }
-export interface BenchEvent { type: string; case_id?: string; status?: string; name?: string; expected?: unknown; actual?: unknown; duration?: number; message?: string; artifacts_dir?: string; time?: string }
+export interface BenchEvent { type: string; case_id?: string; status?: string; step_id?: number; name?: string; expected?: unknown; actual?: unknown; duration?: number; message?: string; artifacts_dir?: string; time?: string }
 export function initialRecords(ids: string[]): Record<string, CaseRecord> { return Object.fromEntries(ids.map(id => [id, {status: 'pending', steps: []}])); }
 export function applyEvents(records: Record<string, CaseRecord>, events: BenchEvent[]): Record<string, CaseRecord> {
   const next = Object.fromEntries(Object.entries(records).map(([id, record]) => [id, { ...record, steps: [...record.steps] }]));
@@ -11,9 +11,12 @@ export function applyEvents(records: Record<string, CaseRecord>, events: BenchEv
       if (event.type === 'case_started') row.status = 'running';
       if (event.type === 'case_finished') Object.assign(row, event, { status: event.status as Status });
       if (event.type === 'step') {
-        const step: Step = {name: event.name || '执行步骤', status: event.status || 'running', expected: event.expected, actual: event.actual, duration: event.duration};
-        const index = row.steps.findLastIndex(s => s.name === step.name && s.status === 'running');
-        if (step.status !== 'running' && index >= 0) row.steps[index] = step; else row.steps.push(step);
+        const step: Step = {name: event.name || '执行步骤', status: event.status || 'running', step_id: event.step_id, expected: event.expected, actual: event.actual, duration: event.duration};
+        // 新事件用序号定位，避免同名嵌套或重复完成事件关联到其他步骤。
+        const index = step.step_id !== undefined
+          ? row.steps.findIndex(s => s.step_id === step.step_id)
+          : row.steps.findLastIndex(s => s.step_id === undefined && s.name === step.name && s.status === 'running');
+        if (index >= 0 && (step.step_id !== undefined || step.status !== 'running')) row.steps[index] = step; else row.steps.push(step);
       }
     }
     if (event.type === 'task_finished') for (const record of Object.values(next)) {

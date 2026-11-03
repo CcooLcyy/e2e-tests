@@ -42,18 +42,21 @@ def report_at(path):
     return json.loads((path / "report.json").read_text(encoding="utf-8"))
 
 
-def test_success_without_capture_generates_report_without_screenshot(tmp_path):
-    """通过用例未指定业务截图时仅生成报告，不强制补拍结束画面。"""
+def test_success_without_capture_generates_step_screenshot_and_report(tmp_path):
+    """未手工截图的通过用例自动记录检查图，关闭驱动后明确记录缺图。"""
     app, calls = make_app(tmp_path)
     app.check("设置入口可见", True, True)
     app.close()
     app.close()
     report = report_at(tmp_path)
-    assert [kind for kind, _ in calls] == ["关闭"]
+    assert [kind for kind, _ in calls] == ["截图", "关闭"]
     assert report["结果"] == "通过"
-    assert report["截图"] == []
+    assert len(report["截图"]) == 2
+    assert report["截图"][0]["capture_status"] == "saved"
+    assert report["截图"][0]["step_id"] == report["步骤"][0]["序号"]
+    assert report["截图"][1]["capture_status"] == "missing"
     assert report["步骤"][0]["预期"] is True
-    assert not list(tmp_path.glob("*.png"))
+    assert len(list(tmp_path.glob("*.png"))) == 1
     assert (tmp_path / "report.md").is_file()
 
 
@@ -65,14 +68,14 @@ def test_case_controls_capture_description_and_observations(tmp_path):
                 expected="显示明确认证错误", actual="登录表单显示账号或密码错误")
     app.close()
     report = report_at(tmp_path)
-    assert len(report["截图"]) == 1
-    shot = report["截图"][0]
+    assert len(report["截图"]) == 3
+    shot = next(shot for shot in report["截图"] if shot["name"] == "登录提示.png")
     assert {"name", "description", "expected", "actual", "status", "capture_status", "error", "time"} <= shot.keys()
     assert shot["description"] == "错误密码提交后的登录表单与提示"
     assert shot["expected"] == "显示明确认证错误"
     assert shot["actual"] == "登录表单显示账号或密码错误"
     assert shot["status"] == "passed" and shot["capture_status"] == "saved"
-    assert [kind for kind, _ in calls] == ["截图", "关闭"]
+    assert [kind for kind, _ in calls] == ["截图", "截图", "关闭"]
     assert (tmp_path / shot["name"]).read_bytes().startswith(PNG)
     markdown = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert shot["description"] in markdown
@@ -97,7 +100,10 @@ def test_capture_does_not_borrow_observations_from_unrelated_steps(tmp_path):
         app.capture("新画面", expected=False, actual=False)
         app.capture("未观察的画面")
     app.close()
-    first, second = report_at(tmp_path)["截图"]
+    shots = report_at(tmp_path)["截图"]
+    assert len(shots) == 5
+    first = next(shot for shot in shots if shot["name"] == "新画面.png")
+    second = next(shot for shot in shots if shot["name"] == "未观察的画面.png")
     assert first["expected"] is False and first["actual"] is False
     assert first["status"] == "unknown"
     assert "未提供" in second["expected"] and "未提供" in second["actual"]
@@ -122,8 +128,10 @@ def test_failure_evidence_is_preserved_across_nested_steps_and_final_capture(tmp
     assert first.read_bytes() == original
     assert shots[0]["expected"] == "已连接"
     assert "断开" in shots[0]["actual"]
-    assert all(shot["status"] == "failed" for shot in shots)
-    assert all("失败现场" in shot["description"] for shot in shots)
+    failure_shots = [shot for shot in shots if shot["status"] == "failed"]
+    assert len(failure_shots) == 3
+    assert all("失败现场" in shot["description"] for shot in failure_shots)
+    assert shots[-1]["status"] == "passed" and shots[-1]["capture_status"] == "missing"
 
 
 def test_screenshot_failure_does_not_mask_original_assertion(tmp_path):
@@ -160,7 +168,9 @@ def test_same_named_optional_screenshots_keep_each_original(tmp_path):
     app.capture("过程")
     app.close()
     shots = report_at(tmp_path)["截图"]
-    assert len(shots) == 2 and len({shot["name"] for shot in shots}) == 2
+    assert len(shots) == 3 and len({shot["name"] for shot in shots}) == 3
+    assert [shot["name"] for shot in shots[:2]] == ["过程.png", "过程-2.png"]
+    assert shots[-1]["capture_status"] == "missing"
     assert first.read_bytes() == original
 
 
@@ -174,9 +184,12 @@ def test_cleanup_failure_does_not_rewrite_successful_picture_verdict(tmp_path):
     report = report_at(tmp_path)
     assert report["结果"] == "失败"
     assert report["截图"][0]["status"] == "passed"
-    assert report["截图"][1]["status"] == "failed"
-    assert "失败现场" in report["截图"][1]["description"]
-    assert [kind for kind, _ in calls] == ["截图", "关闭", "截图"]
+    assert report["截图"][1]["status"] == "passed"
+    assert len(report["截图"]) == 4
+    assert all(shot["status"] == "failed" and shot["capture_status"] == "missing"
+               for shot in report["截图"][2:])
+    assert "失败现场" in report["截图"][2]["description"]
+    assert [kind for kind, _ in calls] == ["截图", "截图", "关闭"]
     assert "驱动关闭失败" in report["错误"]
 
 
@@ -195,24 +208,28 @@ def test_early_close_then_failure_keeps_final_failure_and_original_snapshot(tmp_
     assert "关闭之后的业务断言失败" in report["错误"]
     assert report["截图"][0]["status"] == "passed"
     assert (tmp_path / original["name"]).read_bytes() == content
-    assert len(report["截图"]) == 2
-    assert report["截图"][1]["status"] == "failed"
-    assert report["截图"][1]["capture_status"] == "missing"
-    assert report["截图"][1]["error"]
+    assert len(report["截图"]) == 4
+    assert report["截图"][1]["status"] == "passed"
+    assert report["截图"][2]["capture_status"] == "missing"
+    assert report["截图"][3]["status"] == "failed"
+    assert report["截图"][3]["capture_status"] == "missing"
+    assert report["截图"][3]["error"]
     app.close()
-    assert len(report_at(tmp_path)["截图"]) == 2
+    assert len(report_at(tmp_path)["截图"]) == 4
     assert sum(kind == "关闭" for kind, _ in calls) == 1
 
 
 @pytest.mark.parametrize("status,label", [("skipped", "跳过"), ("cancelled", "已停止")])
 def test_nonexecuted_verdict_is_not_reported_as_passed(tmp_path, status, label):
-    """跳过或停止仅保存报告，不增加结束截图。"""
+    """跳过或停止不补拍业务结束图，清理步骤明确记录驱动关闭后缺图。"""
     app, _ = make_app(tmp_path)
     app.finish_case(status)
     app.close()
     report = report_at(tmp_path)
     assert report["结果"] == label
-    assert report["截图"] == []
+    assert len(report["截图"]) == 1
+    assert report["截图"][0]["capture_status"] == "missing"
+    assert "关闭本次测试驱动" in report["截图"][0]["description"]
 
 
 @pytest.mark.parametrize("explicit_plugin", [True, False], ids=["worker-plugin", "plain-pytest"])
@@ -309,15 +326,24 @@ def test_without_desktop():
             assert report["截图"]
             assert report["截图"][0]["capture_status"] == "missing"
             assert report["截图"][0]["error"]
+        elif name == "test_pass":
+            assert len(report["截图"]) == 2
+            assert report["截图"][0]["capture_status"] == "saved"
+            assert report["截图"][0]["expected"] is True
+            assert report["截图"][1]["capture_status"] == "missing"
+            assert (directory / "order.txt").read_text().splitlines() == ["screenshot", "cleanup"]
+        elif name == "test_skip_with_desktop":
+            assert len(report["截图"]) == 1
+            assert report["截图"][0]["capture_status"] == "missing"
         else:
             assert report["截图"] == []
-        if name in ("test_pass", "test_teardown_failure", "test_skip_with_desktop"):
+        if name in ("test_teardown_failure", "test_skip_with_desktop"):
             assert (directory / "order.txt").read_text().splitlines() == ["cleanup"]
     assert "正文失败证据" in report_at(Path(cases["test_plain_failure"]["artifacts_dir"]))["错误"]
     cleanup_report = report_at(Path(cases["test_teardown_failure"]["artifacts_dir"]))
     assert "清理失败证据" in cleanup_report["错误"]
-    assert cleanup_report["截图"][0]["status"] == "failed"
-    assert "失败现场" in cleanup_report["截图"][0]["description"]
+    assert cleanup_report["截图"][-1]["status"] == "failed"
+    assert "失败现场" in cleanup_report["截图"][-1]["description"]
     both_report = report_at(Path(cases["test_body_and_teardown_failure"]["artifacts_dir"]))
     phases = {phase["阶段"]: phase for phase in both_report["阶段结果"]}
     assert phases["call"]["结果"] == "失败" and "正文和清理同时失败" in phases["call"]["错误"]
