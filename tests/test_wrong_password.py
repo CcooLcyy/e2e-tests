@@ -25,6 +25,7 @@ def test_wrong_password_reports_explicit_credentials_error(login_memory):
     """正确账号输入错误密码时明确提示认证失败并允许重新输入。"""
     case = login_memory
     page, desktop = case.page, case.desktop
+    error_targets = page.target((By.CSS_SELECTOR, ".platform-login-form-panel .ant-alert-error"), "检查认证错误提示")
 
     with desktop.step("前置：使用正确密码登录并退出，失败则尚未进入错误密码验证"):
         page.login(case.account)
@@ -57,7 +58,7 @@ def test_wrong_password_reports_explicit_credentials_error(login_memory):
             return False
 
     with desktop.step("等待错误密码的界面提示"):
-        with desktop.step("等待错误密码认证提示显示"):
+        with desktop.step("等待错误密码认证提示显示", targets=error_targets):
             actual_message = desktop.wait.until(visible_error, message="错误密码提交后未显示登录错误提示")
 
     with desktop.step("验证拒绝登录后仍可重新输入账号密码"):
@@ -75,9 +76,10 @@ def test_wrong_password_reports_explicit_credentials_error(login_memory):
     safe_message = actual_message.replace(case.account.password, "[已隐藏密码]")
     safe_message = safe_message.replace(wrong_account.password, "[已隐藏密码]")
     with desktop.step("验证错误提示明确说明账号或密码错误",
-                      expected="账号或密码错误，请重新输入（或相同明确语义）", actual=safe_message):
-        desktop.check("提示符合明确认证错误标准", _is_explicit_password_error(actual_message), True)
+                      expected="账号或密码错误，请重新输入（或相同明确语义）", actual=safe_message, targets=error_targets):
+        desktop.check("提示符合明确认证错误标准", _is_explicit_password_error(actual_message), True, targets=error_targets)
     desktop.capture("wrong-password-message",
         description="错误密码被拒绝后的认证提示与可重试登录表单",
         expected="显示明确的账号或密码错误提示，仍在登录页并允许重新输入，密码保持掩码",
-        actual=f"已验证认证错误提示符合标准、未进入工作台、账号密码可编辑且密码保持掩码；实际提示：{safe_message}")
+        actual=f"已验证认证错误提示符合标准、未进入工作台、账号密码可编辑且密码保持掩码；实际提示：{safe_message}",
+        targets=error_targets)

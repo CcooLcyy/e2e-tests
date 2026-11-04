@@ -58,16 +58,25 @@ class PlatformLoginPage:
     def password_input(self):
         return self.driver.find_element(*self.PASSWORD)
 
+    @staticmethod
+    def target(locator, label):
+        """公共操作只声明定位与含义，截图时由框架读取当前可见区域。"""
+        return [{"locator": locator, "label": label}]
+
+    def option_locator(self, option):
+        return (By.XPATH, f'//label[.//span[normalize-space(.)="{self.LABELS[option]}"]]')
+
     def option_label(self, option):
-        return self.driver.find_element(By.XPATH, f'//label[.//span[normalize-space(.)="{self.LABELS[option]}"]]')
+        return self.driver.find_element(*self.option_locator(option))
 
     def selected(self, option):
         return self.option_label(option).find_element(By.CSS_SELECTOR, 'input[type="checkbox"]').is_selected()
 
     def wait_ready(self):
-        with self.desktop.step("等待登录页可见"):
+        with self.desktop.step("等待登录页可见", targets=self.target(self.SCREEN, "检查登录页面")):
             self.desktop.wait.until(EC.visibility_of_element_located(self.SCREEN))
-        with self.desktop.step("等待登录表单初始化或退出处理完成"):
+        with self.desktop.step("等待登录表单初始化或退出处理完成",
+                               targets=self.target(self.SUBMIT, "等待登录表单就绪")):
             self.desktop.wait.until(self._ready, message="登录表单未在规定时间内完成初始化或退出处理")
 
     def _ready(self, driver):
@@ -94,15 +103,19 @@ class PlatformLoginPage:
     def set_option(self, option, checked):
         self.wait_ready()
         if self.selected(option) != checked:
-            with self.desktop.step(f"{'勾选' if checked else '取消'}{self.LABELS[option]}"):
+            with self.desktop.step(f"{'勾选' if checked else '取消'}{self.LABELS[option]}",
+                                   targets=self.target(self.option_locator(option), f"设置{self.LABELS[option]}")):
                 self.option_label(option).click()
-        with self.desktop.step(f"等待{self.LABELS[option]}状态同步"):
+        with self.desktop.step(f"等待{self.LABELS[option]}状态同步",
+                               targets=self.target(self.option_locator(option), f"检查{self.LABELS[option]}状态")):
             self.desktop.wait.until(lambda _: self.selected(option) == checked)
         self.wait_ready()
 
     def check_options(self, remember, auto):
-        self.desktop.check("记住密码勾选状态", self.selected("remember_password"), remember)
-        self.desktop.check("下次自动登录勾选状态", self.selected("auto_login"), auto)
+        self.desktop.check("记住密码勾选状态", self.selected("remember_password"), remember,
+                           targets=self.target(self.option_locator("remember_password"), "检查记住密码状态"))
+        self.desktop.check("下次自动登录勾选状态", self.selected("auto_login"), auto,
+                           targets=self.target(self.option_locator("auto_login"), "检查自动登录状态"))
 
     def configure(self, remember=False, auto=False):
         with self.desktop.step("设置记住密码和自动登录选项"):
@@ -116,41 +129,45 @@ class PlatformLoginPage:
         with self.desktop.step("填写专用测试账号密码"):
             self.wait_ready()
             username = self.username_input()
-            with self.desktop.step("输入专用测试账号"):
+            with self.desktop.step("输入专用测试账号", targets=self.target(self.USERNAME, "输入测试账号")):
                 self.replace_text(username, account.username)
-            with self.desktop.step("等待账号输入同步"):
+            with self.desktop.step("等待账号输入同步", targets=self.target(self.USERNAME, "检查账号输入同步")):
                 self.desktop.wait.until(lambda _: self.username_input().get_attribute("value") == account.username)
             password = self.password_input()
-            with self.desktop.step("输入测试密码"):
+            with self.desktop.step("输入测试密码", targets=self.target(self.PASSWORD, "输入密码，保持掩码")):
                 try:
                     self.replace_text(password, account.password)
                 except WebDriverException:
                     # 必须在步骤捕获异常前清理驱动载荷，避免密码进入截图说明。
                     raise RuntimeError("密码输入失败，请检查本次测试驱动和窗口状态") from None
-            self.desktop.check("登录账号", self.username_input().get_attribute("value"), account.username)
+            self.desktop.check("登录账号", self.username_input().get_attribute("value"), account.username,
+                               targets=self.target(self.USERNAME, "检查登录账号"))
             self.check_password(account.password)
 
     def check_password(self, expected):
         actual_matches = self.password_input().get_attribute("value") == expected
-        self.desktop.check("密码与测试密码匹配" if expected else "密码为空", actual_matches, True)
+        self.desktop.check("密码与测试密码匹配" if expected else "密码为空", actual_matches, True,
+                           targets=self.target(self.PASSWORD, "检查密码状态，保持掩码"))
 
     def submit(self):
-        with self.desktop.step("等待登录按钮可点击"):
+        with self.desktop.step("等待登录按钮可点击", targets=self.target(self.SUBMIT, "等待登录按钮可点击")):
             button = self.desktop.wait.until(EC.element_to_be_clickable(self.SUBMIT))
-        with self.desktop.step("点击登录按钮"):
+        with self.desktop.step("点击登录按钮", targets=self.target(self.SUBMIT, "点击登录")):
             button.click()
 
     def workspace(self, expected_badge=None):
         with self.desktop.step("验证进入工作台及账号显示"):
-            with self.desktop.step("等待登录页消失并进入工作台"):
+            with self.desktop.step("等待登录页消失并进入工作台", targets=self.target(self.LOGOUT, "检查工作台入口")):
                 self.desktop.wait.until(self._workspace_visible, message="登录后未在规定时间内进入工作台")
-            with self.desktop.step("等待工作台退出入口可见"):
+            with self.desktop.step("等待工作台退出入口可见", targets=self.target(self.LOGOUT, "检查退出入口")):
                 self.desktop.wait.until(EC.visibility_of_element_located(self.LOGOUT))
-            with self.desktop.step("等待并读取工作台账号信息"):
+            with self.desktop.step("等待并读取工作台账号信息", targets=self.target(self.BADGE, "读取工作台账号信息")):
                 badge = self.desktop.wait.until(EC.visibility_of_element_located(self.BADGE)).text.strip()
-            self.desktop.check("工作台账号信息非空", bool(badge), True)
+            self.desktop.check("工作台账号信息非空", bool(badge), True,
+                               targets=self.target(self.BADGE, "检查工作台账号信息"))
             if expected_badge is not None:
-                self.desktop.check("重开前后工作台账号一致", badge, expected_badge)
+                self.desktop.check("重开前后工作台账号一致", badge, expected_badge,
+                                   targets=self.target(self.BADGE, "检查重开前后账号一致"))
             return badge
 
     def _workspace_visible(self, driver):
@@ -174,16 +191,20 @@ class PlatformLoginPage:
         with self.desktop.step("验证登录页的账号、密码回填及选项"):
             self.wait_ready()
             expected_password = account.password if filled else ""
-            with self.desktop.step("等待账号、密码回填和登录选项同步"):
+            with self.desktop.step("等待账号、密码回填和登录选项同步",
+                                   targets=self.target(self.USERNAME, "检查账号回填")
+                                   + self.target(self.PASSWORD, "检查密码回填，保持掩码")):
                 self.desktop.wait.until(lambda _: (
                     self.username_input().get_attribute("value") == account.username
                     and self.password_input().get_attribute("value") == expected_password
                     and self.selected("remember_password") == remember
                     and self.selected("auto_login") == auto
                 ), message="重开后的账号、密码回填或登录选项不符合预期")
-            self.desktop.check("回填账号", self.username_input().get_attribute("value"), account.username)
+            self.desktop.check("回填账号", self.username_input().get_attribute("value"), account.username,
+                               targets=self.target(self.USERNAME, "检查回填账号"))
             self.check_password(expected_password)
-            self.desktop.check("密码保持掩码显示", self.password_input().get_attribute("type"), "password")
+            self.desktop.check("密码保持掩码显示", self.password_input().get_attribute("type"), "password",
+                               targets=self.target(self.PASSWORD, "检查密码掩码显示"))
             self.check_options(remember, auto)
             deadline = time.monotonic() + 1
 
@@ -192,18 +213,18 @@ class PlatformLoginPage:
                     raise AssertionError("应等待手动登录，但程序进入了工作台")
                 return time.monotonic() >= deadline
 
-            with self.desktop.step("持续确认仍等待手动登录"):
+            with self.desktop.step("持续确认仍等待手动登录", targets=self.target(self.SCREEN, "检查仍停留在登录页")):
                 self.desktop.wait.until(remains_signed_out)
 
     def logout(self):
         with self.desktop.step("主动退出平台账号并确认"):
-            with self.desktop.step("等待工作台退出按钮可点击"):
+            with self.desktop.step("等待工作台退出按钮可点击", targets=self.target(self.LOGOUT, "等待退出按钮可点击")):
                 logout = self.desktop.wait.until(EC.element_to_be_clickable(self.LOGOUT))
-            with self.desktop.step("点击工作台退出按钮"):
+            with self.desktop.step("点击工作台退出按钮", targets=self.target(self.LOGOUT, "点击退出")):
                 logout.click()
             confirm = (By.XPATH, '//div[contains(@class,"ant-modal-confirm-btns")]//button[normalize-space(.)="退出登录"]')
-            with self.desktop.step("等待退出确认按钮可点击"):
+            with self.desktop.step("等待退出确认按钮可点击", targets=self.target(confirm, "等待退出确认")):
                 confirm_button = self.desktop.wait.until(EC.element_to_be_clickable(confirm))
-            with self.desktop.step("确认退出登录"):
+            with self.desktop.step("确认退出登录", targets=self.target(confirm, "确认退出登录")):
                 confirm_button.click()
             self.wait_ready()

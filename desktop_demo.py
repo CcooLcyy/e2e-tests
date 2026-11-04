@@ -19,12 +19,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 class ReleaseDesktop:
     def __init__(self, app_path: Path, driver_path: Path, artifacts_dir: Path, timeout: float,
-                 mode="fresh", workspace_path="", baseline_path="", close_app=True):
+                 mode="fresh", workspace_path="", baseline_path="", close_app=True, annotation_enabled=True):
         self.source = app_path.resolve(strict=True)
         self.driver_path = driver_path.resolve(strict=True)
         self.artifacts = artifacts_dir.resolve()
         self.timeout = timeout
         self.mode, self.baseline_path, self.close_app = mode, baseline_path, close_app
+        self.annotation_enabled = annotation_enabled
         self.driver = None
         self.process = None
         self.application_log = None
@@ -181,7 +182,7 @@ class ReleaseDesktop:
             raise InterruptedError("测试任务已停止")
 
     @contextmanager
-    def step(self, name, expected=None, actual=None, *, cancellable=True):
+    def step(self, name, expected=None, actual=None, *, cancellable=True, targets=()):
         from testbench.events import emit
         if cancellable:
             self._check_stop()
@@ -201,13 +202,13 @@ class ReleaseDesktop:
             yield
             entry["状态"] = "通过"
             self._capture_evidence(f"step-{step_id:04d}", entry, "passed",
-                                   description=f"步骤 {step_id} 完成：{name}")
+                                   description=f"步骤 {step_id} 完成：{name}", targets=targets)
         except BaseException as error:
             entry["状态"] = "失败"
             entry["错误"] = f"{type(error).__name__}: {str(error)[:1500]}"
             self.failure = self.failure or entry["错误"]
             self._capture_evidence(f"step-{step_id:04d}-failure", entry, "failed", required=False,
-                                   description=f"步骤 {step_id} 失败现场：{name}")
+                                   description=f"步骤 {step_id} 失败现场：{name}", targets=targets)
             raise
         finally:
             self._active_steps.pop()
@@ -216,11 +217,11 @@ class ReleaseDesktop:
                   "step_id": step_id, "status": "passed" if entry["状态"] == "通过" else "failed", "expected": expected,
                   "actual": actual, "duration": entry["耗时秒"]})
 
-    def check(self, name, actual, expected):
-        with self.step(name, expected=expected, actual=actual):
+    def check(self, name, actual, expected, *, targets=()):
+        with self.step(name, expected=expected, actual=actual, targets=targets):
             assert actual == expected, f"{name}：预期 {expected!r}，实际 {actual!r}"
 
-    def capture(self, name, *, description=None, expected=None, actual=None):
+    def capture(self, name, *, description=None, expected=None, actual=None, targets=()):
         """由用例选择业务画面并提供说明，兼容仅传名称的既有调用。"""
         entry = dict(self._active_steps[-1] if self._active_steps else (self.steps[-1] if self.steps else {}))
         if expected is not None:
@@ -228,9 +229,9 @@ class ReleaseDesktop:
         if actual is not None:
             entry["实际"] = actual
         status = "failed" if self.failure else ("passed" if entry.get("状态") == "通过" else "unknown")
-        self._capture_evidence(name, entry, status, required=True, description=description or "")
+        self._capture_evidence(name, entry, status, required=True, description=description or "", targets=targets)
 
-    def _capture_evidence(self, name, entry, status, required=False, description=""):
+    def _capture_evidence(self, name, entry, status, required=False, description="", targets=()):
         """截图异常单独记录，不吞掉原始业务错误，不覆盖已有现场。"""
         safe_name = Path(name).name
         target = self.artifacts / f"{safe_name}.png"
@@ -250,10 +251,20 @@ class ReleaseDesktop:
         if "序号" in entry:
             shot["step_id"] = entry["序号"]
         self.screenshots.append(shot)
+        shot.update(annotated_name="", annotation_status="disabled" if not self.annotation_enabled else "failed",
+                    annotation_error="", annotations=[])
+        before = None
         try:
             self.artifacts.mkdir(parents=True, exist_ok=True)
             if self.driver is None:
                 raise RuntimeError("WebDriver 未连接或已关闭，无法保存现场")
+            if self.annotation_enabled and targets:
+                from testbench.screenshot_annotations import snapshot_targets
+                try:
+                    before = snapshot_targets(self.driver, targets)
+                except Exception:
+                    # 定位输入或扩展实现异常也不能阻止原始截图保存。
+                    before = {"viewport": None, "targets": []}
             if not self.driver.save_screenshot(str(target)) or not target.is_file():
                 raise RuntimeError("驱动未成功保存截图文件")
             shot["capture_status"] = "saved"
@@ -263,6 +274,29 @@ class ReleaseDesktop:
             print(f"[截图] 证据缺失：{shot['error']}", flush=True)
             if required:
                 raise RuntimeError(shot["error"]) from None
+        if shot["capture_status"] == "saved" and self.annotation_enabled:
+            self._annotate_evidence(target, shot, targets, before)
+        elif self.annotation_enabled:
+            shot["annotation_error"] = "原始截图缺失，无法生成标注图"
+
+    def _annotate_evidence(self, target, shot, targets, before):
+        """标注与业务判定独立，失败时仍可查看未经修改的原始证据。"""
+        from testbench import screenshot_annotations as annotation
+        try:
+            snapshot = {"viewport": None, "targets": []}
+            if targets:
+                snapshot = annotation.stable_snapshot(before, annotation.snapshot_targets(self.driver, targets))
+            marked = target.with_name(f"{target.stem}.annotated.png")
+            suffix = 2
+            while marked.exists():
+                marked = target.with_name(f"{target.stem}.annotated-{suffix}.png")
+                suffix += 1
+            shot["annotations"] = annotation.render_annotated(target, marked, shot["description"], shot["status"], snapshot)
+            shot.update(annotated_name=marked.name, annotation_status="saved")
+            print(f"[标注] 已保存 {marked.name}，共 {len(shot['annotations'])} 个目标", flush=True)
+        except Exception as error:
+            shot["annotation_error"] = f"标注生成失败（{type(error).__name__}），保留原始截图"
+            print(f"[标注] {shot['annotation_error']}", flush=True)
 
     def finish_case(self, status, message="", description=""):
         """记录阶段判定，仅在失败时兜底保存现场。"""

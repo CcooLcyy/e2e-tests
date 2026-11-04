@@ -59,10 +59,10 @@ def test_password_comparison_reports_only_boolean():
     checks = []
 
     @contextmanager
-    def step(*args):
+    def step(*args, **kwargs):
         yield
 
-    desktop = SimpleNamespace(step=step, check=lambda *args: checks.append(args))
+    desktop = SimpleNamespace(step=step, check=lambda *args, **kwargs: checks.append(args))
     page = PlatformLoginPage(desktop)
     page.password_input = lambda: SimpleNamespace(get_attribute=lambda name: "wrong-secret")
     page.check_password("expected-secret")
@@ -81,7 +81,7 @@ def test_login_ready_accepts_ant_design_chinese_button_spacing():
         return result
 
     @contextmanager
-    def step(*args):
+    def step(*args, **kwargs):
         yield
 
     page = PlatformLoginPage(SimpleNamespace(driver=driver, wait=SimpleNamespace(until=until), step=step))
@@ -119,7 +119,7 @@ def test_keyboard_replacement_updates_controlled_account_instead_of_appending():
 def test_password_typing_failure_does_not_expose_driver_payload(monkeypatch):
     """驱动输入异常可能携带原请求，必须隐藏异常链，避免密码进入 pytest 报告。"""
     @contextmanager
-    def step(*args):
+    def step(*args, **kwargs):
         yield
 
     desktop = SimpleNamespace(step=step, wait=SimpleNamespace(until=lambda *args: True))

@@ -22,6 +22,7 @@ def desktop(request):
         environment = task["environment"]
         options = {"mode": environment["mode"], "workspace_path": environment["workspace_path"],
                    "baseline_path": environment["baseline_path"],
+                   "annotation_enabled": environment.get("annotation_enabled", True),
                    "close_app": environment["close_app"] or request.node.nodeid != task["case_ids"][-1]}
     for option in ("--app-path", "--driver-path", "--artifacts-dir"):
         if not request.config.getoption(option):

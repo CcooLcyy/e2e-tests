@@ -207,6 +207,10 @@ class TestbenchBridge:
                                  "data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii")}
         screenshots = []
         records = report.get("截图", [])
+        # 副本仅附属于原始证据，不将它作为独立截图或读取任意路径。
+        originals = {str(record.get("name", "")) for record in records if isinstance(record, dict)} if isinstance(records, list) else set()
+        copies = {str(record.get("annotated_name", "")) for record in records if isinstance(record, dict)} if isinstance(records, list) else set()
+        annotation_images = {name: images.pop(name) for name in copies if name in images and name not in originals}
         for record in records if isinstance(records, list) else []:
             if not isinstance(record, dict):
                 continue
@@ -220,8 +224,21 @@ class TestbenchBridge:
                          "data_url": "" if missing else image["data_url"]})
             if missing and not shot["error"]:
                 shot["error"] = "截图文件缺失或无法读取"
+            copy_name = str(record.get("annotated_name") or "")
+            copy = annotation_images.get(copy_name) if record.get("annotation_status") == "saved" else None
+            shot.update({"annotated_name": copy_name, "annotated_path": "", "annotated_data_url": "",
+                         "annotation_status": record.get("annotation_status", "disabled"),
+                         "annotation_error": record.get("annotation_error", ""),
+                         "annotations": record.get("annotations", [])})
+            if copy is not None and not missing:
+                shot.update({"annotated_path": copy["path"], "annotated_data_url": copy["data_url"]})
+            elif record.get("annotation_status") == "saved":
+                shot.update({"annotation_status": "failed", "annotation_error": "原图或标注副本缺失、无效，已回退原图"})
+                logging.getLogger(__name__).warning("截图标注副本无法展示，已保留原始证据：%s", name)
             screenshots.append(shot)
         for name, image in images.items():
+            if name.endswith(".annotated.png") and name not in originals:
+                continue
             screenshots.append({**self._screenshot_description(name, {}), **image, "capture_status": "saved"})
         logging.getLogger(__name__).debug("已读取用例截图证据，共 %s 条", len(screenshots))
         return {"report": report, "screenshots": screenshots}

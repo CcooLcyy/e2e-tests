@@ -1,6 +1,7 @@
 """环境与用例模型。"""
 from dataclasses import asdict, dataclass
 import json
+import logging
 import math
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -42,6 +43,7 @@ class Environment:
     baseline_path: str = ""
     timeout: float = 20
     close_app: bool = True
+    annotation_enabled: bool = True
     slavesim_url: str = "http://192.168.1.219:16000"
 
     def to_dict(self):
@@ -52,6 +54,8 @@ class Environment:
         return cls(**{key: value for key, value in data.items() if key in cls.__dataclass_fields__})
 
     def validate(self):
+        if not isinstance(self.annotation_enabled, bool):
+            raise ValueError("截图标注开关必须为布尔值")
         self.slavesim_url = validate_slavesim_url(self.slavesim_url)
         if not self.name.strip():
             raise ValueError("环境名称不能为空")
@@ -95,6 +99,7 @@ def save_environment(path, environment):
     temporary = target.with_suffix(".pending")
     temporary.write_text(json.dumps(environment.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(target)
+    logging.getLogger(__name__).info("已保存测试环境，截图自动标注：%s", environment.annotation_enabled)
 
 
 def load_environment(path):

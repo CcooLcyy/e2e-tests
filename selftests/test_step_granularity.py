@@ -30,7 +30,7 @@ def recording_page():
         return Element("点击")
 
     desktop = SimpleNamespace(step=step, wait=SimpleNamespace(until=until),
-                              check=lambda *args: None)
+                              check=lambda *args, **kwargs: None)
     page = PlatformLoginPage(desktop)
     page.wait_ready = lambda: None
     return page, events
@@ -52,7 +52,7 @@ def test_account_and_password_input_have_separate_completion_boundaries():
     page.password_input = lambda: "密码"
     page.replace_text = lambda element, value: events.append(("操作", element))
     page.check_password = lambda expected: None
-    page.desktop.check = lambda *args: None
+    page.desktop.check = lambda *args, **kwargs: None
     # 输入完成后的值读取只用于断言，不模拟真实驱动。
     class AccountInput:
         def get_attribute(self, name):
