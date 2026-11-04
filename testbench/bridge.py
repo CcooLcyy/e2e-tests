@@ -8,10 +8,13 @@ import logging
 from pathlib import Path
 import sys
 import time
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+import webbrowser
 
 from .catalog import discover_cases
 from .controller import TaskController
-from .model import Environment, load_environment, save_environment
+from .model import Environment, load_environment, save_environment, validate_slavesim_url
 
 
 class TestbenchBridge:
@@ -33,6 +36,18 @@ class TestbenchBridge:
             return self._discover()
         if method == "get_environment":
             return self._environment()
+        if method in ("open_slavesim", "check_slavesim"):
+            url = validate_slavesim_url(payload.get("url", ""), required=True)
+            if method == "open_slavesim":
+                try:
+                    opened = webbrowser.open(url, new=2)
+                except Exception as error:
+                    raise RuntimeError("无法调用系统浏览器打开 slaveSim 管理页") from error
+                if not opened:
+                    raise RuntimeError("系统浏览器未能打开 slaveSim 管理页")
+                logging.getLogger(__name__).info("已请求系统浏览器打开 slaveSim 管理页")
+                return {"url": url, "message": "已请求系统浏览器打开 slaveSim 管理页"}
+            return self._check_slavesim(url)
         if method in ("save_environment", "load_environment"):
             if self.controller.active:
                 raise ValueError("测试运行期间不能更改环境")
@@ -93,6 +108,33 @@ class TestbenchBridge:
                 time.sleep(0.1)
             return {"closed": True}
         raise ValueError(f"不支持的测试操作：{method}")
+
+    @staticmethod
+    def _check_slavesim(url):
+        """只读检查管理页和状态接口，不发送控制、不据此判定业务通过。"""
+        state_url = url.rstrip("/") + "/api/state"
+        try:
+            with urlopen(Request(url, method="GET"), timeout=3) as page:
+                page.read(1024)
+            with urlopen(Request(state_url, headers={"Accept": "application/json"}, method="GET"), timeout=3) as response:
+                content = response.read(10 * 1024 * 1024 + 1)
+        except (HTTPError, URLError, OSError) as error:
+            logging.getLogger(__name__).warning("slaveSim 连接检查失败：%s", type(error).__name__)
+            raise RuntimeError("slaveSim 连接检查失败，请检查地址、服务状态及网络连接") from error
+        try:
+            if len(content) > 10 * 1024 * 1024:
+                raise ValueError("状态内容过大")
+            state = json.loads(content)
+            if (not isinstance(state, dict) or "buses" not in state
+                    or (state["buses"] is not None and not isinstance(state["buses"], list))
+                    or not isinstance(state.get("now"), str)):
+                raise ValueError("缺少运行状态字段")
+            datetime.fromisoformat(state["now"].replace("Z", "+00:00"))
+        except (ValueError, UnicodeError) as error:
+            logging.getLogger(__name__).warning("slaveSim 状态接口返回内容不符合预期")
+            raise ValueError("slaveSim 状态接口返回格式不正确，请确认地址指向 slaveSim 管理页") from error
+        logging.getLogger(__name__).info("slaveSim 管理页和状态接口均可访问")
+        return {"url": url, "message": "slaveSim 管理页和状态接口均可访问；此检查仅确认连通，尚未验证业务效果"}
 
     def _discover(self):
         return [asdict(case) for case in discover_cases(self.root)]

@@ -19,6 +19,8 @@ const METHODS: &[&str] = &[
     "get_environment",
     "save_environment",
     "load_environment",
+    "open_slavesim",
+    "check_slavesim",
     "start",
     "poll",
     "stop",
@@ -353,6 +355,8 @@ mod tests {
     fn only_documented_bridge_methods_are_allowed() {
         assert!(allowed_method("bootstrap"));
         assert!(allowed_method("shutdown"));
+        assert!(allowed_method("open_slavesim"));
+        assert!(allowed_method("check_slavesim"));
         assert!(!allowed_method("execute_shell"));
     }
 

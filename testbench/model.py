@@ -3,6 +3,33 @@ from dataclasses import asdict, dataclass
 import json
 import math
 from pathlib import Path
+from urllib.parse import urlsplit
+
+
+def validate_slavesim_url(value, *, required=False):
+    """统一校验管理页地址，子路径用于反向代理，禁止混入凭据与参数。"""
+    if not isinstance(value, str):
+        raise ValueError("slaveSim 管理页地址必须是字符串")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("slaveSim 管理页地址不能包含控制字符")
+    value = value.strip()
+    if not value:
+        if required:
+            raise ValueError("请先填写 slaveSim 管理页地址")
+        return ""
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+        valid = (parts.scheme in ("http", "https") and parts.hostname
+                 and not parts.username and not parts.password and "@" not in parts.netloc
+                 and (port is None or port > 0) and not parts.netloc.endswith(":")
+                 and not parts.query and not parts.fragment
+                 and not any(char.isspace() for char in value) and "\\" not in value)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError("slaveSim 管理页地址须为完整的 HTTP/HTTPS 地址，不能包含账号密码、空白、查询参数或片段，端口须有效")
+    return value
 
 
 @dataclass
@@ -15,6 +42,7 @@ class Environment:
     baseline_path: str = ""
     timeout: float = 20
     close_app: bool = True
+    slavesim_url: str = ""
 
     def to_dict(self):
         return asdict(self)
@@ -24,6 +52,7 @@ class Environment:
         return cls(**{key: value for key, value in data.items() if key in cls.__dataclass_fields__})
 
     def validate(self):
+        self.slavesim_url = validate_slavesim_url(self.slavesim_url)
         if not self.name.strip():
             raise ValueError("环境名称不能为空")
         for label, value in (("上位机", self.app_path), ("驱动", self.driver_path)):
