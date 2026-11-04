@@ -42,7 +42,7 @@ class Environment:
     baseline_path: str = ""
     timeout: float = 20
     close_app: bool = True
-    slavesim_url: str = ""
+    slavesim_url: str = "http://192.168.1.219:16000"
 
     def to_dict(self):
         return asdict(self)

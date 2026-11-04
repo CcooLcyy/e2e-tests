@@ -10,9 +10,16 @@ from testbench.bridge import TestbenchBridge
 from testbench.model import Environment, load_environment, save_environment
 
 
-def test_old_environment_defaults_to_no_simulator():
-    """旧环境无需迁移，未配置模拟器仍可加载。"""
-    assert Environment.from_dict({"name": "旧环境"}).slavesim_url == ""
+def test_new_and_old_environment_use_default_simulator_address():
+    """新环境及未配置模拟器的旧环境使用默认设备地址。"""
+    assert Environment().slavesim_url == "http://192.168.1.219:16000"
+    assert Environment.from_dict({"name": "旧环境"}).slavesim_url == "http://192.168.1.219:16000"
+
+
+@pytest.mark.parametrize("url", ["", "http://localhost:8080/simulator/"])
+def test_saved_simulator_address_is_preserved(url):
+    """显式保存的空地址和自定义地址不被默认值覆盖。"""
+    assert Environment.from_dict({"slavesim_url": url}).slavesim_url == url
 
 
 def test_simulator_address_round_trips_with_environment(tmp_path):
