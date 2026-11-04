@@ -1,0 +1,17 @@
+{
+  "dedicated_test_resources": true,
+  "device_name": "填写平台中的专用下位机名称",
+  "manager_address": "192.0.2.1:50051",
+  "bus": "填写slaveSim中的专用总线名称",
+  "serial_device": "/dev/填写专用串口路径",
+  "baud_rate": 9600,
+  "data_bits": 8,
+  "stop_bits": 1,
+  "parity": "无校验",
+  "poll_interval_ms": 1000,
+  "acquisition_timeout": 20,
+  "stations": [
+    {"station_id": 1, "address": 0},
+    {"station_id": 2, "address": 0}
+  ]
+}

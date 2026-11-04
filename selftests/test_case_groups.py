@@ -53,7 +53,7 @@ def test_invalid_group_declaration_fails_discovery(tmp_path, arguments):
 
 
 def test_current_cases_keep_ids_order_and_expected_group_counts():
-    """真实十一项业务用例保留标识，按分组清单与组内顺序归并，分组三七一项。"""
+    """原十一项用例保留顺序，五项 RTU 用例追加独立分组末尾。"""
     root = Path(__file__).resolve().parents[1]
     cases = discover_cases(root)
     assert [case.id for case in cases] == [
@@ -68,7 +68,12 @@ def test_current_cases_keep_ids_order_and_expected_group_counts():
         "tests/test_session_preferences.py::test_forget_password_clears_saved_password_and_auto_login",
         "tests/test_session_preferences.py::test_explicit_logout_disables_auto_login_but_keeps_password",
         "tests/test_session_preferences.py::test_changing_account_does_not_reuse_saved_password",
+        "tests/test_modbus_rtu.py::test_rtu_configuration_saved_on_both_pages",
+        "tests/test_modbus_rtu.py::test_rtu_initial_acquisition_matches_simulator",
+        "tests/test_modbus_rtu.py::test_rtu_source_change_updates_value_and_time",
+        "tests/test_modbus_rtu.py::test_rtu_scale_and_offset_match_fixed_expectations",
+        "tests/test_modbus_rtu.py::test_rtu_two_stations_do_not_cross_values",
     ]
     assert Counter(case.group for case in cases) == {
-        "基础登录": 3, "密码记忆与自动登录": 7, "启动与界面": 1,
+        "基础登录": 3, "密码记忆与自动登录": 7, "启动与界面": 1, "Modbus RTU": 5,
     }
