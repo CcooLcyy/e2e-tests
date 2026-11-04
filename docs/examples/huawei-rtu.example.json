@@ -1,0 +1,15 @@
+{
+  "dedicated_simulator": true,
+  "manager_address": "192.0.2.1:50051",
+  "serial_devices": [
+    "/srv/serial-sim/tty0",
+    "/srv/serial-sim/tty1",
+    "/srv/serial-sim/tty2",
+    "/srv/serial-sim/tty3",
+    "/srv/serial-sim/tty4",
+    "/srv/serial-sim/tty5"
+  ],
+  "acquisition_timeout": 30,
+  "poll_interval_ms": 1000,
+  "baud_rate": 9600
+}

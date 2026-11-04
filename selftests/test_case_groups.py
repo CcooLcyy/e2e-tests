@@ -53,7 +53,7 @@ def test_invalid_group_declaration_fails_discovery(tmp_path, arguments):
 
 
 def test_current_cases_keep_ids_order_and_expected_group_counts():
-    """原十一项用例保留顺序，五项 RTU 用例追加独立分组末尾。"""
+    """既有用例保留顺序，华为机群用例追加到RTU组末尾。"""
     root = Path(__file__).resolve().parents[1]
     cases = discover_cases(root)
     assert [case.id for case in cases] == [
@@ -73,7 +73,8 @@ def test_current_cases_keep_ids_order_and_expected_group_counts():
         "tests/test_modbus_rtu.py::test_rtu_source_change_updates_value_and_time",
         "tests/test_modbus_rtu.py::test_rtu_scale_and_offset_match_fixed_expectations",
         "tests/test_modbus_rtu.py::test_rtu_two_stations_do_not_cross_values",
+        "tests/test_huawei_fleet.py::test_huawei_six_buses_21_devices_match",
     ]
     assert Counter(case.group for case in cases) == {
-        "基础登录": 3, "密码记忆与自动登录": 7, "启动与界面": 1, "Modbus RTU": 5,
+        "基础登录": 3, "密码记忆与自动登录": 7, "启动与界面": 1, "Modbus RTU": 6,
     }
