@@ -1,6 +1,7 @@
 """桌面外壳使用的 JSON 行桥接；保留现有 Python 测试内核。"""
 import argparse
 import base64
+import hashlib
 from dataclasses import asdict
 from datetime import datetime
 import json
@@ -15,6 +16,7 @@ import webbrowser
 from .catalog import discover_cases
 from .controller import TaskController
 from .model import Environment, load_environment, save_environment, validate_slavesim_url
+from .reporting import STATUS_LABELS, business_case
 
 
 class TestbenchBridge:
@@ -89,13 +91,20 @@ class TestbenchBridge:
             cases = []
             for case in summary.get("cases", []):
                 details = {"report": {}, "screenshots": []}
-                if case.get("artifacts_dir"):
-                    try:
-                        details = self._case_details(case["artifacts_dir"])
-                    except (OSError, ValueError) as error:
-                        details["error"] = f"用例产物无法读取：{error}"
+                try:
+                    case_directory = self._history_case_directory(directory, case)
+                    if case_directory is not None:
+                        details = self._case_details(str(case_directory))
+                except (OSError, ValueError) as error:
+                    details["error"] = f"用例产物无法读取：{error}"
+                name = task.get("case_names", {}).get(case.get("case_id"), "测试用例")
+                # 旧记录也按读取时的业务视图展示，不重写原始报告。
+                final_result = "未执行" if case.get("status") in ("pending", "not_run") or (case.get("status") == "skipped" and case.get("message") == "未执行") else STATUS_LABELS.get(case.get("status"), details["report"].get("结果", "未执行"))
+                details["business"] = business_case({"用例": name, **details["report"], "结果": final_result})
                 cases.append({**case, **details})
-            return {"summary": summary, "task": task, "cases": cases}
+            return {"summary": summary, "task": task, "cases": cases,
+                    "diagnostics_path": self._diagnostics_path(directory),
+                    "business_report_path": self._business_report_path(directory)}
         if method == "case_detail":
             return self._case_details(payload["artifacts_dir"])
         if method == "shutdown":
@@ -167,7 +176,10 @@ class TestbenchBridge:
                 "environment_name": summary.get("environment_name") or task.get("environment", {}).get("name", "未记录"),
                 "created_at": datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds"),
                 "case_count": len(cases), "passed": sum(case.get("status") == "passed" for case in cases),
-                "failed": sum(case.get("status") == "failed" for case in cases), "run_dir": str(directory)})
+                "failed": sum(case.get("status") == "failed" for case in cases),
+                "cancelled": sum(case.get("status") == "cancelled" for case in cases),
+                "skipped": sum(case.get("status") in ("skipped", "pending", "not_run") for case in cases),
+                "run_dir": str(directory)})
         return result
 
     def _artifact_directory(self, value):
@@ -176,6 +188,39 @@ class TestbenchBridge:
         if not directory.is_dir() or not directory.is_relative_to(area) or directory == area:
             raise ValueError("只能访问本测试仓库内的任务产物目录")
         return directory
+
+    def _history_case_directory(self, run, case):
+        """旧任务缺少报告入口时只读恢复，不能跨任务关联证据。"""
+        if case.get("artifacts_dir"):
+            directory = self._artifact_directory(case["artifacts_dir"])
+            if not directory.is_relative_to(run):
+                raise ValueError("用例产物不属于当前任务")
+            return directory
+        case_id = case.get("case_id", "")
+        if not isinstance(case_id, str) or not case_id:
+            return None
+        candidate = run / "cases" / hashlib.sha256(case_id.encode()).hexdigest()[:16]
+        if candidate.is_dir():
+            directory = self._artifact_directory(str(candidate))
+            if directory.is_relative_to(run) and self._read_object(directory / "report.json").get("用例ID") == case_id:
+                logging.getLogger(__name__).info("已只读关联停止任务中的现有用例报告")
+                return directory
+        return None
+
+    @staticmethod
+    def _local_file(directory, names):
+        for name in names:
+            path = directory / name
+            if path.is_file() and path.resolve().parent == directory.resolve():
+                return str(path.resolve())
+        return ""
+
+    def _diagnostics_path(self, directory):
+        return self._local_file(directory, ("diagnostics.md", "report.json", "summary.json")) or str(directory)
+
+    def _business_report_path(self, directory):
+        # 新格式以配套诊断文件区分，避免把旧版技术报告当作业务正文打开。
+        return self._local_file(directory, ("report.md",)) if self._local_file(directory, ("diagnostics.md",)) else ""
 
     def _read_object(self, path):
         if not path.exists():
@@ -229,6 +274,7 @@ class TestbenchBridge:
             shot.update({"annotated_name": copy_name, "annotated_path": "", "annotated_data_url": "",
                          "annotation_status": record.get("annotation_status", "disabled"),
                          "annotation_error": record.get("annotation_error", ""),
+                         "annotation_format": record.get("annotation_format", ""),
                          "annotations": record.get("annotations", [])})
             if copy is not None and not missing:
                 shot.update({"annotated_path": copy["path"], "annotated_data_url": copy["data_url"]})
@@ -241,7 +287,9 @@ class TestbenchBridge:
                 continue
             screenshots.append({**self._screenshot_description(name, {}), **image, "capture_status": "saved"})
         logging.getLogger(__name__).debug("已读取用例截图证据，共 %s 条", len(screenshots))
-        return {"report": report, "screenshots": screenshots}
+        return {"report": report, "screenshots": screenshots, "business": business_case(report),
+                "diagnostics_path": self._diagnostics_path(directory),
+                "business_report_path": self._business_report_path(directory)}
 
     @staticmethod
     def _screenshot_description(name, record):
@@ -249,7 +297,7 @@ class TestbenchBridge:
                 "expected": record.get("expected", "未提供预期现象"),
                 "actual": record.get("actual", "未提供实际现象"),
                 "status": record.get("status", "unknown"), "error": record.get("error", ""),
-                "time": record.get("time", "")}
+                "time": record.get("time", ""), "step_id": record.get("step_id")}
 
 
 def respond(bridge, request):

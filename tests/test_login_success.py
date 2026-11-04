@@ -20,7 +20,7 @@ def test_valid_account_enters_workspace(desktop):
     password_target = mark(PlatformLoginPage.PASSWORD, "输入密码，保持掩码")
     submit_target = mark(PlatformLoginPage.SUBMIT, "点击登录")
     logout_target = mark((By.XPATH, '//header//button[normalize-space(.)="退出"]'), "检查工作台退出入口")
-    badge_target = mark(PlatformLoginPage.BADGE, "检查工作台账号信息")
+    badge_target = mark(PlatformLoginPage.BADGE_ANNOTATION, "检查工作台账号信息")
     with desktop.step("读取本机测试账号"):
         account_path = Path(__file__).resolve().parents[1] / "local" / "login-account.json"
         if not account_path.is_file():

@@ -1,8 +1,10 @@
 """界面使用的非阻塞单任务控制器。"""
 import ctypes
 from datetime import datetime
+import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +12,7 @@ import sys
 import time
 import uuid
 from .catalog import discover_cases
+from .reporting import write_task_report
 
 
 class TaskController:
@@ -40,7 +43,8 @@ class TaskController:
         # nodeid 必须来自真实用例目录，避免把用户输入解释为 pytest 参数。
         if any(not case.startswith("tests/") or ".." in Path(case.split("::")[0]).parts for case in case_ids):
             raise ValueError("用例标识必须来自 tests 目录")
-        available = [case.id for case in discover_cases(self.root)]
+        discovered = discover_cases(self.root)
+        available = [case.id for case in discovered]
         requested = set(case_ids)
         if not requested.issubset(available):
             raise ValueError("所选用例已经变化，请刷新用例列表后重试")
@@ -50,7 +54,10 @@ class TaskController:
         self.run_dir.mkdir(parents=True)
         task_path = self.run_dir / "task.json"
         task_path.write_text(json.dumps({"root": str(self.root), "environment": environment.to_dict(),
-                                        "case_ids": case_ids}, ensure_ascii=False, indent=2), encoding="utf-8")
+                                        "case_ids": case_ids,
+                                        "case_names": {case.id: getattr(case, "name", "测试用例") for case in discovered if case.id in requested},
+                                        "started_at": datetime.now().astimezone().isoformat(timespec="seconds")},
+                                       ensure_ascii=False, indent=2), encoding="utf-8")
         worker = Path(__file__).resolve().with_name("worker.py")
         command = [sys.executable, str(worker), "--task", str(task_path)]
         if sys.platform == "win32" and ctypes.windll.shell32.IsUserAnAdmin():
@@ -72,25 +79,16 @@ class TaskController:
             return []
         if self._cleanup is not None:
             return self._poll_cleanup()
-        events = []
-        event_path = self.run_dir / "events.jsonl"
-        if event_path.exists():
-            with event_path.open("rb") as stream:
-                stream.seek(self._offset)
-                data = self._partial + stream.read()
-                self._offset = stream.tell()
-            lines = data.split(b"\n")
-            self._partial = lines.pop()
-            for line in lines:
-                if line:
-                    events.append(json.loads(line.decode("utf-8")))
+        events = self._read_events()
         outgoing = []
         for event in events:
             if event["type"] == "case_started":
                 self._current = event["case_id"]
             elif event["type"] == "case_finished":
-                self._finished[event["case_id"]] = event
-                self._current = None
+                self._remember_finished(event)
+                if self._current == event["case_id"]:
+                    self._current = None
+                event = {"type": "case_finished", **self._finished.get(event["case_id"], event)}
             elif event["type"] == "task_finished":
                 if self._stop_at:
                     event["status"] = "cancelled"
@@ -98,6 +96,10 @@ class TaskController:
                 continue
             outgoing.append(event)
         if self._pending_finish and self._completion_exited():
+            before = dict(self._finished)
+            self._persist_summary(self._pending_finish["status"])
+            outgoing.extend({"type": "case_finished", **event} for case_id, event in self._finished.items()
+                            if event != before.get(case_id))
             outgoing.append(self._pending_finish)
             self._finalized, self.active = True, False
             return outgoing
@@ -113,6 +115,95 @@ class TaskController:
             elif self._worker_exited() and not (self.run_dir / "done.json").exists() and not self._pending_finish:
                 self._begin_cleanup("failed", "测试工作进程异常退出")
         return outgoing
+
+    def _read_events(self, *, final=False):
+        """清理收尾也读取尚未消费的事件，不让真实结束记录丢失。"""
+        path = self.run_dir / "events.jsonl"
+        if not path.is_file() or path.resolve().parent != self.run_dir.resolve():
+            return []
+        with path.open("rb") as stream:
+            stream.seek(self._offset)
+            data = self._partial + stream.read()
+            self._offset = stream.tell()
+        lines = data.split(b"\n")
+        self._partial = lines.pop()
+        if final and self._partial:
+            lines.append(self._partial)
+            self._partial = b""
+        events = []
+        for line in lines:
+            if not line:
+                continue
+            try:
+                event = json.loads(line.decode("utf-8"))
+                if isinstance(event, dict) and isinstance(event.get("type"), str):
+                    events.append(event)
+            except (ValueError, UnicodeError):
+                logging.getLogger(__name__).warning("已保留无法完整解析的原始事件，未用于任务判定")
+        return events
+
+    def _read_object(self, path):
+        """诊断恢复只读取本次任务目录内的 JSON，不追随外部链接。"""
+        try:
+            if not path.resolve().is_relative_to(self.run_dir.resolve()) or not path.is_file():
+                return {}
+            value = json.loads(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError, UnicodeError):
+            logging.getLogger(__name__).warning("任务收尾发现不完整诊断记录，保留原文件")
+            return {}
+
+    def _safe_case_directory(self, value):
+        if not isinstance(value, str) or not value:
+            return ""
+        directory = Path(value).resolve()
+        area = self.run_dir.resolve() / "cases"
+        if not directory.is_relative_to(area) or directory == area or not directory.is_dir():
+            return ""
+        return str(directory)
+
+    def _remember_finished(self, event):
+        case_id = event.get("case_id")
+        if case_id not in self._selected:
+            return
+        previous = self._finished.get(case_id, {})
+        # 真实失败具有优先级，迟到的通用停止记录不得覆盖已知失败。
+        candidate = {**previous, **event}
+        if previous.get("status") == "failed" or (previous.get("status") == "passed" and event.get("status") in ("cancelled", "skipped")):
+            candidate.update(status=previous["status"], message=previous.get("message", ""))
+        candidate["artifacts_dir"] = (self._safe_case_directory(event.get("artifacts_dir", ""))
+                                       or self._safe_case_directory(previous.get("artifacts_dir", "")))
+        duration = event.get("duration", 0)
+        if not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration < 0:
+            duration = 0
+        candidate["duration"] = duration or previous.get("duration", 0)
+        self._finished[case_id] = candidate
+
+    @staticmethod
+    def _case_records(summary):
+        cases = summary.get("cases")
+        return [case for case in cases if isinstance(case, dict)] if isinstance(cases, list) else []
+
+    def _persist_summary(self, status, message=""):
+        task = self._read_object(self.run_dir / "task.json")
+        summary = self._read_object(self.run_dir / "summary.json")
+        for case in self._case_records(summary):
+            if isinstance(case, dict) and (case.get("case_id") not in self._finished or case.get("status") == "failed"):
+                self._remember_finished(case)
+        for case_id in self._selected:
+            if case_id not in self._finished:
+                self._finished[case_id] = {"case_id": case_id, "status": "skipped", "message": "未执行",
+                                           "duration": 0, "artifacts_dir": ""}
+        summary.update(status=status, run_dir=str(self.run_dir),
+                       cases=[self._finished[case] for case in self._selected if case in self._finished],
+                       started_at=task.get("started_at", summary.get("started_at", "")),
+                       ended_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                       environment_name=task.get("environment", {}).get("name", summary.get("environment_name", "未记录")))
+        if message:
+            summary["message"] = message
+        (self.run_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_task_report(self.run_dir, summary, task)
+        logging.getLogger(__name__).info("已保存任务业务报告与诊断资料，结果：%s", status)
 
     def _completion_exited(self):
         # 启动前失败时尚无 worker.json，也没有可能创建上位机进程。
@@ -185,18 +276,62 @@ class TaskController:
         return self._process
 
     def _finish_abnormal(self, status, message):
+        if self._finalized:
+            return []
         events = [{"type": "error", "message": message}]
-        if self._current:
-            event = {"type": "case_finished", "case_id": self._current, "status": status,
-                     "duration": 0, "message": message, "artifacts_dir": ""}
-            self._finished[self._current] = event
-            events.append(event)
+        before = dict(self._finished)
+        # 工作进程在清理等待期间仍可能完成报告，终结前必须读完这批事件。
+        for event in self._read_events(final=True):
+            case_id = event.get("case_id")
+            if event["type"] == "case_started" and case_id in self._selected:
+                self._current = case_id
+            elif event["type"] == "case_finished":
+                self._remember_finished(event)
+                if self._current == case_id:
+                    self._current = None
+        stored = self._read_object(self.run_dir / "summary.json")
+        for event in self._case_records(stored):
+            if isinstance(event, dict) and (event.get("case_id") not in self._finished or event.get("status") == "failed"):
+                self._remember_finished(event)
+        for case_id in self._selected:
+            if case_id in self._finished and self._finished[case_id].get("status") != "skipped":
+                continue
+            directory = self.run_dir / "cases" / hashlib.sha256(case_id.encode()).hexdigest()[:16]
+            safe_directory = self._safe_case_directory(str(directory))
+            report = self._read_object(directory / "report.json") if safe_directory else {}
+            if report or case_id == self._current:
+                recovered_status = status
+                # 只有包含清理阶段结果的完整记录才能恢复“通过”，临时通过不能作最终判定。
+                phases = report.get("阶段结果", [])
+                final = any(isinstance(phase, dict) and phase.get("阶段") == "teardown" for phase in phases)
+                if final:
+                    recovered_status = {"通过": "passed", "失败": "failed", "已停止": "cancelled",
+                                        "跳过": "skipped"}.get(report.get("结果"), status)
+                elif report.get("结果") == "失败" and any(
+                    isinstance(step, dict) and step.get("状态") == "失败" and step.get("错误")
+                    and not str(step["错误"]).startswith("InterruptedError:") for step in report.get("步骤", [])
+                ):
+                    recovered_status = "failed"
+                duration = 0
+                try:
+                    duration = max(0, (datetime.fromisoformat(report["结束时间"])
+                                       - datetime.fromisoformat(report["开始时间"])).total_seconds())
+                except (KeyError, ValueError, TypeError):
+                    pass
+                self._remember_finished({"type": "case_finished", "case_id": case_id,
+                                         "status": recovered_status, "duration": duration,
+                                         "message": (report.get("错误") or "用例在停止前已记录失败，详见诊断资料")
+                                         if recovered_status == "failed" else "" if recovered_status == "passed" else message,
+                                         "artifacts_dir": safe_directory})
         for case in self._selected:
             if case not in self._finished:
-                self._finished[case] = {"case_id": case, "status": "skipped", "message": "未执行", "duration": 0}
-        summary = {"status": status, "run_dir": str(self.run_dir), "cases": list(self._finished.values()), "message": message}
-        (self.run_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        (self.run_dir / "report.md").write_text(f"# 测试任务报告\n\n结果：{status}\n\n{message}\n", encoding="utf-8")
+                self._finished[case] = {"case_id": case, "status": "skipped", "message": "未执行", "duration": 0,
+                                        "artifacts_dir": ""}
+        for case_id in self._selected:
+            event = self._finished[case_id]
+            if event != before.get(case_id):
+                events.append({"type": "case_finished", **event})
+        self._persist_summary(status, message)
         events.append({"type": "task_finished", "status": status, "run_dir": str(self.run_dir)})
         self.active = False
         self._finalized = True

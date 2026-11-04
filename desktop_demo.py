@@ -292,7 +292,7 @@ class ReleaseDesktop:
                 marked = target.with_name(f"{target.stem}.annotated-{suffix}.png")
                 suffix += 1
             shot["annotations"] = annotation.render_annotated(target, marked, shot["description"], shot["status"], snapshot)
-            shot.update(annotated_name=marked.name, annotation_status="saved")
+            shot.update(annotated_name=marked.name, annotation_status="saved", annotation_format="business-v1")
             print(f"[标注] 已保存 {marked.name}，共 {len(shot['annotations'])} 个目标", flush=True)
         except Exception as error:
             shot["annotation_error"] = f"标注生成失败（{type(error).__name__}），保留原始截图"

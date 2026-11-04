@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, Clock3, FileText, FolderOpen, History as HistoryIcon, Layers3, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
 import { call, choose, desktop, openArtifact } from './api';
-import type { Bootstrap, CaseInfo, Detail, Environment, History, Poll, Shot } from './api';
+import type { Bootstrap, CaseInfo, Detail, Environment, History, Poll } from './api';
 import { applyEvents, counts, initialRecords, labels } from './state';
-import type { BenchEvent, CaseRecord, Step } from './state';
-import { hasAnnotation, screenshotSource } from './screenshot';
+import type { BenchEvent, CaseRecord } from './state';
+import { BusinessCaseDetails } from './BusinessCaseDetails';
 import { caseGroup, summarizeGroups, visibleCases, toggleCases, selectionState, selectedCaseIds, reconcileSelection, groupedSections, toggleExpandedGroup } from './case-groups';
 
 type Page = 'execution' | 'environment' | 'history';
 const emptyEnvironment: Environment = {name:'本机测试环境',app_path:'',driver_path:'',mode:'fresh',workspace_path:'',baseline_path:'',timeout:20,close_app:true,slavesim_url:'http://192.168.1.219:16000',annotation_enabled:true};
 const duration = (value?: number) => value === undefined ? '—' : `${value.toFixed(2)} s`;
-const valueText = (value: unknown) => value === undefined || value === null ? '—' : typeof value === 'string' ? value || '空字符串' : JSON.stringify(value);
 function Status({ status, text = true }: {status: string; text?: boolean}) { return <span className={`status ${status}`}><i />{text && (labels[status] || status)}{status === 'running' && <LoaderCircle size={12} className="spin"/>}</span>; }
 
 function SelectionCheckbox({ids, selected, disabled, label, onChange}: {
@@ -47,9 +46,8 @@ export default function App() {
   const [logs,setLogs] = useState<BenchEvent[]>([]);
   const [tab,setTab] = useState<'steps'|'logs'>('steps');
   const [detail,setDetail] = useState<Detail|null>(null);
-  const [preview,setPreview] = useState<Shot|null>(null);
   const [historyFocus,setHistoryFocus] = useState('');
-  const [historyDetail,setHistoryDetail] = useState<{summary: Record<string,unknown>; task: {environment?:Environment}; cases: Array<Record<string,unknown> & {report?:Record<string,unknown>;screenshots?:Shot[]}>}|null>(null);
+  const [historyDetail,setHistoryDetail] = useState<{summary: Record<string,unknown>; task: {environment?:Environment}; cases: Array<Record<string,unknown> & Partial<Detail>>; diagnostics_path?: string; business_report_path?: string}|null>(null);
   const polling = useRef(false);
   const starting = useRef(false);
   const disabled = active || busy;
@@ -75,7 +73,10 @@ export default function App() {
           for(const event of result.events) {
             if(event.type==='case_started' && event.case_id) setFocused(event.case_id);
             if(event.type==='task_finished') {setTaskStatus(event.status || 'failed');setStopping(false);void refreshHistory().catch(e=>setError(String(e)));}
-            if(event.type==='error') setError(event.message || '测试任务发生错误');
+            if(event.type==='error') {
+              if(event.message==='用户停止了测试任务') setNotice('测试已停止，已产生的结果和现场资料会保留。');
+              else setError('测试执行遇到异常，详细记录保存在诊断资料中。');
+            }
           }
         }
       }catch(e){setError(String(e));}finally{polling.current=false;}
@@ -84,7 +85,7 @@ export default function App() {
   },[ready]);
   const record=records[focused];
   useEffect(()=>{
-    setDetail(null);
+    setDetail(null);setTab('steps');
     const path=record?.artifacts_dir;
     if(!path)return;
     let valid=true;
@@ -98,7 +99,6 @@ export default function App() {
     call<NonNullable<typeof historyDetail>>('history_detail',{run_dir:historyFocus}).then(data=>{if(valid)setHistoryDetail(data);}).catch(e=>{if(valid)setError(String(e));});
     return()=>{valid=false;};
   },[historyFocus]);
-  useEffect(()=>{if(!preview)return;const handler=(event:KeyboardEvent)=>{if(event.key==='Escape')setPreview(null);};window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);},[preview]);
 
   async function refreshCases(){setLoading(true);try{const list=await call<CaseInfo[]>('discover');setSelected(old=>reconcileSelection(cases,list,old));setCases(list);setExpandedGroups(old=>new Set(list.map(caseGroup).filter(name=>old.has(name))));setSearchCollapsed(new Set());setRecords(initialRecords(list.map(c=>c.id)));setTaskIds([]);setTaskStatus('pending');setFocused(list[0]?.id||'');}catch(e){setError(String(e));}finally{setLoading(false);}}
   async function start(){
@@ -139,8 +139,6 @@ export default function App() {
     console.info(open?'展开全部用例组':'折叠全部用例组');
   }
   function chooseCases(ids: string[], checked: boolean) { setSelected(old=>toggleCases(old,ids,checked)); console.info('批量选择用例：', ids.length, checked ? '选中' : '取消'); }
-  const screens=detail?.screenshots||[];
-  const steps=record?.steps||[];
 
   return <div className="app-shell">
     <aside className="sidebar">
@@ -186,9 +184,9 @@ export default function App() {
               <div className="case-footer"><div className="legend"><Status status="pending"/><Status status="passed"/><Status status="failed"/></div><span>{stats.done} / {stats.total} 已完成</span></div><div className="progress-track"><div style={{width:`${progress}%`}}/></div>
             </section>
 
-            <section className="panel detail-panel"><div className="panel-heading"><div><h2>执行详情</h2><p>{currentCase?.name || '选择用例查看执行详情'}</p></div><button className="icon-button" aria-label="打开用例报告" disabled={!record?.artifacts_dir} onClick={()=>void open(`${record!.artifacts_dir}/report.md`)}><FolderOpen size={17}/></button></div>
-              <div className="tabs"><button className={tab==='steps'?'active':''} onClick={()=>setTab('steps')}><ListChecks size={14}/>步骤记录 {steps.length>0&&<span>{steps.length}</span>}</button><button className={tab==='logs'?'active':''} onClick={()=>setTab('logs')}><Terminal size={14}/>运行日志</button></div>
-              {tab==='steps'?<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/><span><Clock3 size={13}/>{duration(record.duration)}</span></div>}{record?.message&&<div className="case-error">{record.message}</div>}{steps.length?<div className="timeline">{steps.map((step,index)=><StepView key={index} step={step} index={index}/>)}</div>:<div className="empty detail-empty"><span className="empty-icon"><Play size={25}/></span><strong>等待开始测试</strong><span>开始后，步骤与检查结果将在这里实时显示。</span></div>}{screens.length>0&&<div className="evidence"><h3>测试截图 <span>{screens.length}</span></h3><div className="screenshots">{screens.map(shot=><ScreenshotCard key={`${shot.name}-${shot.time||shot.path}`} shot={shot} onPreview={setPreview}/>)}</div></div>}</div>:<div className="log-scroll">{logs.length?logs.map((event,index)=><div className="log-line" key={index}><time>{event.time?.slice(11,19)||'--:--:--'}</time><span>{event.message||event.name||(event.type==='case_started'?'开始执行用例':event.type==='task_finished'?'任务执行结束':event.type==='case_finished'?`用例${labels[event.status||'']||'结束'}`:'准备测试任务')}{event.type==='step'&&` · ${labels[event.status||'']||''}`}</span></div>):<div className="empty"><Terminal size={26}/><span>执行日志将在任务开始后显示</span></div>}</div>}
+            <section className="panel detail-panel"><div className="panel-heading"><div><h2>执行详情</h2><p>{currentCase?.name || '选择用例查看执行详情'}</p></div><button className="icon-button" aria-label="打开报告资料" disabled={!record?.artifacts_dir} onClick={()=>void open(detail?.business_report_path||detail?.diagnostics_path||record!.artifacts_dir!)}><FolderOpen size={17}/></button></div>
+              <div className="tabs"><button className={tab==='steps'?'active':''} onClick={()=>setTab('steps')}><ListChecks size={14}/>测试结果</button><button className={tab==='logs'?'active':''} onClick={()=>setTab('logs')}><Terminal size={14}/>诊断记录</button></div>
+              {tab==='steps'?<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/><span><Clock3 size={13}/>{duration(record.duration)}</span></div>}<BusinessCaseDetails key={focused} detail={detail} status={record?.status} onOpen={path=>void open(path)}/></div>:<div className="log-scroll">{logs.length?logs.map((event,index)=><div className="log-line" key={index}><time>{event.time?.slice(11,19)||'--:--:--'}</time><span>{event.message||event.name||(event.type==='case_started'?'开始执行用例':event.type==='task_finished'?'任务执行结束':event.type==='case_finished'?`用例${labels[event.status||'']||'结束'}`:'准备测试任务')}{event.type==='step'&&` · ${labels[event.status||'']||''}`}</span></div>):<div className="empty"><Terminal size={26}/><span>执行日志将在任务开始后显示</span></div>}</div>}
             </section>
           </div>
           <footer className="page-footer"><span><ShieldCheck size={14}/>测试在本地执行，日志与截图仅保存在本机</span><button className="text-button" disabled={!runDir} onClick={()=>void open(runDir)}><FolderOpen size={14}/>打开本次报告目录</button></footer>
@@ -206,40 +204,36 @@ export default function App() {
           </div>
         </fieldset><div className="form-actions"><button className="button" disabled={disabled||!ready} onClick={()=>void load()}><ArrowDownToLine size={15}/>载入配置</button><button className="button primary" data-testid="environment-save" disabled={disabled||!ready} onClick={()=>void save()}><Check size={16}/>保存环境</button></div></div><aside className="environment-help"><div className="help-symbol"><ShieldCheck size={27}/></div><h3>可重复的测试环境</h3><p>程序、工作区与初始状态共同决定测试条件。建议为不同版本保留独立的测试工作区。</p><div className="help-divider"/><h4>关于已有配置</h4><p>固定工作区会保留测试配置；全新副本适合首次启动及默认状态验证。</p><h4>关于运行中的任务</h4><p>任务执行期间环境配置会锁定，停止并完成清理后可再次修改。</p><h4>关于模拟器连接</h4><p>连接检查确认状态接口可访问。控制是否生效，需要对应业务用例检查。</p></aside></div>}
 
-        {page==='history'&&<><div className="history-top"><span>{history.length} 条本地测试记录</span><button className="button" disabled={!ready} onClick={()=>void refreshHistory().catch(e=>setError(String(e)))}><RefreshCw size={14}/>刷新记录</button></div><div className="history-layout"><section className="panel history-list"><div className="history-table-heading"><span>测试任务 / 环境</span><span>结果</span></div>{history.map(item=><button className={`history-row ${historyFocus===item.run_dir?'focused':''}`} key={item.id} data-testid="history-row" onClick={()=>setHistoryFocus(item.run_dir)}><div className="history-icon"><FileText size={19}/></div><div><strong>{item.environment_name||'测试任务'}</strong><small>{item.created_at?.replace('T',' ').slice(0,19) || item.id}</small><span className="history-count">{item.case_count} 项用例 · {item.passed} 通过 · {item.failed} 失败</span></div><Status status={item.status}/><ChevronRight size={16}/></button>)}{!history.length&&<div className="empty"><HistoryIcon size={30}/><strong>还没有测试记录</strong><span>运行一次测试后，可在这里查看历史结果。</span></div>}</section><section className="panel history-detail"><div className="panel-heading"><div><h2>任务详情</h2><p>{historyDetail?.task.environment?.name || '选择一条历史记录'}</p></div><button className="icon-button" disabled={!historyFocus} aria-label="打开历史报告" onClick={()=>void open(historyFocus)}><FolderOpen size={18}/></button></div>{historyDetail?<div className="history-cases"><div className="history-summary"><Status status={String(historyDetail.summary.status||'pending')}/><span>{historyDetail.cases.length} 项测试用例</span></div>{historyDetail.cases.map((item,index)=><details key={index} className="history-case" open={index===0}><summary><Status status={String(item.status||'pending')} text={false}/><strong>{cases.find(c=>c.id===item.case_id)?.name||String(item.case_id||'测试用例')}</strong><span>{duration(item.duration as number|undefined)}</span><ChevronRight size={14}/></summary>{Boolean(item.message)&&<pre className="case-error">{String(item.message)}</pre>}<SavedSteps report={item.report}/>{item.screenshots&&item.screenshots.length>0&&<div className="screenshots history-shots">{item.screenshots.map(shot=><ScreenshotCard key={`${shot.name}-${shot.time||shot.path}`} shot={shot} onPreview={setPreview}/>)}</div>}</details>)}</div>:<div className="empty"><FileText size={30}/><strong>查看历史测试详情</strong><span>选择左侧任务，查看结果、步骤和测试截图。</span></div>}</section></div></>}
+        {page==='history'&&<>
+          <div className="history-top"><span>{history.length} 条本地测试记录</span><button className="button" disabled={!ready} onClick={()=>void refreshHistory().catch(e=>setError(String(e)))}><RefreshCw size={14}/>刷新记录</button></div>
+          <div className="history-layout"><section className="panel history-list">
+            <div className="history-table-heading"><span>测试任务 / 环境</span><span>结果</span></div>
+            {history.map(item=><button className={`history-row ${historyFocus===item.run_dir?'focused':''}`} key={item.id} data-testid="history-row" onClick={()=>setHistoryFocus(item.run_dir)}>
+              <div className="history-icon"><FileText size={19}/></div><div><strong>{item.environment_name||'测试任务'}</strong><small>{item.created_at?.replace('T',' ').slice(0,19) || item.id}</small>
+              <span className="history-count">{item.case_count} 项 · {item.passed} 通过 · {item.failed} 失败 · {item.cancelled||0} 停止 · {item.skipped||0} 未执行</span></div><Status status={item.status}/><ChevronRight size={16}/>
+            </button>)}
+            {!history.length&&<div className="empty"><HistoryIcon size={30}/><strong>还没有测试记录</strong><span>运行一次测试后，可在这里查看历史结果。</span></div>}
+          </section><section className="panel history-detail">
+            <div className="panel-heading"><div><h2>任务详情</h2><p>{historyDetail?.task.environment?.name || '选择一条历史记录'}</p></div>
+              <div className="business-actions">
+                {historyDetail?.business_report_path&&<button className="button" onClick={()=>void open(historyDetail.business_report_path!)}><FileText size={14}/>业务报告</button>}
+                {historyDetail?.diagnostics_path&&<button className="button" onClick={()=>void open(historyDetail.diagnostics_path!)}><FolderOpen size={14}/>诊断资料</button>}
+              </div>
+            </div>
+            {historyDetail?<div className="history-cases">
+              <div className="history-summary"><Status status={String(historyDetail.summary.status||'pending')}/><span>{historyDetail.cases.length} 项测试用例</span></div>
+              {historyDetail.cases.map((item,index)=><details key={`${historyFocus}-${index}`} className="history-case" open={index===0}>
+                <summary><Status status={String(item.status||'pending')} text={false}/><strong>{item.business?.title||cases.find(c=>c.id===item.case_id)?.name||'测试用例'}</strong><span>{duration(item.duration as number|undefined)}</span><ChevronRight size={14}/></summary>
+                <BusinessCaseDetails detail={item} status={String(item.status||'pending')} onOpen={path=>void open(path)}/>
+              </details>)}
+            </div>:<div className="empty"><FileText size={30}/><strong>查看历史测试详情</strong><span>选择左侧任务，查看结果、业务检查和关键截图。</span></div>}
+          </section></div>
+        </>}
       </div>
     </main>
-    {preview&&<ScreenshotPreview key={`${preview.path}-${preview.time}`} shot={preview} onClose={()=>setPreview(null)}/>}
   </div>;
 }
 
-function ScreenshotExplanation({shot}:{shot:Shot}) {
-  const verdict = ({passed:'通过',failed:'失败',skipped:'跳过',cancelled:'已停止',unknown:'未判定'} as Record<string,string>)[shot.status||'unknown'] || '未判定';
-  return <div className="screenshot-explanation">
-    <p><strong>图片含义</strong>{shot.description||'旧记录未提供截图含义'}</p>
-    <p><strong>预期现象</strong>{shot.expected===undefined?'未提供预期现象':valueText(shot.expected)}</p>
-    <p><strong>实际现象</strong>{shot.actual===undefined?'未提供实际现象':valueText(shot.actual)}</p>
-    <p><strong>拍摄时判定</strong><span className={`screenshot-verdict ${shot.status||'unknown'}`}>{verdict}</span></p>
-    {shot.time&&<p><strong>拍摄时间</strong>{shot.time}</p>}
-    {shot.error&&<p className="screenshot-error"><strong>证据缺失原因</strong>{shot.error}</p>}
-    {shot.annotation_error&&<p className="screenshot-error"><strong>标注说明</strong>{shot.annotation_error}</p>}
-    {shot.annotations?.map((item,index)=><p key={index}><strong>标记 {index+1}</strong>{item.label}{item.reason&&`（${item.reason}）`}</p>)}
-    <small>判定依据为测试检查记录，最终用例结果见报告。</small>
-  </div>;
-}
-function ScreenshotCard({shot,onPreview}:{shot:Shot;onPreview:(shot:Shot)=>void}) {
-  const available=shot.capture_status!=='missing'&&Boolean(shot.data_url);
-  return <article className="screenshot-card">
-    {available?<button className="screenshot-preview" onClick={()=>onPreview(shot)} aria-label={`预览${shot.name}`}><img src={screenshotSource(shot)} alt={shot.description||shot.name}/><span>{shot.name}{hasAnnotation(shot)&&' · 已标注，点击可查看原图'}</span></button>:<div className="screenshot-missing">截图证据缺失 · {shot.name}</div>}
-    <ScreenshotExplanation shot={shot}/>
-  </article>;
-}
-function ScreenshotPreview({shot,onClose}:{shot:Shot;onClose:()=>void}) {
-  const [original,setOriginal] = useState(false);
-  return <div className="image-modal" role="dialog" aria-modal="true" aria-label="测试截图预览" onClick={onClose}><div className="image-modal-content" onClick={e=>e.stopPropagation()}><div className="screenshot-toolbar"><strong>{shot.name}</strong>{hasAnnotation(shot)&&<button className="button" aria-pressed={original} onClick={()=>setOriginal(value=>!value)}>{original?'查看标注图':'查看原图'}</button>}<button className="icon-button" aria-label="关闭截图" onClick={onClose}><X size={20}/></button></div><img src={screenshotSource(shot,original)} alt={shot.description||shot.name}/><ScreenshotExplanation shot={shot}/></div></div>;
-}
 function Stat({label,value,icon,hint,accent='default'}:{label:string;value:number;icon:React.ReactNode;hint:string;accent?:string}){return <div className={`stat-card ${accent}`}><div className="stat-top"><span>{label}</span><span className="stat-icon">{icon}</span></div><strong>{value}<small>项</small></strong><p>{hint}</p></div>;}
-function StepView({step,index}:{step:Step;index:number}){return <div className={`timeline-step ${step.status}`}><div className="step-marker">{step.status==='passed'?<Check size={12}/>:step.status==='running'?<LoaderCircle size={12} className="spin"/>:<span>{step.step_id??index+1}</span>}</div><div className="step-body"><div className="step-title"><strong>{step.step_id!==undefined?`${step.step_id}．`:''}{step.name}</strong><span>{duration(step.duration)}</span></div>{(step.expected!==undefined||step.actual!==undefined)&&<div className="expectation"><div><span>预期</span><code>{valueText(step.expected)}</code></div><div><span>实际</span><code>{valueText(step.actual)}</code></div></div>}</div></div>;}
 function Field({label,hint,children}:{label:string;hint?:string;children:React.ReactNode}){return <div className="field"><label>{label}</label>{children}{hint&&<p>{hint}</p>}</div>;}
 function PathInput({value,onChange,onBrowse,testId}:{value:string;onChange:(v:string)=>void;onBrowse:()=>void;testId?:string}){return <div className="path-input"><input value={value} onChange={e=>onChange(e.target.value)} data-testid={testId}/><button type="button" onClick={onBrowse} aria-label="浏览路径"><FolderOpen size={16}/></button></div>;}
-function SavedSteps({report}:{report?:Record<string,unknown>}){const steps=report?.['步骤'] as Array<Record<string,unknown>>|undefined;return steps?<div className="timeline saved-timeline">{steps.map((step,index)=><StepView key={index} index={index} step={{step_id:step['序号'] as number|undefined,name:String(step['步骤']),status:step['状态']==='通过'?'passed':'failed',expected:step['预期'],actual:step['实际'],duration:step['耗时秒'] as number}}/>)}</div>:null;}

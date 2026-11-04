@@ -30,7 +30,7 @@ def test_nested_same_named_steps_have_unique_correct_association(tmp_path):
     assert [shot["actual"] for shot in app.screenshots[:2]] == [0, False]
     app.close()
     report = report_at(tmp_path)
-    markdown = (tmp_path / "report.md").read_text(encoding="utf-8")
+    markdown = (tmp_path / "diagnostics.md").read_text(encoding="utf-8")
     for step in report["步骤"]:
         shots = [shot for shot in report["截图"] if shot.get("step_id") == step["序号"]]
         assert len(shots) == 1

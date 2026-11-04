@@ -72,7 +72,7 @@ def test_workspace_and_logout_mark_their_own_current_controls():
     assert page.workspace("测试账号") == "测试账号"
     page.logout()
     for name in ("等待并读取工作台账号信息", "工作台账号信息非空", "重开前后工作台账号一致"):
-        assert target_for(records, name)[0]["locator"] == page.BADGE
+        assert target_for(records, name)[0]["locator"] == page.BADGE_ANNOTATION
     for name in ("等待工作台退出按钮可点击", "点击工作台退出按钮"):
         assert target_for(records, name)[0]["locator"] == page.LOGOUT
     assert "ant-modal-confirm-btns" in target_for(records, "确认退出登录")[0]["locator"][1]

@@ -77,7 +77,7 @@ def test_case_controls_capture_description_and_observations(tmp_path):
     assert shot["status"] == "passed" and shot["capture_status"] == "saved"
     assert [kind for kind, _ in calls] == ["截图", "截图", "关闭"]
     assert (tmp_path / shot["name"]).read_bytes().startswith(PNG)
-    markdown = (tmp_path / "report.md").read_text(encoding="utf-8")
+    markdown = (tmp_path / "diagnostics.md").read_text(encoding="utf-8")
     assert shot["description"] in markdown
     assert "预期现象" in markdown and "实际现象" in markdown and "拍摄时判定：通过" in markdown
 
@@ -144,7 +144,7 @@ def test_screenshot_failure_does_not_mask_original_assertion(tmp_path):
     report = report_at(tmp_path)
     assert report["结果"] == "失败" and "原业务失败" in report["错误"]
     assert all(shot["capture_status"] == "missing" and shot["error"] for shot in report["截图"])
-    assert "截图证据缺失" in (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "截图证据缺失" in (tmp_path / "diagnostics.md").read_text(encoding="utf-8")
 
 
 def test_unconnected_driver_still_produces_missing_evidence_report(tmp_path):

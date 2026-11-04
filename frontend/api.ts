@@ -2,9 +2,10 @@ import { invoke } from '@tauri-apps/api/core';
 import type { BenchEvent } from './state';
 export interface Environment { name: string; app_path: string; driver_path: string; mode: 'fresh' | 'workspace'; workspace_path: string; baseline_path: string; timeout: number; close_app: boolean; slavesim_url: string; annotation_enabled: boolean }
 export interface CaseInfo { id: string; name: string; description: string; group?: string }
-export interface History { id: string; status: string; environment_name: string; created_at: string; case_count: number; passed: number; failed: number; run_dir: string }
-export interface Shot { name: string; path: string; data_url: string; description?: string; expected?: unknown; actual?: unknown; status?: string; capture_status?: string; error?: string; time?: string; annotated_name?: string; annotated_path?: string; annotated_data_url?: string; annotation_status?: string; annotation_error?: string; annotations?: Array<{label: string; reason?: string}> }
-export interface Detail { report: Record<string, unknown>; screenshots: Shot[] }
+export interface History { id: string; status: string; environment_name: string; created_at: string; case_count: number; passed: number; failed: number; cancelled?: number; skipped?: number; run_dir: string }
+export interface Shot { name: string; path: string; data_url: string; description?: string; expected?: unknown; actual?: unknown; status?: string; capture_status?: string; error?: string; time?: string; annotated_name?: string; annotated_path?: string; annotated_data_url?: string; annotation_status?: string; annotation_format?: string; annotation_error?: string; annotations?: Array<{label: string; reason?: string}>; step_id?: number | string | null; business_result?: string }
+export interface BusinessReport { title: string; goal: string; result: string; summary: string; checks: Array<{step_id?: number | string | null; name: string; status: string; expected: string; actual: string}>; key_screenshots: string[] }
+export interface Detail { report: Record<string, unknown>; screenshots: Shot[]; business?: BusinessReport; diagnostics_path?: string; business_report_path?: string }
 export interface Bootstrap { root: string; environment: Environment; cases: CaseInfo[]; history: History[] }
 export interface Poll { active: boolean; run_dir: string | null; events: BenchEvent[] }
 export const desktop = '__TAURI_INTERNALS__' in window;

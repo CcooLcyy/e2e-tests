@@ -1,5 +1,6 @@
 """独立测试工作进程；通过文件事件通道与界面通信。"""
 import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ def main():
     os.environ.update(TESTBENCH_EVENTS=str(run / "events.jsonl"), TESTBENCH_STOP=str(run / "stop"),
                       TESTBENCH_SUMMARY=str(run / "summary.json"), TESTBENCH_TASK=str(task_path), PYTHONUTF8="1")
     from testbench.events import emit
+    from testbench.reporting import write_task_report
     status, code = "failed", 1
     log = (run / "pytest.log").open("w", encoding="utf-8", buffering=1)
     sys.stdout = sys.stderr = log
@@ -46,12 +48,12 @@ def main():
             if case_id not in completed:
                 summary["cases"].append({"case_id": case_id, "status": "skipped", "duration": 0,
                                           "message": "未执行", "artifacts_dir": ""})
-        summary.update(status=status, exit_code=code, run_dir=str(run), environment_name=task["environment"]["name"])
+        summary.update(status=status, exit_code=code, run_dir=str(run), environment_name=task["environment"]["name"],
+                       started_at=task.get("started_at", ""),
+                       ended_at=datetime.now().astimezone().isoformat(timespec="seconds"))
         summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        lines = ["# 测试任务报告", "", f"任务结果：{status}", "", "| 用例 | 结果 | 耗时 |", "| --- | --- | --- |"]
-        for case in summary["cases"]:
-            lines.append(f"| {case['case_id']} | {case['status']} | {case.get('duration', 0)} 秒 |")
-        (run / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        write_task_report(run, summary, task)
+        print("[报告] 已保存任务业务报告与完整诊断资料", flush=True)
         emit({"type": "task_finished", "status": status, "run_dir": str(run)})
         (run / "done.json").write_text(json.dumps({"status": status, "exit_code": code}), encoding="utf-8")
         log.close()

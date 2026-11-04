@@ -161,6 +161,38 @@ def _wrap(text, font, width):
     return lines
 
 
+def caption_lines(description, status, annotations):
+    """业务图只表达观察含义，定位失败的技术原因仍保留在返回记录中。"""
+    from .reporting import _business_text
+    import re
+    description = re.sub(r"(?:setup|call|teardown) 阶段失败现场", "测试失败现场", str(description))
+    description = _business_text(description, "测试现场")
+    verdict = {"passed": "步骤通过", "failed": "步骤失败", "skipped": "已跳过",
+               "cancelled": "已停止"}.get(status, "现场记录，最终结果见用例报告")
+    lines = [f"{description}（{verdict}）"]
+    for index, target in enumerate(annotations, 1):
+        lines.append(f"{index}. {_business_text(target['label'], '检查位置')}" + ("（仅提供说明）" if not target["rect"] else ""))
+    if not annotations:
+        lines.append("本步骤仅提供文字说明。")
+    return lines
+
+
+def number_position(rect, label_size, image_size):
+    """依次使用控件上、右、左、下方空间，避免编号覆盖按钮文字。"""
+    x, y, width, height = (rect[key] for key in ("x", "y", "width", "height"))
+    label_width, label_height = label_size
+    image_width, image_height = image_size
+    gap = 2
+    candidates = [(x + width - label_width, y - label_height - gap),
+                  (x + width + gap, y), (x - label_width - gap, y),
+                  (x + width - label_width, y + height + gap)]
+    for left, top in candidates:
+        if 0 <= left and 0 <= top and left + label_width <= image_width and top + label_height <= image_height:
+            return left, top
+    # 全幅目标没有框外空间时贴图像边缘放置，完整原图始终另存。
+    return max(0, min(x + width - label_width, image_width - label_width)), max(0, min(y, image_height - label_height))
+
+
 def render_annotated(raw_path, output_path, description, status, snapshot, style=DEFAULT_STYLE):
     """原图只读，编号框绘制到副本，说明区追加在图下方而不遮挡内容。"""
     from PIL import Image, ImageDraw
@@ -177,13 +209,7 @@ def render_annotated(raw_path, output_path, description, status, snapshot, style
         rect = _pixel_rect(target.get("rect"), snapshot.get("viewport"), original.size)
         annotations.append({"label": target["label"], "rect": rect,
                             "reason": "" if rect else target.get("reason") or "当前目标无有效可见区域，未画框"})
-    verdict = {"passed": "步骤通过", "failed": "步骤失败", "unknown": "未判定",
-               "skipped": "已跳过", "cancelled": "已停止"}.get(status, "未判定")
-    lines = [f"{description}（{verdict}）"]
-    for index, target in enumerate(annotations, 1):
-        lines.append(f"{index}. {target['label']}" + (f"；{target['reason']}" if not target["rect"] else ""))
-    if not annotations:
-        lines.append("本步骤仅提供文字说明。")
+    lines = caption_lines(description, status, annotations)
     width = max(original.width, 320)
     wrapped = [line for text in lines for line in _wrap(text, font, width - style.padding * 2)]
     line_height = style.font_size + 10
@@ -200,11 +226,8 @@ def render_annotated(raw_path, output_path, description, status, snapshot, style
         number = str(index)
         label_width = math.ceil(small_font.getlength(number)) + 10
         label_height = style.font_size + 4
-        # 编号尽量放框外；靠近上边界时放在框内，不绘制到截图之外。
-        lx = max(0, min(x + w - label_width, original.width - label_width))
-        ly = y - label_height if y >= label_height else y
-        ly = max(0, min(ly, original.height - label_height))
-        draw.rectangle((lx, ly, lx + label_width, ly + label_height - 1), fill=color)
+        lx, ly = number_position(rect, (label_width, label_height), original.size)
+        draw.rectangle((lx, ly, lx + label_width - 1, ly + label_height - 1), fill=color)
         draw.text((lx + 5, ly + 1), number, font=small_font, fill="white")
     for index, line in enumerate(wrapped):
         draw.text((style.padding, original.height + style.padding + index * line_height),

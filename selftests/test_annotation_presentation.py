@@ -12,7 +12,7 @@ def make_record():
     return {"name": "step.png", "description": "点击登录", "expected": True,
             "actual": False, "status": "failed", "capture_status": "saved",
             "error": "", "time": "2026-11-04", "annotated_name": "step.annotated.png",
-            "annotation_status": "saved", "annotation_error": "",
+            "annotation_status": "saved", "annotation_error": "", "annotation_format": "business-v1",
             "annotations": [{"label": "登录按钮", "reason": "目标已消失"}]}
 
 
@@ -96,7 +96,7 @@ def test_markdown_prefers_annotation_links_original_and_avoids_duplicate(tmp_pat
     assert "![点击登录](step.annotated.png)" in report
     assert "[查看原图](step.png)" in report
     assert report.count("![") == 1
-    assert "目标已消失" in report
+    assert "目标已消失" in (tmp_path / "diagnostics.md").read_text(encoding="utf-8")
     (tmp_path / record["annotated_name"]).unlink()
     write_case_report(tmp_path, {"结果": "失败", "步骤": [], "截图": [record]})
     assert "![点击登录](step.png)" in (tmp_path / "report.md").read_text(encoding="utf-8")

@@ -43,6 +43,10 @@ class PlatformLoginPage:
     SUBMIT = (By.CSS_SELECTOR, '.platform-login-form-panel button[type="submit"]')
     LOGOUT = (By.XPATH, '//header//button[translate(normalize-space(.), " ", "")="退出"]')
     BADGE = (By.CSS_SELECTOR, "header .ant-badge-status-text")
+    # 标注只框选退出按钮所属账号组；原业务读取定位保留，避免修改既有验收行为。
+    BADGE_ANNOTATION = (By.XPATH, '//header//button[translate(normalize-space(.), " ", "")="退出"]'
+        '/ancestor::*[contains(concat(" ", normalize-space(@class), " "), " ant-space ")][1]'
+        '//span[contains(concat(" ", normalize-space(@class), " "), " ant-badge-status-text ")]')
     LABELS = {"remember_password": "记住密码", "auto_login": "下次自动登录"}
 
     def __init__(self, desktop):
@@ -161,13 +165,13 @@ class PlatformLoginPage:
                 self.desktop.wait.until(self._workspace_visible, message="登录后未在规定时间内进入工作台")
             with self.desktop.step("等待工作台退出入口可见", targets=self.target(self.LOGOUT, "检查退出入口")):
                 self.desktop.wait.until(EC.visibility_of_element_located(self.LOGOUT))
-            with self.desktop.step("等待并读取工作台账号信息", targets=self.target(self.BADGE, "读取工作台账号信息")):
+            with self.desktop.step("等待并读取工作台账号信息", targets=self.target(self.BADGE_ANNOTATION, "读取工作台账号信息")):
                 badge = self.desktop.wait.until(EC.visibility_of_element_located(self.BADGE)).text.strip()
             self.desktop.check("工作台账号信息非空", bool(badge), True,
-                               targets=self.target(self.BADGE, "检查工作台账号信息"))
+                               targets=self.target(self.BADGE_ANNOTATION, "检查工作台账号信息"))
             if expected_badge is not None:
                 self.desktop.check("重开前后工作台账号一致", badge, expected_badge,
-                                   targets=self.target(self.BADGE, "检查重开前后账号一致"))
+                                   targets=self.target(self.BADGE_ANNOTATION, "检查重开前后账号一致"))
             return badge
 
     def _workspace_visible(self, driver):
