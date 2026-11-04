@@ -115,6 +115,8 @@ def business_case(result):
     status = _label(result.get("结果", "unknown"))
     checks = []
     for step in _records(result, "步骤"):
+        if step.get("诊断步骤") is True:
+            continue
         if step.get("步骤") in ("真实桌面运行环境", "页面来源属于上位机", "错误密码长度", "错误密码与正确密码不同"):
             continue
         if "预期" not in step and "实际" not in step and step.get("状态") != "失败":
@@ -142,7 +144,8 @@ def business_case(result):
     if status == "失败":
         chosen.extend(shot for shot in saved if selected and shot.get("step_id") == selected["step_id"])
         chosen.extend(shot for shot in saved if shot.get("status") == "failed")
-    chosen.extend(shot for shot in saved if not shot["name"].startswith(("step-", "case-failure")))
+    chosen.extend(shot for shot in saved if not shot.get("automatic", False)
+                  and not shot["name"].startswith(("step-", "case-failure", "master104-step-", "master104-case-failure")))
     if not chosen and saved:
         chosen.append(saved[-1])
     names = list(dict.fromkeys(shot["name"] for shot in chosen))[:3]

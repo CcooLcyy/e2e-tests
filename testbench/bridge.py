@@ -2,12 +2,14 @@
 import argparse
 import base64
 import hashlib
+from concurrent.futures import Future
 from dataclasses import asdict
 from datetime import datetime
 import json
 import logging
 from pathlib import Path
 import sys
+import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -26,6 +28,8 @@ class TestbenchBridge:
         self.root = Path(root).resolve()
         self.controller = TaskController(self.root)
         self.environment_path = self.root / "local" / "environment.json"
+        self._master104_check = None
+        self._master104_cancel = None
 
     def handle(self, method, payload=None):
         payload = {} if payload is None else payload
@@ -38,6 +42,51 @@ class TestbenchBridge:
             return self._discover()
         if method == "get_environment":
             return self._environment()
+        if method == "check_master104":
+            if self.controller.active:
+                raise ValueError("测试运行期间不能检查 104 主站")
+            if self._master104_check is not None:
+                raise ValueError("104 主站检查尚未结束，请等待检查结果")
+            data = payload.get("environment", {})
+            if not isinstance(data, dict):
+                raise ValueError("104 主站环境参数必须是对象")
+            env = Environment.from_dict(data)
+            env.validate_master104(required=True)
+            future = Future()
+            self._master104_check = future
+            cancelled = threading.Event()
+            self._master104_cancel = cancelled
+
+            def probe():
+                try:
+                    from .master104_native import probe_master104
+                    snapshot = probe_master104(env.master104_path, backend=env.master104_backend,
+                                               timeout=env.master104_timeout, cancel_event=cancelled)
+                    logging.getLogger(__name__).info("已完成 104 主站窗口只读检查")
+                    future.set_result({"snapshot": snapshot,
+                        "message": "已读取 104 主站窗口；尚未验证 IEC104 协议连接或业务效果"})
+                except Exception as error:
+                    logging.getLogger(__name__).warning("104 主站窗口检查失败：%s", type(error).__name__)
+                    future.set_exception(error)
+
+            # 原生驱动在辅助进程内执行并限制超时，桥接线程继续响应任务状态及结果查询。
+            try:
+                threading.Thread(target=probe, daemon=True, name="104主站只读检查").start()
+            except Exception:
+                self._master104_check = None
+                self._master104_cancel = None
+                logging.getLogger(__name__).warning("104 主站检查工作线程未能启动")
+                raise
+            return {"checking": True}
+        if method == "poll_master104":
+            future = self._master104_check
+            if future is None:
+                raise ValueError("没有待查询的 104 主站检查")
+            if not future.done():
+                return {"checking": True}
+            self._master104_check = None
+            self._master104_cancel = None
+            return {"checking": False, **future.result()}
         if method in ("open_slavesim", "check_slavesim"):
             url = validate_slavesim_url(payload.get("url", ""), required=True)
             if method == "open_slavesim":
@@ -51,6 +100,8 @@ class TestbenchBridge:
                 return {"url": url, "message": "已请求系统浏览器打开 slaveSim 管理页"}
             return self._check_slavesim(url)
         if method in ("save_environment", "load_environment"):
+            if self._master104_check is not None:
+                raise ValueError("104 主站检查期间不能更改环境")
             if self.controller.active:
                 raise ValueError("测试运行期间不能更改环境")
             if method == "load_environment":
@@ -61,6 +112,8 @@ class TestbenchBridge:
                 save_environment(self.environment_path, env)
             return env.to_dict()
         if method == "start":
+            if self._master104_check is not None:
+                raise ValueError("104 主站检查期间不能开始测试")
             if self.controller.active:
                 raise ValueError("已有测试任务正在运行")
             env = Environment.from_dict(payload["environment"])
@@ -108,6 +161,17 @@ class TestbenchBridge:
         if method == "case_detail":
             return self._case_details(payload["artifacts_dir"])
         if method == "shutdown":
+            if self._master104_check is not None:
+                if self._master104_cancel is not None:
+                    self._master104_cancel.set()
+                deadline = time.monotonic() + 5
+                while not self._master104_check.done():
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("104 主站检查辅助进程尚未完成清理，请稍后再退出")
+                    time.sleep(0.05)
+                self._master104_check = None
+                self._master104_cancel = None
+                logging.getLogger(__name__).info("已结束主站只读检查，未关闭用户主站")
             self.controller.stop()
             deadline = time.monotonic() + 35
             while self.controller.active:
@@ -329,7 +393,7 @@ def main():
             if isinstance(request, dict) and request.get("method") == "shutdown" and response["ok"]:
                 break
     finally:
-        if bridge.controller.active:
+        if bridge.controller.active or bridge._master104_check is not None:
             bridge.handle("shutdown", {})
 
 

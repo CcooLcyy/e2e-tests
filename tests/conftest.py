@@ -46,6 +46,34 @@ def desktop(request):
 
 
 @pytest.fixture
+def master104(request):
+    """按需接管用户已打开的104主站，不连接设备、不发送命令、不关闭主站。"""
+    from testbench.master104 import Master104Session
+    from testbench.model import Environment
+
+    task_path = os.environ.get("TESTBENCH_TASK")
+    if not task_path:
+        pytest.fail("104主站会话需要测试上位机提供任务环境配置")
+    task = json.loads(Path(task_path).read_text(encoding="utf-8"))
+    environment = Environment.from_dict(task["environment"])
+    environment.validate_master104(required=True)
+    directory = getattr(request.node, "_bench_artifacts", request.config.getoption("--artifacts-dir"))
+    if not directory:
+        pytest.fail("104主站会话需要本例证据目录")
+    app = Master104Session(artifacts_dir=Path(directory), path=environment.master104_path,
+                           backend=environment.master104_backend, timeout=environment.master104_timeout)
+    request.node._bench_master104 = app
+    app.metadata["用例"] = (getattr(request.node.obj, "__doc__", "") or request.node.name).strip()
+    app.metadata["用例ID"] = request.node.nodeid
+    with app:
+        yield app
+        if any(report.failed for report in getattr(request.node, "_bench_reports", [])):
+            app.failure = app.failure or "用例断言失败，详见任务报告"
+    if app.cleanup_failure:
+        pytest.fail(app.cleanup_failure)
+
+
+@pytest.fixture
 def login_memory(request):
     """登录记忆用例始终独立运行，并保护系统中已有的平台凭据。"""
     from testbench.login_page import load_login_account, require_fresh_login_environment, PlatformLoginPage

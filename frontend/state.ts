@@ -1,7 +1,7 @@
 export type Status = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'cancelled';
-export interface Step { name: string; status: string; step_id?: number; expected?: unknown; actual?: unknown; duration?: number }
+export interface Step { name: string; status: string; step_id?: number | string; expected?: unknown; actual?: unknown; duration?: number }
 export interface CaseRecord { status: Status; steps: Step[]; duration?: number; message?: string; artifacts_dir?: string }
-export interface BenchEvent { type: string; case_id?: string; status?: string; step_id?: number; name?: string; expected?: unknown; actual?: unknown; duration?: number; message?: string; artifacts_dir?: string; time?: string }
+export interface BenchEvent { type: string; case_id?: string; status?: string; step_id?: number | string; name?: string; expected?: unknown; actual?: unknown; duration?: number; message?: string; artifacts_dir?: string; time?: string }
 export function initialRecords(ids: string[]): Record<string, CaseRecord> { return Object.fromEntries(ids.map(id => [id, {status: 'pending', steps: []}])); }
 export function applyEvents(records: Record<string, CaseRecord>, events: BenchEvent[]): Record<string, CaseRecord> {
   const next = Object.fromEntries(Object.entries(records).map(([id, record]) => [id, { ...record, steps: [...record.steps] }]));

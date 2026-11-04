@@ -9,6 +9,7 @@ import pytest
 from .events import emit
 from .case_order import order_case_ids
 from .reporting import STATUS_LABELS, write_case_report
+from .session_evidence import collect_sessions, merge_session_evidence
 
 
 def pytest_configure(config):
@@ -84,14 +85,22 @@ def pytest_runtest_makereport(item, call):
     reports = getattr(item, "_bench_reports", [])
     reports.append(report)
     item._bench_reports = reports
-    app = getattr(item, "_bench_desktop", None)
-    if app is not None and (report.when == "call" or report.failed or (report.when == "setup" and report.skipped)):
+    sessions = collect_sessions(item)
+    if sessions and (report.when == "call" or report.failed or (report.when == "setup" and report.skipped)):
         status = "failed" if report.failed else "skipped" if report.skipped else "passed"
         stop = os.environ.get("TESTBENCH_STOP")
         if stop and Path(stop).exists():
             status = "cancelled"
-        app.finish_case(status, str(report.longrepr) if report.failed else "",
-                        f"{app.metadata.get('用例', item.name)}：{report.when} 阶段失败现场")
+        for source, app in sessions:
+            try:
+                app.finish_case(status, str(report.longrepr) if report.failed else "",
+                                f"{app.metadata.get('用例', item.name)}：{report.when} 阶段失败现场")
+            except Exception as error:
+                # 采集异常保留为独立诊断，不能遮蔽原始业务失败或阻止另一端取证。
+                errors = getattr(item, "_bench_evidence_errors", [])
+                errors.append({"来源": source, "阶段": report.when, "错误": str(error)})
+                item._bench_evidence_errors = errors
+                logging.getLogger(__name__).exception("%s 会话阶段取证失败", source)
     if report.when != "teardown":
         return
     status = "passed"
@@ -111,15 +120,17 @@ def pytest_runtest_makereport(item, call):
         path = Path(directory) / "report.json"
         if path.exists():
             result = json.loads(path.read_text(encoding="utf-8"))
-        if app is not None:
-            result.update(app.metadata)
-            result.update({"步骤": app.steps, "截图": app.screenshots})
+        if sessions:
+            result = merge_session_evidence(result, sessions, event_path=os.environ.get("TESTBENCH_EVENTS"),
+                                            case_id=item.nodeid)
         elif status == "failed" and not result.get("截图"):
             result["截图"] = [{"name": "case-failure.png", "description": "用例失败现场",
                 "expected": "未提供业务预期现象", "actual": message or "未建立桌面测试实例",
                 "status": status, "capture_status": "missing", "error": "未建立桌面测试实例，无法保存现场",
                 "time": datetime.now().astimezone().isoformat(timespec="seconds")}]
         result.setdefault("截图", [])
+        if getattr(item, "_bench_evidence_errors", None):
+            result["证据采集错误"] = item._bench_evidence_errors
         result.update({"用例ID": item.nodeid, "用例": (getattr(item.obj, "__doc__", "") or item.name).strip(),
                        "结果": STATUS_LABELS[status], "步骤": result.get("步骤", []),
                        "阶段结果": [{"阶段": part.when, "结果": "失败" if part.failed else "跳过" if part.skipped else "通过",

@@ -21,6 +21,8 @@ const METHODS: &[&str] = &[
     "load_environment",
     "open_slavesim",
     "check_slavesim",
+    "check_master104",
+    "poll_master104",
     "start",
     "poll",
     "stop",
@@ -357,6 +359,8 @@ mod tests {
         assert!(allowed_method("shutdown"));
         assert!(allowed_method("open_slavesim"));
         assert!(allowed_method("check_slavesim"));
+        assert!(allowed_method("check_master104"));
+        assert!(allowed_method("poll_master104"));
         assert!(!allowed_method("execute_shell"));
     }
 

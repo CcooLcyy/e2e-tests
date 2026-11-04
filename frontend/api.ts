@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { BenchEvent } from './state';
-export interface Environment { name: string; app_path: string; driver_path: string; mode: 'fresh' | 'workspace'; workspace_path: string; baseline_path: string; timeout: number; close_app: boolean; slavesim_url: string; annotation_enabled: boolean }
+export interface Environment { name: string; app_path: string; driver_path: string; mode: 'fresh' | 'workspace'; workspace_path: string; baseline_path: string; timeout: number; close_app: boolean; slavesim_url: string; annotation_enabled: boolean; master104_enabled: boolean; master104_path: string; master104_backend: 'win32' | 'uia'; master104_timeout: number }
+export interface Master104Check { checking: boolean; message?: string; snapshot?: Record<string, unknown> }
 export interface CaseInfo { id: string; name: string; description: string; group?: string }
 export interface History { id: string; status: string; environment_name: string; created_at: string; case_count: number; passed: number; failed: number; cancelled?: number; skipped?: number; run_dir: string }
 export interface Shot { name: string; path: string; data_url: string; description?: string; expected?: unknown; actual?: unknown; status?: string; capture_status?: string; error?: string; time?: string; annotated_name?: string; annotated_path?: string; annotated_data_url?: string; annotation_status?: string; annotation_format?: string; annotation_error?: string; annotations?: Array<{label: string; reason?: string}>; step_id?: number | string | null; business_result?: string }

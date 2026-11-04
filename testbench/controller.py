@@ -68,7 +68,10 @@ class TaskController:
         self._offset, self._partial, self._stop_at = 0, b"", None
         self._started = time.monotonic()
         self._selected, self._finished, self._current = list(case_ids), {}, None
-        self._timeout = float(environment.timeout) * max(len(case_ids), 1) * 10 + 120
+        # 总任务期限覆盖启用主站后的单次原生等待，避免界面配置的期限被提前截断。
+        operation_timeout = max(float(environment.timeout),
+                                float(environment.master104_timeout) if environment.master104_enabled else 0)
+        self._timeout = operation_timeout * max(len(case_ids), 1) * 10 + 120
         self._finalized, self._cleanup, self._pending_finish = False, None, None
         self._cleanup_reason, self._cleanup_error_reported = None, False
         self.active = True

@@ -45,6 +45,10 @@ class Environment:
     close_app: bool = True
     annotation_enabled: bool = True
     slavesim_url: str = "http://192.168.1.219:16000"
+    master104_enabled: bool = False
+    master104_path: str = ""
+    master104_backend: str = "win32"
+    master104_timeout: float = 10
 
     def to_dict(self):
         return asdict(self)
@@ -54,6 +58,7 @@ class Environment:
         return cls(**{key: value for key, value in data.items() if key in cls.__dataclass_fields__})
 
     def validate(self):
+        self.validate_master104()
         if not isinstance(self.annotation_enabled, bool):
             raise ValueError("截图标注开关必须为布尔值")
         self.slavesim_url = validate_slavesim_url(self.slavesim_url)
@@ -83,6 +88,33 @@ class Environment:
         if self.baseline_path and not Path(self.baseline_path).is_dir():
             raise ValueError("配置基线必须是已有目录")
 
+    def validate_master104(self, *, required=False):
+        """主站检查独立于 DSP 和驱动校验，禁用时保留未完成的可选配置。"""
+        if not isinstance(self.master104_enabled, bool):
+            raise ValueError("104 主站开关必须为布尔值")
+        if not self.master104_enabled:
+            if required:
+                raise ValueError("请先启用 104 主站")
+            return
+        if (not isinstance(self.master104_path, str) or not self.master104_path.strip()
+                or any(ord(char) < 32 for char in self.master104_path)):
+            raise ValueError("104 主站必须选择已有的 ProIEC104Client.exe")
+        path = Path(self.master104_path.strip())
+        if path.name.lower() != "proiec104client.exe" or not path.is_file():
+            raise ValueError("104 主站必须选择已有的 ProIEC104Client.exe")
+        if self.master104_backend not in ("win32", "uia"):
+            raise ValueError("104 主站后端必须是 win32 或 uia")
+        try:
+            if isinstance(self.master104_timeout, bool):
+                raise ValueError("布尔值不是等待时间")
+            timeout = float(self.master104_timeout)
+        except (ValueError, TypeError, OverflowError) as error:
+            raise ValueError("104 主站等待时间必须是有限正数") from error
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("104 主站等待时间必须是有限正数")
+        self.master104_path = str(path.resolve())
+        self.master104_timeout = timeout
+
 
 @dataclass(frozen=True)
 class CaseInfo:
@@ -100,6 +132,7 @@ def save_environment(path, environment):
     temporary.write_text(json.dumps(environment.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(target)
     logging.getLogger(__name__).info("已保存测试环境，截图自动标注：%s", environment.annotation_enabled)
+    logging.getLogger(__name__).info("已保存 104 主站环境，启用：%s", environment.master104_enabled)
 
 
 def load_environment(path):

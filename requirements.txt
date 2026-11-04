@@ -1,3 +1,4 @@
 pytest==9.1.1
 selenium==4.51.0
 Pillow==13.0.0
+pywinauto==0.6.9; sys_platform == "win32"

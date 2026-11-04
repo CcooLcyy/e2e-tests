@@ -2,6 +2,18 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { applyEvents, initialRecords, counts } from './state.ts';
 
+test('双端同名同编号步骤按来源分别完成', () => {
+  const state = applyEvents(initialRecords(['a']), [
+    { type: 'step', case_id: 'a', step_id: 1, name: '读取状态', status: 'running' },
+    { type: 'step', case_id: 'a', step_id: 'master104:1', name: '[104主站] 读取状态', status: 'running' },
+    { type: 'step', case_id: 'a', step_id: 'master104:1', name: '[104主站] 读取状态', status: 'failed', actual: false },
+    { type: 'step', case_id: 'a', step_id: 1, name: '读取状态', status: 'passed', actual: 0 },
+  ]);
+  assert.deepEqual(state.a.steps.map(step => [step.step_id, step.status, step.actual]), [
+    [1, 'passed', 0], ['master104:1', 'failed', false],
+  ]);
+});
+
 test('步骤事件开始和完成合并，零和false不丢失', () => {
   const state = applyEvents(initialRecords(['a']), [
     { type: 'case_started', case_id: 'a' },
