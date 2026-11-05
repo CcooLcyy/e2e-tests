@@ -23,7 +23,7 @@ export function withModbusDefaults<T extends ModbusEnvironmentFields>(environmen
     dedicated_simulator: huawei.dedicated_simulator === true,
   };
   return { ...environment, modbus_manager_address: environment.modbus_manager_address === undefined
-      ? '192.168.1.219:16000' : string(environment.modbus_manager_address),
+      ? '192.168.1.219:17000' : string(environment.modbus_manager_address),
     modbus_baud_rate: number(environment.modbus_baud_rate, 9600),
     modbus_poll_interval_ms: number(environment.modbus_poll_interval_ms, 1000),
     modbus_acquisition_timeout: number(environment.modbus_acquisition_timeout, 30),

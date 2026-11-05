@@ -50,7 +50,7 @@ class Environment:
     master104_path: str = ""
     master104_backend: str = "win32"
     master104_timeout: float = 10
-    modbus_manager_address: str = "192.168.1.219:16000"
+    modbus_manager_address: str = "192.168.1.219:17000"
     modbus_baud_rate: int = 9600
     modbus_poll_interval_ms: int = 1000
     modbus_acquisition_timeout: float = 30

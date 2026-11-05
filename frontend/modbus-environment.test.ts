@@ -5,7 +5,7 @@ import type { ModbusEnvironmentFields } from './api';
 
 test('旧环境提供空白路径，资源确认保持未勾选', () => {
   const value = withModbusDefaults({});
-  assert.equal(value.modbus_manager_address, '192.168.1.219:16000');
+  assert.equal(value.modbus_manager_address, '192.168.1.219:17000');
   assert.deepEqual(value.modbus_huawei.serial_devices, ['', '', '', '', '', '']);
   assert.equal(value.modbus_huawei.dedicated_simulator, false);
   assert.equal(value.modbus_basic.dedicated_test_resources, false);
