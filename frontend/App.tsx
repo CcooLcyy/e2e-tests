@@ -5,6 +5,7 @@ import type { Bootstrap, CaseInfo, Detail, Environment, History, Master104Check,
 import { applyEvents, counts, initialRecords, labels } from './state';
 import type { BenchEvent, CaseRecord } from './state';
 import { BusinessCaseDetails } from './BusinessCaseDetails';
+import { formatPassRate } from './pass-rate';
 import { ModbusEnvironment } from './ModbusEnvironment';
 import { withModbusDefaults } from './modbus-environment';
 import { caseGroup, summarizeGroups, visibleCases, toggleCases, selectionState, selectedCaseIds, reconcileSelection, groupedSections, toggleExpandedGroup } from './case-groups';
@@ -185,6 +186,14 @@ export default function App() {
   },[master104Checking]);
   const stats=counts(records,taskIds.length?taskIds:cases.map(c=>c.id));
   const progress=stats.total?Math.round(stats.done/stats.total*100):0;
+  const passRate=formatPassRate(stats.passed,stats.failed);
+  const historyPassRate=historyDetail?formatPassRate(
+    historyDetail.cases.filter(item=>item.status==='passed').length,
+    historyDetail.cases.filter(item=>item.status==='failed').length,
+  ):'—';
+  useEffect(()=>{
+    if(taskIds.length)console.info('本次任务通过率：',passRate,'通过：',stats.passed,'失败：',stats.failed);
+  },[passRate,stats.passed,stats.failed,taskIds]);
   const currentCase=cases.find(c=>c.id===focused);
   const visible=visibleCases(cases,'',search);
   const groups=summarizeGroups(cases,selected,records);
@@ -223,7 +232,7 @@ export default function App() {
 
         {page==='execution'&&<>
           <div className="environment-strip"><div className="environment-icon"><Layers3 size={20}/></div><div className="strip-name"><span>当前测试环境</span><strong>{environment.name}</strong></div><span className="soft-tag">{environment.mode==='fresh'?'全新独立副本':'固定测试工作区'}</span><div className="strip-divider"/><span className="strip-hint"><Clock3 size={14}/>等待 {environment.timeout} 秒</span><button className="text-button" onClick={()=>setPage('environment')}>环境设置<ArrowRight size={14}/></button></div>
-          <div className="stat-grid"><Stat label="用例总数" value={stats.total} icon={<ListChecks size={18}/>} hint="本次测试范围"/><Stat label="已完成" value={stats.done} icon={<Activity size={18}/>} hint={`${progress}% 已完成`} accent="blue"/><Stat label="通过" value={stats.passed} icon={<CheckCheck size={18}/>} hint="符合预期结果" accent="green"/><Stat label="失败" value={stats.failed} icon={<X size={18}/>} hint="需要进一步检查" accent="red"/></div>
+          <div className="stat-grid"><Stat label="用例总数" value={stats.total} icon={<ListChecks size={18}/>} hint="本次测试范围"/><Stat label="已完成" value={stats.done} icon={<Activity size={18}/>} hint={`${progress}% 已完成`} accent="blue"/><Stat label="通过" value={stats.passed} icon={<CheckCheck size={18}/>} hint="符合预期结果" accent="green"/><Stat label="失败" value={stats.failed} icon={<X size={18}/>} hint="需要进一步检查" accent="red"/><Stat label="通过率" value={passRate} unit="" icon={<CheckCheck size={18}/>} hint="通过 ÷（通过＋失败）" accent="blue"/></div>
           <div className="execution-grid">
             <section className="panel case-panel"><div className="panel-heading"><div><h2>测试用例 <span>{cases.length}</span></h2><p>按顺序执行所选用例</p></div><span className={`task-badge ${taskStatus}`} data-testid="task-status">{stopping?'正在停止':labels[taskStatus]||taskStatus}</span></div>
               <div className="case-toolbar"><label className="search"><Search size={15}/><input value={search} onChange={e=>{setSearch(e.target.value);setSearchCollapsed(new Set());}} placeholder="搜索分组、用例名称或说明" aria-label="搜索测试用例"/></label><span className="selection-count">匹配 {visible.length} 项 · 已选 {selected.size} 项</span></div>
@@ -287,7 +296,7 @@ export default function App() {
             <div className="history-table-heading"><span>测试任务 / 环境</span><span>结果</span></div>
             {history.map(item=><button className={`history-row ${historyFocus===item.run_dir?'focused':''}`} key={item.id} data-testid="history-row" onClick={()=>setHistoryFocus(item.run_dir)}>
               <div className="history-icon"><FileText size={19}/></div><div><strong>{item.environment_name||'测试任务'}</strong><small>{item.created_at?.replace('T',' ').slice(0,19) || item.id}</small>
-              <span className="history-count">{item.case_count} 项 · {item.passed} 通过 · {item.failed} 失败 · {item.cancelled||0} 停止 · {item.skipped||0} 未执行</span></div><Status status={item.status}/><ChevronRight size={16}/>
+              <span className="history-count">{item.case_count} 项 · {item.passed} 通过 · {item.failed} 失败 · {item.cancelled||0} 停止 · {item.skipped||0} 未执行</span><span className="history-count" title="通过 ÷（通过＋失败）；跳过、停止和未执行不计入">通过率 {formatPassRate(item.passed,item.failed)}</span></div><Status status={item.status}/><ChevronRight size={16}/>
             </button>)}
             {!history.length&&<div className="empty"><HistoryIcon size={30}/><strong>还没有测试记录</strong><span>运行一次测试后，可在这里查看历史结果。</span></div>}
           </section><section className="panel history-detail">
@@ -298,7 +307,7 @@ export default function App() {
               </div>
             </div>
             {historyDetail?<div className="history-cases">
-              <div className="history-summary"><Status status={String(historyDetail.summary.status||'pending')}/><span>{historyDetail.cases.length} 项测试用例</span></div>
+              <div className="history-summary"><Status status={String(historyDetail.summary.status||'pending')}/><span>{historyDetail.cases.length} 项测试用例</span><span title="通过 ÷（通过＋失败）；跳过、停止和未执行不计入">通过率 {historyPassRate}</span></div>
               {historyDetail.cases.map((item,index)=><details key={`${historyFocus}-${index}`} className="history-case" open={index===0}>
                 <summary><Status status={String(item.status||'pending')} text={false}/><strong>{item.business?.title||cases.find(c=>c.id===item.case_id)?.name||'测试用例'}</strong><span>{duration(item.duration as number|undefined)}</span><ChevronRight size={14}/></summary>
                 <BusinessCaseDetails detail={item} status={String(item.status||'pending')} onOpen={path=>void open(path)}/>
@@ -311,6 +320,6 @@ export default function App() {
   </div>;
 }
 
-function Stat({label,value,icon,hint,accent='default'}:{label:string;value:number;icon:React.ReactNode;hint:string;accent?:string}){return <div className={`stat-card ${accent}`}><div className="stat-top"><span>{label}</span><span className="stat-icon">{icon}</span></div><strong>{value}<small>项</small></strong><p>{hint}</p></div>;}
+function Stat({label,value,icon,hint,accent='default',unit='项'}:{label:string;value:number|string;icon:React.ReactNode;hint:string;accent?:string;unit?:string}){return <div className={`stat-card ${accent}`}><div className="stat-top"><span>{label}</span><span className="stat-icon">{icon}</span></div><strong>{value}{unit&&<small>{unit}</small>}</strong><p>{hint}</p></div>;}
 function Field({label,hint,children}:{label:string;hint?:string;children:React.ReactNode}){return <div className="field"><label>{label}</label>{children}{hint&&<p>{hint}</p>}</div>;}
 function PathInput({value,onChange,onBrowse,testId}:{value:string;onChange:(v:string)=>void;onBrowse:()=>void;testId?:string}){return <div className="path-input"><input value={value} onChange={e=>onChange(e.target.value)} data-testid={testId}/><button type="button" onClick={onBrowse} aria-label="浏览路径"><FolderOpen size={16}/></button></div>;}

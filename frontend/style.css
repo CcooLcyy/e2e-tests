@@ -120,5 +120,10 @@
 .environment-page .collapsible-section[open]>summary::after{transform:rotate(45deg)}
 .environment-page .collapsible-section>summary:hover h3{color:#2857b5}
 .environment-page .collapsible-section>summary:focus-visible{outline:2px solid #87a9ed;outline-offset:5px;border-radius:4px}
+
+/* 通过率与数量统计并列，较窄窗口自动换行。 */
+.stat-grid{grid-template-columns:repeat(5,minmax(0,1fr))}
+.history-summary{flex-wrap:wrap;gap:8px 14px}
+@media(max-width:1180px){.stat-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .environment-page .collapsible-section:not([open]){padding-bottom:22px}
 @media(max-width:640px){.environment-page .collapsible-section:not([open]){padding-bottom:16px}}
