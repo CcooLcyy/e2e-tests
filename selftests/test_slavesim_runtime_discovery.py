@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.common.by import By
 
 from testbench.slavesim_runtime import (basic_candidate, fleet_candidates, validate_topology,
                                        assert_existing_preserved, validate_fleet_capacity)
@@ -240,38 +242,78 @@ def test_zero_start_cannot_be_bypassed_when_clear_or_confirmation_fails(tmp_path
         page.prepare_fleet(environment(), "本次")
 
 
-def test_clear_deletes_all_buses_then_saves_zero_buses_and_devices(tmp_path):
-    """通过真实删除总线入口清空全部总线及从站，全部删完才保存。"""
+def test_clear_clicks_delete_all_once_then_saves_zero_buses_and_devices(tmp_path):
+    """只点击一次删除全部总线，不逐卡定位；保存前运行配置保持原样。"""
     page = fleet_page(tmp_path)
     before = [{"name": "一", "link": "/srv/one", "slaves": [manual(1, 0), manual(2, 0)]},
               {"name": "二", "link": "/srv/two", "slaves": [manual(7, 0)]},
               {"name": "空", "link": "/srv/empty", "slaves": []}]
     draft = deepcopy(before)
+    running = deepcopy(before)
     calls = []
-    class Card:
-        def __init__(self, bus):
-            self.bus = bus
-        def find_element(self, _by, xpath):
-            assert "删除总线" in xpath
-            def click():
-                calls.append(("删除总线", self.bus["name"]))
-                draft.remove(self.bus)
-            return SimpleNamespace(click=click)
-    page.driver = SimpleNamespace(find_elements=lambda *_: [Card(bus) for bus in draft])
-    page._config_bus = lambda name: Card(next(bus for bus in draft if bus["name"] == name))
-    page._wait = lambda predicate, _message: predicate(None) or pytest.fail("删除后数量未减少")
+    def find_element(by, identity):
+        assert (by, identity) == (By.ID, "delete-all-buses")
+        def click():
+            calls.append("删除全部总线")
+            draft.clear()
+            assert running == before
+        return SimpleNamespace(click=click)
+    page.driver = SimpleNamespace(find_elements=lambda *_: list(draft), find_element=find_element)
+    page._config_bus = lambda *_: pytest.fail("删除全部总线不应逐卡读取名称")
+    page._wait = lambda predicate, _message: predicate(None) or pytest.fail("草稿未清空")
     def save(_label, *, runtime_impact):
         assert draft == []
+        assert running == before
         assert "总线" in runtime_impact and "不自动恢复" in runtime_impact
         calls.append("保存零台")
-        return deepcopy(draft)
+        running.clear()
+        return deepcopy(running)
     page._save_configuration = save
     result = page._clear_existing_devices(before)
-    assert calls == [("删除总线", "一"), ("删除总线", "二"), ("删除总线", "空"), "保存零台"]
+    assert calls == ["删除全部总线", "保存零台"]
     assert result == []
     assert [len(bus["slaves"]) for bus in before] == [2, 1, 0]
     assert page.desktop.metadata["华为自动清空结果"] == {
         "删除总线数": 3, "删除从站数": 3, "保存后总线数": 0, "保存后从站数": 0}
+
+
+@pytest.mark.parametrize("failure", ["button", "draft", "save", "readback"])
+def test_bulk_clear_failure_prevents_creating_new_fleet(tmp_path, failure):
+    """按钮缺失、草稿未清空、保存失败或读回残留均停止，不能绕过清空创建。"""
+    page = fleet_page(tmp_path)
+    before = [{"name": "旧总线", "link": "/srv/old", "slaves": [manual(1, 0)]}]
+    draft = deepcopy(before)
+    calls = []
+    page._read_configuration = lambda _: deepcopy(before)
+    def find_element(by, identity):
+        assert (by, identity) == (By.ID, "delete-all-buses")
+        if failure == "button":
+            raise NoSuchElementException("旧页面没有一键删除按钮")
+        def click():
+            calls.append("点击删除全部")
+            if failure != "draft":
+                draft.clear()
+        return SimpleNamespace(click=click)
+    page.driver = SimpleNamespace(find_elements=lambda *_: list(draft), find_element=find_element)
+    page._config_bus = lambda *_: pytest.fail("不应回退逐条删除或定位总线")
+    def wait(predicate, message):
+        if not predicate(None):
+            raise AssertionError(message)
+    page._wait = wait
+    def save(_label, *, runtime_impact):
+        assert draft == []
+        calls.append("保存")
+        if failure == "save":
+            raise AssertionError("清空保存失败")
+        return [{**before[0], "slaves": []}]
+    page._save_configuration = save
+    page.create_fleet = lambda *_args, **_kwargs: pytest.fail("一键清空失败时不得创建机群")
+    page._verify_zero_runtime = lambda: pytest.fail("清空失败时不得进入运行零台确认")
+    messages = {"button": "请先更新模拟器", "draft": "草稿仍有总线", "save": "清空保存失败", "readback": "仍有模拟总线"}
+    with pytest.raises(AssertionError, match=messages[failure]):
+        page.prepare_fleet(environment(), "本次")
+    assert calls == ([] if failure == "button" else ["点击删除全部"] if failure == "draft" else ["点击删除全部", "保存"])
+    assert "华为自动清空结果" not in page.desktop.metadata
 
 
 @pytest.mark.parametrize("remaining_bus", [False, True])

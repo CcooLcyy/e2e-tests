@@ -7,6 +7,7 @@ import logging
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
+from selenium.common.exceptions import NoSuchElementException
 
 from .slavesim_page import SlaveSimPage, _literal
 
@@ -78,18 +79,18 @@ class HuaweiSlaveSimPage(SlaveSimPage):
                              if self._field(node, "站号（1～247）").get_attribute("value") == str(station)], "目标配置从站")
 
     def _clear_existing_devices(self, before):
-        """通过页面直接删除全部总线，独立保存零总线、零设备状态。"""
-        for index, bus in enumerate(before):
-            remaining = len(before) - index
-            with self._step(f"删除模拟总线 {bus['name']}，删除前剩余{remaining}路"):
-                cards = self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")
-                if len(cards) != remaining:
-                    raise AssertionError("删除前总线数量与实际读取配置不一致，保留现场")
-                self._config_bus(bus["name"]).find_element(
-                    By.XPATH, "./summary/button[normalize-space(.)='删除总线']").click()
-                self._wait(lambda _: len(self.driver.find_elements(
-                    By.CSS_SELECTOR, "#config-buses > details.bus-editor")) == remaining - 1,
-                    "删除总线后页面数量未减少")
+        """一次点击删除全部总线，独立保存并确认零总线、零设备。"""
+        with self._step(f"一键删除全部{len(before)}路模拟总线", expected="一次清空全部总线草稿，保存前不改变运行配置"):
+            cards = self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")
+            if len(cards) != len(before):
+                raise AssertionError("删除前总线数量与实际读取配置不一致，保留现场")
+            try:
+                button = self.driver.find_element(By.ID, "delete-all-buses")
+            except NoSuchElementException as error:
+                raise AssertionError("slaveSim页面缺少“删除全部总线”按钮，请先更新模拟器；未执行删除") from error
+            button.click()
+            self._wait(lambda _: not self.driver.find_elements(
+                By.CSS_SELECTOR, "#config-buses > details.bus-editor"), "删除全部总线后草稿仍有总线")
         actual = self._save_configuration("删除全部模拟总线并保存零台状态", runtime_impact=
                                           "原有总线、从站及点表已删除，PTY及软链接已释放，不自动恢复")
         if actual != []:
@@ -98,7 +99,7 @@ class HuaweiSlaveSimPage(SlaveSimPage):
             "删除总线数": len(before), "删除从站数": sum(len(bus["slaves"]) for bus in before),
             "保存后总线数": 0, "保存后从站数": 0}
         self._snapshot({"类型": "华为自动清空结果", **self.desktop.metadata["华为自动清空结果"]})
-        LOG.info("已通过页面删除全部%d路模拟总线并保存零台状态", len(before))
+        LOG.info("已通过页面一次删除全部%d路模拟总线并保存零台状态", len(before))
         return actual
 
     def _verify_zero_runtime(self):
