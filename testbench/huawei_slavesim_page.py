@@ -78,36 +78,38 @@ class HuaweiSlaveSimPage(SlaveSimPage):
                              if self._field(node, "站号（1～247）").get_attribute("value") == str(station)], "目标配置从站")
 
     def prepare_fleet(self, environment, run_id, *, check_paths=None):
-        """先读取真实六路拓扑；资源不足时使用页面默认路径新增完整机群。"""
-        from .huawei_fleet import HuaweiFleetConfig, READ_POINTS, build_fleet
+        """先确认零逆变器，再使用页面默认路径从头新增完整机群。"""
+        from .huawei_fleet import HuaweiFleetConfig, build_fleet
         from .modbus_environment import huawei_config_from_environment
-        from .slavesim_runtime import fleet_candidates, assert_existing_preserved, validate_fleet_capacity
-        before = self._read_configuration("华为机群准备前")
-        selected = fleet_candidates(before, {point.address for point in READ_POINTS} | {30075})
+        from .slavesim_runtime import assert_existing_preserved
+        with self._step("确认初始模拟逆变器为0台", expected="所有总线均无已有模拟从站，不删除或复用已有设备") as entry:
+            before = self._read_configuration("华为机群零逆变器起点")
+            devices = [{"总线": bus["name"], "站号": slave["station_id"], "模型": slave["model"]}
+                       for bus in before for slave in bus["slaves"]]
+            modeled = sum(bool(device["模型"]) for device in devices)
+            initial = {"已有从站数": len(devices), "已识别逆变器数": modeled,
+                       "未确认类型从站数": len(devices) - modeled, "设备": devices}
+            self.desktop.metadata["华为初始逆变器检查"] = initial
+            self._snapshot({"类型": "华为初始逆变器检查", **initial})
+            entry["实际"] = json.dumps(initial, ensure_ascii=False)
+            LOG.info("华为机群零起点检查：已有从站=%s，模型设备=%s，未确认类型=%s",
+                     len(devices), modeled, len(devices) - modeled)
+            # 无模型的静态厂商点表也可能是逆变器，不能据此宣称零台。
+            if devices:
+                raise AssertionError(
+                    f"华为机群前置条件不满足：初始模拟逆变器必须为0台，实际已有{len(devices)}个模拟从站"
+                    f"（模型设备{modeled}台，未确认类型{len(devices) - modeled}台）；"
+                    "请手动清空后重跑；未删除或复用已有设备")
         # 此时只生成固定设备工况，六条路径在页面新增后读取，不参与DSP连接。
         buses = build_fleet(HuaweiFleetConfig(environment["modbus_manager_address"], ("",) * 6), run_id)
-        if selected is None:
-            self.create_fleet(buses, discover_paths=True, check_paths=check_paths)
-            actual = self._read_configuration("华为新增机群保存后")
-            assert_existing_preserved(before, actual)
-        else:
-            for bus, actual in zip(buses, selected):
-                bus["name"], bus["serial_device"] = actual["name"], actual["link"]
-            capacity = validate_fleet_capacity(selected, buses)
-            self._snapshot({"类型": "华为固定工况能力校验", "设备": capacity})
-            if check_paths is not None:
-                check_paths(tuple(bus["serial_device"] for bus in buses))
-            self.driver.find_element(By.ID, "show-runtime").click()
-            for bus in buses:
-                for device in bus["devices"]:
-                    self.observe_device(bus["name"], device["station_id"], [point.address for point in READ_POINTS])
-                    scenario = {key: device[key] for key in (*SCENARIO_LABELS, "disturbance_enabled")}
-                    self.apply_scenario(bus["name"], device["station_id"], **scenario)
-                    self.apply_control(bus["name"], device["station_id"], "active_gradient", 100)
-                    self.apply_control(bus["name"], device["station_id"], "reactive_gradient", 100)
-                    self.apply_control(bus["name"], device["station_id"], "ratio", 0)
-                    self.apply_control(bus["name"], device["station_id"], "percent", 100)
-            self.desktop.metadata["华为资源策略"] = "复用页面实际六路1至6站华为模型；仅应用本用例工况，保留配置定义及其他总线"
+        self.create_fleet(buses, discover_paths=True, check_paths=check_paths)
+        actual = self._read_configuration("华为从零新增机群保存后")
+        assert_existing_preserved(before, actual)
+        actual_count = sum(len(bus["slaves"]) for bus in actual)
+        self.desktop.metadata["华为创建后设备数"] = actual_count
+        if actual_count != 21:
+            raise AssertionError(f"华为从零创建后应恰好有21台模拟逆变器，实际有{actual_count}个从站；保留现场")
+        self.desktop.metadata["华为资源策略"] = "初始零逆变器；通过页面从头创建六路21台，不复用、不自动删除已有设备"
         config = huawei_config_from_environment(environment, {"serial_devices": [bus["serial_device"] for bus in buses]})
         validate_fleet(buses)
         self._prepared_fleet = buses

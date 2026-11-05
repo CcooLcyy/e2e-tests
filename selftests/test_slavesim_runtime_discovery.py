@@ -1,5 +1,6 @@
 """运行时资源选择契约：只跟随页面实际配置，不读旧手填路径。"""
 from copy import deepcopy
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +9,7 @@ from testbench.slavesim_runtime import (basic_candidate, fleet_candidates, valid
                                        assert_existing_preserved, validate_fleet_capacity)
 from testbench.slavesim_page import SlaveSimPage
 from testbench.huawei_slavesim_page import HuaweiSlaveSimPage
-from testbench.huawei_fleet import READ_POINTS, HuaweiFleetConfig, build_fleet
+from testbench.huawei_fleet import HuaweiFleetConfig, build_fleet
 
 
 def manual(station, address):
@@ -119,47 +120,90 @@ def test_basic_path_conflict_prevents_observation_and_modification(tmp_path):
         page.prepare_basic(environment(), check_paths=conflict)
 
 
-def test_fleet_reuse_resets_commands_and_preserves_actual_names(tmp_path):
+def fleet_page(tmp_path):
     page = HuaweiSlaveSimPage(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
     page.driver = ReadOnlyDriver()
-    addresses = {point.address for point in READ_POINTS} | {30075}
-    buses = [{"name": f"现场{i}", "link": f"/srv/existing/tty{i}", "slaves": [
-        {"station_id": station, "model": "huawei_v3", "registers": huawei_registers(addresses)}
-        for station in range(1, i + 1)]} for i in range(1, 7)]
-    page._read_configuration = lambda _: deepcopy(buses)
+    @contextmanager
+    def step(*_args, **_kwargs):
+        yield {}
+    page._step = step
+    page._snapshot = lambda result: None
+    return page
+
+
+@pytest.mark.parametrize("before", [[], [{"name": "已有空总线", "link": "/srv/empty", "slaves": []}]])
+def test_fleet_starts_from_zero_and_creates_all_twenty_one_devices(tmp_path, before):
+    """零从站才进入完整创建流程，空总线保留，串口来自实际新增结果。"""
+    page = fleet_page(tmp_path)
+    saved = deepcopy(before)
     calls = []
-    page.apply_scenario = lambda bus, station, **values: calls.append((bus, station, "场景", values))
-    page.apply_control = lambda *args: calls.append(args)
-    page.observe_device = lambda bus, station, _: {"link_path": next(item["link"] for item in buses if item["name"] == bus)}
+    page._read_configuration = lambda _: deepcopy(saved)
+    def create(buses, *, discover_paths, check_paths):
+        assert sum(len(bus["slaves"]) for bus in saved) == 0
+        assert discover_paths is True
+        calls.append("创建")
+        for index, bus in enumerate(buses):
+            bus["serial_device"] = f"/srv/new/tty{index}"
+            saved.append({"name": bus["name"], "link": bus["serial_device"], "slaves": [
+                {"station_id": device["station_id"], "model": "huawei_v3", "registers": []}
+                for device in bus["devices"]]})
+        check_paths(tuple(bus["serial_device"] for bus in buses))
+    page.create_fleet = create
+    page.observe_device = lambda bus, _station, _addresses: {
+        "link_path": next(item["link"] for item in saved if item["name"] == bus)}
     checked = []
-    def check_paths(paths):
-        assert calls == []
-        checked.append(paths)
-    config, actual = page.prepare_fleet(environment(), "本次", check_paths=check_paths)
-    assert config.serial_devices == tuple(bus["link"] for bus in buses)
-    assert [bus["name"] for bus in actual] == [bus["name"] for bus in buses]
-    assert checked == [tuple(bus["link"] for bus in buses)]
-    assert len(calls) == 21 * 5
-    for bus in actual:
-        for device in bus["devices"]:
-            assert (bus["name"], device["station_id"], "ratio", 0) in calls
-            assert (bus["name"], device["station_id"], "percent", 100) in calls
-            assert (bus["name"], device["station_id"], "active_gradient", 100) in calls
-            assert (bus["name"], device["station_id"], "reactive_gradient", 100) in calls
-    # 后续编排仍调用create_fleet，但不得重新创建或写入同名资源。
-    page._step = lambda *_: pytest.fail("已准备机群不应重新进入创建步骤")
-    page.create_fleet(actual)
+    config, actual = page.prepare_fleet(environment(), "本次", check_paths=checked.append)
+    assert calls == ["创建"]
+    assert [len(bus["devices"]) for bus in actual] == list(range(1, 7))
+    assert config.serial_devices == tuple(f"/srv/new/tty{i}" for i in range(6))
+    assert checked == [config.serial_devices]
+    assert all(bus in saved for bus in before)
+    evidence = page.desktop.metadata["华为初始逆变器检查"]
+    assert evidence["已有从站数"] == evidence["已识别逆变器数"] == evidence["未确认类型从站数"] == 0
 
 
-def test_fleet_path_conflict_prevents_runtime_mutation(tmp_path):
-    page = HuaweiSlaveSimPage(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
-    addresses = {point.address for point in READ_POINTS} | {30075}
-    buses = [{"name": f"已有{i}", "link": f"/srv/existing/tty{i}", "slaves": [
-        {"station_id": station, "model": "huawei_v3", "registers": huawei_registers(addresses)}
-        for station in range(1, i + 1)]} for i in range(1, 7)]
-    page._read_configuration = lambda _: buses
-    page.apply_scenario = lambda *_args, **_kwargs: pytest.fail("路径占用时不得应用工况")
-    page.apply_control = lambda *_: pytest.fail("路径占用时不得修改控制")
+@pytest.mark.parametrize("model", ["huawei_v3", "未知模型", ""])
+def test_any_existing_device_fails_before_creating_or_changing_resources(tmp_path, model):
+    """已有模型或类型无法确认的静态从站均阻止零起点测试，不删除、不复用。"""
+    page = fleet_page(tmp_path)
+    before = [{"name": "其他总线", "link": "/srv/other", "slaves": [
+        {"station_id": 17, "model": model, "registers": []}]}]
+    original = deepcopy(before)
+    page._read_configuration = lambda _: before
+    page.create_fleet = lambda *_args, **_kwargs: pytest.fail("已有设备时不得创建或覆盖机群")
+    page.apply_scenario = lambda *_args, **_kwargs: pytest.fail("已有设备时不得应用工况")
+    page.apply_control = lambda *_: pytest.fail("已有设备时不得修改控制")
+    def check_paths(_):
+        pytest.fail("零起点失败时不得继续检查DSP资源")
+    with pytest.raises(AssertionError, match="初始模拟逆变器必须为0台"):
+        page.prepare_fleet(environment(), "本次", check_paths=check_paths)
+    assert before == original
+    evidence = page.desktop.metadata["华为初始逆变器检查"]
+    assert evidence["已有从站数"] == 1
+    assert len(evidence["设备"]) == 1
+
+
+def test_complete_existing_fleet_is_rejected_instead_of_reused(tmp_path):
+    """完整六路21台也必须前置失败，不能因配置匹配而绕过从零创建。"""
+    page = fleet_page(tmp_path)
+    before, _ = capacity_fleet()
+    page._read_configuration = lambda _: deepcopy(before)
+    page.create_fleet = lambda *_args, **_kwargs: pytest.fail("完整既有机群不得复用或重新创建")
+    page.apply_scenario = lambda *_args, **_kwargs: pytest.fail("完整既有机群不得重置工况")
+    page.apply_control = lambda *_: pytest.fail("完整既有机群不得重置控制")
+    with pytest.raises(AssertionError, match="初始模拟逆变器必须为0台"):
+        page.prepare_fleet(environment(), "本次")
+    assert page.desktop.metadata["华为初始逆变器检查"]["已有从站数"] == 21
+
+
+def test_zero_start_path_conflict_remains_a_precondition_failure(tmp_path):
+    """确认零台后，DSP路径占用仍保持失败，不进入采集或工况操作。"""
+    page = fleet_page(tmp_path)
+    page._read_configuration = lambda _: []
+    def create(_buses, *, discover_paths, check_paths):
+        check_paths(("/srv/new/tty0",))
+    page.create_fleet = create
+    page.observe_device = lambda *_: pytest.fail("路径占用时不得读取测试点")
     def conflict(_):
         raise AssertionError("DSP串口路径已占用")
     with pytest.raises(AssertionError, match="已占用"):
@@ -203,15 +247,23 @@ def test_missing_capacity_is_not_guessed_from_template_defaults():
         validate_fleet_capacity(actual, planned)
 
 
-def test_last_device_capacity_failure_prevents_all_scenario_changes(tmp_path):
-    actual, _ = capacity_fleet()
-    for bus in actual:
-        for slave in bus["slaves"]:
-            slave["registers"] = huawei_registers({point.address for point in READ_POINTS})
-    next(reg for reg in actual[-1]["slaves"][-1]["registers"] if reg["address"] == 30075)["value"] = 1000
-    page = HuaweiSlaveSimPage(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
-    page._read_configuration = lambda _: actual
-    page.apply_scenario = lambda *_args, **_kwargs: pytest.fail("全机群容量校验失败前不得应用工况")
-    page.apply_control = lambda *_: pytest.fail("全机群容量校验失败前不得应用控制")
-    with pytest.raises(AssertionError, match="固定发电目标"):
+@pytest.mark.parametrize("count", [20, 22])
+def test_created_fleet_readback_requires_exactly_twenty_one_devices(tmp_path, count):
+    """从零创建后必须读回确认数量，少台或额外设备均保持失败。"""
+    page = fleet_page(tmp_path)
+    saved = []
+    page._read_configuration = lambda _: deepcopy(saved)
+    def create(buses, **_kwargs):
+        for index, bus in enumerate(buses):
+            bus["serial_device"] = f"/srv/new/tty{index}"
+            saved.append({"name": bus["name"], "link": bus["serial_device"], "slaves": [
+                {"station_id": device["station_id"], "model": "huawei_v3", "registers": []}
+                for device in bus["devices"]]})
+        if count == 20:
+            saved[-1]["slaves"].pop()
+        else:
+            saved[-1]["slaves"].append({"station_id": 7, "model": "huawei_v3", "registers": []})
+    page.create_fleet = create
+    page.observe_device = lambda *_: pytest.fail("实际台数不符时不得进入运行验收")
+    with pytest.raises(AssertionError, match="21"):
         page.prepare_fleet(environment(), "本次")

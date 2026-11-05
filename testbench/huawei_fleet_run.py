@@ -23,7 +23,7 @@ class HuaweiFleetRun:
         desktop.metadata["华为六路拓扑"] = self.buses
         desktop.metadata["华为遥控缺口"] = list(UNIMPLEMENTED_CONTROLS)
         desktop.metadata["华为验收范围"] = "模拟器场景/控制变化后的DSP抄读匹配；DSP下发调节及104遥控未验证"
-        desktop.metadata["华为保留配置"] = "不删除本次创建的模拟器总线及DSP连接；重复运行前须处理已占用测试路径"
+        desktop.metadata["华为保留配置"] = "不删除本次创建的模拟器总线及DSP连接；重复运行前须手动清空模拟从站并处理已占用测试路径"
 
     @staticmethod
     def _identity(bus, device):
