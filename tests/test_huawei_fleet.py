@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 
-from testbench.huawei_fleet import HuaweiFleetConfig
+from testbench.modbus_environment import huawei_config_from_environment
 from testbench.huawei_fleet_run import HuaweiFleetRun
 from testbench.login_page import PlatformLoginPage, load_login_account
 from testbench.model import validate_slavesim_url
@@ -24,12 +24,12 @@ def huawei_fleet(request):
     from testbench.huawei_slavesim_page import HuaweiSlaveSimPage
     from testbench.huawei_rtu_page import HuaweiRtuPage
 
-    config = HuaweiFleetConfig.load(ROOT / "local" / "huawei-rtu.json")
     task_path = os.environ.get("TESTBENCH_TASK")
     if not task_path:
         raise RuntimeError("请从测试上位机执行华为机群用例，以读取任务环境和模拟器地址")
     task = json.loads(Path(task_path).read_text(encoding="utf-8"))
     environment = task["environment"]
+    config = huawei_config_from_environment(environment)
     if environment.get("mode") != "fresh":
         raise RuntimeError("华为21台配置用例要求全新独立副本")
     url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)

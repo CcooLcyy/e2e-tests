@@ -12,7 +12,8 @@ import uuid
 import pytest
 
 from testbench.login_page import PlatformLoginPage, load_login_account
-from testbench.modbus_rtu_config import RtuEnvironment, assert_dual_observation, decimal_value, expected_value
+from testbench.modbus_rtu_config import assert_dual_observation, decimal_value, expected_value
+from testbench.modbus_environment import basic_config_from_environment
 
 
 pytestmark = pytest.mark.case_group("Modbus RTU")
@@ -125,12 +126,12 @@ def rtu(request):
     from testbench.slavesim_page import SlaveSimPage
     from testbench.model import validate_slavesim_url
 
-    config = RtuEnvironment.load(ROOT / "local" / "modbus-rtu.json")
     task_path = os.environ.get("TESTBENCH_TASK")
     if not task_path:
         raise RuntimeError("RTU 双端用例需要从测试上位机运行，以读取任务环境和 slaveSim 地址")
     task = json.loads(Path(task_path).read_text(encoding="utf-8"))
     environment = task["environment"]
+    config = basic_config_from_environment(environment)
     if environment.get("mode") != "fresh":
         raise RuntimeError("RTU 双端用例要求全新独立副本，每项独立准备环境")
     simulator_url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)

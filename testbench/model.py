@@ -1,5 +1,6 @@
 """环境与用例模型。"""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from copy import deepcopy
 import json
 import logging
 import math
@@ -49,13 +50,19 @@ class Environment:
     master104_path: str = ""
     master104_backend: str = "win32"
     master104_timeout: float = 10
+    modbus_manager_address: str = ""
+    modbus_baud_rate: int = 9600
+    modbus_poll_interval_ms: int = 1000
+    modbus_acquisition_timeout: float = 30
+    modbus_basic: dict = field(default_factory=dict)
+    modbus_huawei: dict = field(default_factory=dict)
 
     def to_dict(self):
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data):
-        return cls(**{key: value for key, value in data.items() if key in cls.__dataclass_fields__})
+        return cls(**{key: deepcopy(value) for key, value in data.items() if key in cls.__dataclass_fields__})
 
     def validate(self):
         self.validate_master104()
@@ -115,6 +122,11 @@ class Environment:
         self.master104_path = str(path.resolve())
         self.master104_timeout = timeout
 
+    def validate_for_cases(self, case_ids):
+        """开始任务前检查所选用例需要的参数，允许保存未完成的RTU环境草稿。"""
+        from .modbus_environment import validate_selected_modbus_cases
+        validate_selected_modbus_cases(self.to_dict(), case_ids)
+
 
 @dataclass(frozen=True)
 class CaseInfo:
@@ -133,6 +145,7 @@ def save_environment(path, environment):
     temporary.replace(target)
     logging.getLogger(__name__).info("已保存测试环境，截图自动标注：%s", environment.annotation_enabled)
     logging.getLogger(__name__).info("已保存 104 主站环境，启用：%s", environment.master104_enabled)
+    logging.getLogger(__name__).info("已保存统一Modbus RTU环境，完整性在开始所选用例前检查")
 
 
 def load_environment(path):

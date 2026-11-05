@@ -5,10 +5,12 @@ import type { Bootstrap, CaseInfo, Detail, Environment, History, Master104Check,
 import { applyEvents, counts, initialRecords, labels } from './state';
 import type { BenchEvent, CaseRecord } from './state';
 import { BusinessCaseDetails } from './BusinessCaseDetails';
+import { ModbusEnvironment } from './ModbusEnvironment';
+import { withModbusDefaults } from './modbus-environment';
 import { caseGroup, summarizeGroups, visibleCases, toggleCases, selectionState, selectedCaseIds, reconcileSelection, groupedSections, toggleExpandedGroup } from './case-groups';
 
 type Page = 'execution' | 'environment' | 'history';
-const emptyEnvironment: Environment = {name:'本机测试环境',app_path:'',driver_path:'',mode:'fresh',workspace_path:'',baseline_path:'',timeout:20,close_app:true,slavesim_url:'http://192.168.1.219:16000',annotation_enabled:true,master104_enabled:false,master104_path:'',master104_backend:'win32',master104_timeout:10};
+const emptyEnvironment: Environment = withModbusDefaults({name:'本机测试环境',app_path:'',driver_path:'',mode:'fresh',workspace_path:'',baseline_path:'',timeout:20,close_app:true,slavesim_url:'http://192.168.1.219:16000',annotation_enabled:true,master104_enabled:false,master104_path:'',master104_backend:'win32',master104_timeout:10} as Environment);
 const duration = (value?: number) => value === undefined ? '—' : `${value.toFixed(2)} s`;
 function Status({ status, text = true }: {status: string; text?: boolean}) { return <span className={`status ${status}`}><i />{text && (labels[status] || status)}{status === 'running' && <LoaderCircle size={12} className="spin"/>}</span>; }
 
@@ -60,7 +62,7 @@ export default function App() {
   async function bootstrap() {
     if (!desktop) return;
     setLoading(true); setError('');
-    try { const data = await call<Bootstrap>('bootstrap'); setEnvironment(data.environment);setCases(data.cases);setHistory(data.history);setRecords(initialRecords(data.cases.map(c=>c.id)));setSelected(new Set(data.cases.map(c=>c.id)));setFocused(data.cases[0]?.id || '');setReady(true); }
+    try { const data = await call<Bootstrap>('bootstrap'); setEnvironment(withModbusDefaults({...emptyEnvironment,...data.environment}));setCases(data.cases);setHistory(data.history);setRecords(initialRecords(data.cases.map(c=>c.id)));setSelected(new Set(data.cases.map(c=>c.id)));setFocused(data.cases[0]?.id || '');setReady(true); }
     catch(e) {setError(String(e));} finally {setLoading(false);}
   }
   useEffect(()=>{void bootstrap();},[]);
@@ -113,8 +115,8 @@ export default function App() {
     catch(e){setError(String(e));}finally{starting.current=false;setBusy(false);}
   }
   async function stop(){setStopping(true);try{await call('stop');}catch(e){setError(String(e));setStopping(false);}}
-  async function save(){setBusy(true);try{setEnvironment(await call<Environment>('save_environment',{environment}));setNotice('测试环境已保存，下次启动会自动加载。');}catch(e){setError(String(e));}finally{setBusy(false);}}
-  async function load(){try{const path=await choose('environment');if(path){setEnvironment(await call<Environment>('load_environment',{path}));setNotice('环境配置已载入，保存后生效。');}}catch(e){setError(String(e));}}
+  async function save(){setBusy(true);try{setEnvironment(withModbusDefaults({...emptyEnvironment,...await call<Environment>('save_environment',{environment})}));setNotice('测试环境已保存，下次启动会自动加载。');}catch(e){setError(String(e));}finally{setBusy(false);}}
+  async function load(){try{const path=await choose('environment');if(path){setEnvironment(withModbusDefaults({...emptyEnvironment,...await call<Environment>('load_environment',{path})}));setNotice('环境配置已载入，保存后生效。');}}catch(e){setError(String(e));}}
   async function pick(key:'app_path'|'driver_path'|'workspace_path'|'baseline_path'|'master104_path'){try{const path=await choose(key==='app_path'||key==='driver_path'||key==='master104_path'?'exe':'directory');if(path){setEnvironment(old=>({...old,[key]:path}));if(key==='master104_path')setMaster104Snapshot(null);}}catch(e){setError(String(e));}}
   async function open(path:string){try{await openArtifact(path);}catch(e){setError(String(e));}}
   async function slavesimAction(method: 'open_slavesim' | 'check_slavesim') {
@@ -244,7 +246,8 @@ export default function App() {
             </fieldset>
             {master104Snapshot&&<details className="master104-snapshot" data-testid="master104-snapshot"><summary>本次主站窗口快照</summary><pre>{JSON.stringify(master104Snapshot,null,2)}</pre></details>}
           </div>
-        </fieldset><div className="form-actions"><button className="button" disabled={disabled||!ready} onClick={()=>void load()}><ArrowDownToLine size={15}/>载入配置</button><button className="button primary" data-testid="environment-save" disabled={disabled||!ready} onClick={()=>void save()}><Check size={16}/>保存环境</button></div></div><aside className="environment-help"><div className="help-symbol"><ShieldCheck size={27}/></div><h3>可重复的测试环境</h3><p>程序、工作区与初始状态共同决定测试条件。建议为不同版本保留独立的测试工作区。</p><div className="help-divider"/><h4>关于已有配置</h4><p>固定工作区会保留测试配置；全新副本适合首次启动及默认状态验证。</p><h4>关于运行中的任务</h4><p>任务执行期间环境配置会锁定，停止并完成清理后可再次修改。</p><h4>关于模拟器连接</h4><p>连接检查确认状态接口可访问。控制是否生效，需要对应业务用例检查。</p><h4>关于 104 主站</h4><p>首版只接管已打开实例，不启动或关闭主站，不修改主站配置。</p></aside></div>}
+          <ModbusEnvironment environment={environment} onChange={setEnvironment}/>
+        </fieldset><div className="form-actions"><button className="button" disabled={disabled||!ready} onClick={()=>void load()}><ArrowDownToLine size={15}/>载入配置</button><button className="button primary" data-testid="environment-save" disabled={disabled||!ready} onClick={()=>void save()}><Check size={16}/>保存环境</button></div></div><aside className="environment-help"><div className="help-symbol"><ShieldCheck size={27}/></div><h3>可重复的测试环境</h3><p>程序、工作区与初始状态共同决定测试条件。建议为不同版本保留独立的测试工作区。</p><div className="help-divider"/><h4>关于已有配置</h4><p>固定工作区会保留测试配置；全新副本适合首次启动及默认状态验证。</p><h4>关于运行中的任务</h4><p>任务执行期间环境配置会锁定，停止并完成清理后可再次修改。</p><h4>关于模拟器连接</h4><p>连接检查确认状态接口可访问。控制是否生效，需要对应业务用例检查。</p><h4>关于 104 主站</h4><p>首版只接管已打开实例，不启动或关闭主站，不修改主站配置。</p><h4>关于 Modbus RTU</h4><p>按所选用例填写基础采集或华为六路参数。开始前会校验完整性，缺少配置时不创建测试任务。</p></aside></div>}
 
         {page==='history'&&<>
           <div className="history-top"><span>{history.length} 条本地测试记录</span><button className="button" disabled={!ready} onClick={()=>void refreshHistory().catch(e=>setError(String(e)))}><RefreshCw size={14}/>刷新记录</button></div>

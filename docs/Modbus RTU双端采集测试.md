@@ -9,7 +9,7 @@
 - 用户准备可访问的平台、专用账号、在线下位机，以及已运行的 slaveSim；下位机与模拟器之间的本地串口或 PTY 已连接。本批使用本地串口传输，不覆盖 MQTT 透传。
 - slaveSim 中预先准备同一专用总线的两个从站，各有一个手动来源的 UINT16 保持寄存器。用例通过管理页面设值，不通过 HTTP 接口或后台脚本代替页面操作与断言。
 - 下位机的目标串口由本批用例独占，其他采集连接不得占用该串口。用例只新建、操作和删除有本次唯一名称的连接，不接管已有连接。
-- 测试环境使用全新独立副本；专用账号放在被 Git 忽略的 `local/login-account.json`。RTU 参数放在 `local/modbus-rtu.json`，格式见 [示例](examples/modbus-rtu.example.json)。`manager_address` 是现场直连 ModuleManager 的主机和端口，`device_name` 仅为报告中的设备标识。slaveSim 地址复用测试环境所保存的管理页地址。
+- 测试环境使用全新独立副本；专用账号放在被 Git 忽略的 `local/login-account.json`。在“测试环境 → Modbus RTU”填写共享的下位机 ModuleManager 主机和端口、通信参数，再在“基础采集”填写设备标识、总线、串口、两个站号与零基地址及专用资源声明。参数随环境统一保存和回填，slaveSim 地址沿用同一界面设置。不再读取独立 `local/modbus-rtu.json`。完整规则见 [RTU环境界面配置](RTU环境界面配置.md)。
 - Edge 浏览器及匹配的 msedgedriver 已由用户准备，模拟器使用本用例创建的独立浏览器会话。
 
 ## 首批用例与验收
