@@ -19,8 +19,8 @@ export function ModbusEnvironment({environment, onChange}: {environment:Environm
     setBasic({stations});
   };
   const setPath = (index:number, value:string) => onChange({...environment,modbus_huawei:{...huawei,serial_devices:huawei.serial_devices.map((path,position)=>position===index?value:path)}});
-  return <div className="form-section modbus-section" id="environment-modbus" tabIndex={-1} data-testid="environment-modbus">
-    <div className="section-title"><span>06</span><div><h3>Modbus RTU</h3><p>填写所选用例需要的参数；保存环境后自动回填，开始测试前检查完整性。</p></div></div>
+  return <details className="form-section modbus-section collapsible-section" id="environment-modbus" tabIndex={-1} data-testid="environment-modbus" onToggle={event=>console.info('测试环境分区：',event.currentTarget.id,event.currentTarget.open?'展开':'收起')}>
+    <summary className="section-title"><span>06</span><div><h3>Modbus RTU</h3><p>填写所选用例需要的参数；保存环境后自动回填，开始测试前检查完整性。</p></div></summary>
     <TextField label="下位机 ModuleManager 地址" id="environment-modbus-manager-address" value={current.modbus_manager_address}
       placeholder="主机:端口" hint="基础采集和华为六路用例共用，填写实际现场直连地址。" onChange={value=>onChange({...environment,modbus_manager_address:value})}/>
     <div className="form-split">
@@ -52,5 +52,5 @@ export function ModbusEnvironment({environment, onChange}: {environment:Environm
       <label className="cleanup-toggle"><input data-testid="environment-modbus-huawei-dedicated" type="checkbox" checked={huawei.dedicated_simulator} onChange={event=>{onChange({...environment,modbus_huawei:{...huawei,dedicated_simulator:event.target.checked}});console.info('已更新华为机群专用模拟器确认');}}/><span>确认使用专用 slaveSim 模拟器<small>保存模型配置会重建模拟器运行状态；用例结束后保留新增模型和连接供检查。</small></span></label>
     </details>
     <p className="protocol-note">两类用例共用上方 slaveSim 管理页地址。未选择 RTU 用例时，无需填写本节；这里的参数统一随测试环境保存，无需另建配置文件。</p>
-  </div>;
+  </details>;
 }

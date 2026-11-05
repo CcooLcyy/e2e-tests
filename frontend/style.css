@@ -110,3 +110,15 @@
 .environment-page-scroll .page-title{margin-bottom:20px}
 .environment-page-scroll .page-title p{font-size:13px;color:#526174;line-height:1.8}
 .environment-page-scroll .eyebrow{color:#526b8c}
+
+/* 点击分区标题即可折叠，导航定位会先展开目标及其父分区。 */
+.environment-page .collapsible-section>summary{cursor:pointer;list-style:none;margin-bottom:0;align-items:center;user-select:none}
+.environment-page .collapsible-section>summary::-webkit-details-marker{display:none}
+.environment-page .collapsible-section>summary>div{flex:1;min-width:0}
+.environment-page .collapsible-section>summary::after{content:"";width:8px;height:8px;border:solid #526b8c;border-width:0 2px 2px 0;transform:rotate(-45deg);margin:0 4px 0 12px;flex-shrink:0}
+.environment-page .collapsible-section[open]>summary{margin-bottom:18px}
+.environment-page .collapsible-section[open]>summary::after{transform:rotate(45deg)}
+.environment-page .collapsible-section>summary:hover h3{color:#2857b5}
+.environment-page .collapsible-section>summary:focus-visible{outline:2px solid #87a9ed;outline-offset:5px;border-radius:4px}
+.environment-page .collapsible-section:not([open]){padding-bottom:22px}
+@media(max-width:640px){.environment-page .collapsible-section:not([open]){padding-bottom:16px}}
