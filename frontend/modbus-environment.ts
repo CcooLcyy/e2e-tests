@@ -5,7 +5,7 @@ const string = (value: unknown) => typeof value === 'string' ? value : '';
 // undefined表示旧配置未提供字段；null是用户清空后通过JSON保存的值，不能变成有效默认地址。
 const number = (value: unknown, fallback: number) => value === undefined ? fallback : typeof value === 'number' ? value : NaN;
 
-/** 旧环境不带RTU字段时提供空白编辑入口，每次返回独立数组。 */
+/** 缺少地址时使用默认下位机；保留显式输入，每次返回独立数组。 */
 export function withModbusDefaults<T extends ModbusEnvironmentFields>(environment: T) {
   const basic = object(environment.modbus_basic);
   const huawei = object(environment.modbus_huawei);
@@ -22,7 +22,8 @@ export function withModbusDefaults<T extends ModbusEnvironmentFields>(environmen
     serial_devices: Array.from({ length: 6 }, (_, index) => string(paths[index])),
     dedicated_simulator: huawei.dedicated_simulator === true,
   };
-  return { ...environment, modbus_manager_address: string(environment.modbus_manager_address),
+  return { ...environment, modbus_manager_address: environment.modbus_manager_address === undefined
+      ? '192.168.1.219:16000' : string(environment.modbus_manager_address),
     modbus_baud_rate: number(environment.modbus_baud_rate, 9600),
     modbus_poll_interval_ms: number(environment.modbus_poll_interval_ms, 1000),
     modbus_acquisition_timeout: number(environment.modbus_acquisition_timeout, 30),

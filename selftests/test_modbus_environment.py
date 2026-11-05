@@ -27,7 +27,7 @@ def test_legacy_environment_and_mutable_settings_are_isolated():
     first, second = Environment.from_dict({"name": "旧环境"}), Environment()
     first.modbus_basic["bus"] = "只属于第一个环境"
     assert second.modbus_basic == {}
-    assert first.modbus_manager_address == ""
+    assert first.modbus_manager_address == second.modbus_manager_address == "192.168.1.219:16000"
     source = {"modbus_huawei": {"serial_devices": ["/dev/a"]}}
     imported = Environment.from_dict(source)
     imported.modbus_huawei["serial_devices"].append("/dev/b")

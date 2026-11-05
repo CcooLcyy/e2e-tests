@@ -5,7 +5,7 @@ import type { ModbusEnvironmentFields } from './api';
 
 test('旧环境提供空白路径，资源确认保持未勾选', () => {
   const value = withModbusDefaults({});
-  assert.equal(value.modbus_manager_address, '');
+  assert.equal(value.modbus_manager_address, '192.168.1.219:16000');
   assert.deepEqual(value.modbus_huawei.serial_devices, ['', '', '', '', '', '']);
   assert.equal(value.modbus_huawei.dedicated_simulator, false);
   assert.equal(value.modbus_basic.dedicated_test_resources, false);
@@ -15,6 +15,8 @@ test('回填保留零基地址、自定义通信参数与显式确认', () => {
   const value = withModbusDefaults({ modbus_manager_address: 'test-host:50051', modbus_baud_rate: 19200,
     modbus_basic: { bus: '总线甲', serial_device: '/dev/test', stations: [{ station_id: 7, address: 0 }, { station_id: 9, address: 65535 }], dedicated_test_resources: true },
     modbus_huawei: { serial_devices: ['/dev/a', '/dev/b', '/dev/c', '/dev/d', '/dev/e', '/dev/f'], dedicated_simulator: true } });
+  assert.equal(value.modbus_manager_address, 'test-host:50051');
+  assert.equal(withModbusDefaults({modbus_manager_address: ''}).modbus_manager_address, '');
   assert.equal(value.modbus_baud_rate, 19200);
   assert.equal(value.modbus_basic.stations[0].address, 0);
   assert.equal(value.modbus_basic.stations[1].station_id, 9);
