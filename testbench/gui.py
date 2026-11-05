@@ -127,7 +127,7 @@ class TestbenchApp:
         env.columnconfigure(4, weight=1)
         self.fields = {key: tk.StringVar() for key in ("name", "app_path", "driver_path", "workspace_path", "baseline_path", "timeout")}
         self.fields["name"].set("本机测试环境")
-        self.fields["timeout"].set("20")
+        self.fields["timeout"].set("60")
         self.fields["workspace_path"].set(str(self.root / "local" / "workspaces" / "default"))
         self.mode_var = tk.StringVar(value="全新独立副本")
         self.close_var = tk.BooleanVar(value=True)

@@ -37,7 +37,7 @@ def pytest_collection_modifyitems(config, items):
 
 
 def pytest_addoption(parser):
-    for option, default in (("--app-path", ""), ("--driver-path", ""), ("--artifacts-dir", ""), ("--ui-timeout", "20")):
+    for option, default in (("--app-path", ""), ("--driver-path", ""), ("--artifacts-dir", ""), ("--ui-timeout", "60")):
         parser.addoption(option, default=default)
 
 

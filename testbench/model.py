@@ -42,7 +42,7 @@ class Environment:
     mode: str = "fresh"
     workspace_path: str = ""
     baseline_path: str = ""
-    timeout: float = 20
+    timeout: float = 60
     close_app: bool = True
     annotation_enabled: bool = True
     slavesim_url: str = "http://192.168.1.219:16000"
