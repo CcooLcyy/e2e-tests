@@ -78,38 +78,38 @@ class HuaweiSlaveSimPage(SlaveSimPage):
                              if self._field(node, "站号（1～247）").get_attribute("value") == str(station)], "目标配置从站")
 
     def _clear_existing_devices(self, before):
-        """通过页面删除已有从站，独立保存零台配置，保留总线定义。"""
-        for bus in before:
-            for remaining in range(len(bus["slaves"]), 0, -1):
-                with self._step(f"清空 {bus['name']} 模拟从站，删除前剩余{remaining}台"):
-                    card = self._config_bus(bus["name"])
-                    self._open(card)
-                    stations = card.find_elements(By.CSS_SELECTOR, ":scope > details.slave-editor")
-                    if len(stations) != remaining:
-                        raise AssertionError("删除前模拟从站数量与实际读取配置不一致，保留现场")
-                    stations[0].find_element(By.XPATH, "./summary/button[normalize-space(.)='删除从站']").click()
-                    self._wait(lambda _: len(self._config_bus(bus["name"]).find_elements(
-                        By.CSS_SELECTOR, ":scope > details.slave-editor")) == remaining - 1,
-                        "删除模拟从站后页面数量未减少")
-        actual = self._save_configuration("清空模拟从站并保存零台状态", runtime_impact=
-                                          "原有从站及点表已删除，空总线保留，运行模型已清空，不自动恢复")
-        expected = [{**bus, "slaves": []} for bus in before]
-        if actual != expected:
-            raise AssertionError("清空后读回配置与保留总线的零台配置不一致，禁止创建新机群")
+        """通过页面直接删除全部总线，独立保存零总线、零设备状态。"""
+        for index, bus in enumerate(before):
+            remaining = len(before) - index
+            with self._step(f"删除模拟总线 {bus['name']}，删除前剩余{remaining}路"):
+                cards = self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")
+                if len(cards) != remaining:
+                    raise AssertionError("删除前总线数量与实际读取配置不一致，保留现场")
+                self._config_bus(bus["name"]).find_element(
+                    By.XPATH, "./summary/button[normalize-space(.)='删除总线']").click()
+                self._wait(lambda _: len(self.driver.find_elements(
+                    By.CSS_SELECTOR, "#config-buses > details.bus-editor")) == remaining - 1,
+                    "删除总线后页面数量未减少")
+        actual = self._save_configuration("删除全部模拟总线并保存零台状态", runtime_impact=
+                                          "原有总线、从站及点表已删除，PTY及软链接已释放，不自动恢复")
+        if actual != []:
+            raise AssertionError("清空后读回配置仍有模拟总线，禁止创建新机群")
         self.desktop.metadata["华为自动清空结果"] = {
-            "删除从站数": sum(len(bus["slaves"]) for bus in before), "保留总线数": len(actual), "保存后从站数": 0}
+            "删除总线数": len(before), "删除从站数": sum(len(bus["slaves"]) for bus in before),
+            "保存后总线数": 0, "保存后从站数": 0}
         self._snapshot({"类型": "华为自动清空结果", **self.desktop.metadata["华为自动清空结果"]})
-        LOG.info("已通过页面清空模拟从站并保存零台状态，原总线定义保留")
+        LOG.info("已通过页面删除全部%d路模拟总线并保存零台状态", len(before))
         return actual
 
     def _verify_zero_runtime(self):
         """确认保存后的新运行页面确实没有设备，不能只检查草稿。"""
-        with self._step("确认模拟器实际运行设备为0台", expected="新的运行反馈中不存在模拟从站"):
+        with self._step("确认模拟器实际运行总线和设备均为0", expected="新的运行反馈中不存在模拟总线及从站"):
             self.driver.find_element(By.ID, "show-runtime").click()
             before = self._tick()
             self._wait(lambda _: self._tick() > max(before, 0) and not self.driver.find_elements(
-                By.CSS_SELECTOR, "#buses section.runtime-device"), "模拟器未反馈实际零台状态，禁止创建新机群")
-            result = {"类型": "华为创建前实际零台确认", "运行设备数": 0, "刷新序号": self._tick()}
+                By.CSS_SELECTOR, "#buses section.bus-workspace, #buses section.runtime-device"),
+                "模拟器未反馈零总线、零设备状态，禁止创建新机群")
+            result = {"类型": "华为创建前实际零台确认", "运行总线数": 0, "运行设备数": 0, "刷新序号": self._tick()}
             self._snapshot(result)
             self.desktop.metadata["华为创建前零台确认"] = result
             LOG.info("已确认模拟器新的运行反馈为零台，允许从头创建21台")
@@ -118,35 +118,35 @@ class HuaweiSlaveSimPage(SlaveSimPage):
         """先确认零逆变器，再使用页面默认路径从头新增完整机群。"""
         from .huawei_fleet import HuaweiFleetConfig, build_fleet
         from .modbus_environment import huawei_config_from_environment
-        from .slavesim_runtime import assert_existing_preserved
-        with self._step("读取初始模拟逆变器并清空至0台", expected="已有从站通过页面删除并保存，确认实际零台后再创建") as entry:
+        with self._step("读取初始配置并删除全部模拟总线", expected="全部总线通过页面删除并保存，确认实际零台后再创建") as entry:
             before = self._read_configuration("华为机群零逆变器起点")
             devices = [{"总线": bus["name"], "站号": slave["station_id"], "模型": slave["model"]}
                        for bus in before for slave in bus["slaves"]]
             modeled = sum(bool(device["模型"]) for device in devices)
-            initial = {"已有从站数": len(devices), "已识别逆变器数": modeled,
+            initial = {"已有总线数": len(before), "已有从站数": len(devices), "已识别逆变器数": modeled,
                        "未确认类型从站数": len(devices) - modeled, "设备": devices}
             self.desktop.metadata["华为初始逆变器检查"] = initial
             self._snapshot({"类型": "华为初始逆变器检查", **initial})
             entry["实际"] = json.dumps(initial, ensure_ascii=False)
             LOG.info("华为机群零起点检查：已有从站=%s，模型设备=%s，未确认类型=%s",
                      len(devices), modeled, len(devices) - modeled)
-            # 无模型的静态厂商点表也可能是逆变器，清空整个专用模拟器的从站。
-            if devices:
+            # 直接删除全部总线，包含空总线及无模型的静态厂商点表。
+            if before:
                 before = self._clear_existing_devices(before)
-            if any(bus["slaves"] for bus in before):
-                raise AssertionError("清空后仍存在模拟从站，禁止开始创建21台")
+            if before:
+                raise AssertionError("清空后仍存在模拟总线，禁止开始创建21台")
             self._verify_zero_runtime()
         # 此时只生成固定设备工况，六条路径在页面新增后读取，不参与DSP连接。
         buses = build_fleet(HuaweiFleetConfig(environment["modbus_manager_address"], ("",) * 6), run_id)
         self.create_fleet(buses, discover_paths=True, check_paths=check_paths)
         actual = self._read_configuration("华为从零新增机群保存后")
-        assert_existing_preserved(before, actual)
         actual_count = sum(len(bus["slaves"]) for bus in actual)
         self.desktop.metadata["华为创建后设备数"] = actual_count
         if actual_count != 21:
             raise AssertionError(f"华为从零创建后应恰好有21台模拟逆变器，实际有{actual_count}个从站；保留现场")
-        self.desktop.metadata["华为资源策略"] = "先通过页面清空全部模拟从站并确认实际零台，再从头创建六路21台，不复用已有设备"
+        if len(actual) != 6:
+            raise AssertionError(f"华为从零创建后应恰好有6路模拟总线，实际有{len(actual)}路；保留现场")
+        self.desktop.metadata["华为资源策略"] = "先通过页面删除全部模拟总线并确认零总线、零设备，再从头创建六路21台"
         config = huawei_config_from_environment(environment, {"serial_devices": [bus["serial_device"] for bus in buses]})
         validate_fleet(buses)
         self._prepared_fleet = buses
