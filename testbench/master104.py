@@ -60,10 +60,10 @@ class Master104Session:
             request["identity"] = self.identity
         return self._runner(request, self.timeout)
 
-    def snapshot(self):
+    def snapshot(self, *, table_scope=None):
         """保存本次采集原文，不把已有点表解释成本次协议数据。"""
         self._check_stop()
-        result = self._request("snapshot")
+        result = self._request("snapshot", **({"table_scope": table_scope} if table_scope is not None else {}))
         identity = result.get("identity")
         if not isinstance(identity, dict) or not all(key in identity for key in ("path", "pid", "hwnd", "created")):
             raise RuntimeError("主站采集缺少完整实例身份")

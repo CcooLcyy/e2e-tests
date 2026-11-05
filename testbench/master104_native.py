@@ -30,8 +30,11 @@ def _check_stop(stop_path, cancel_event=None):
         raise InterruptedError("测试任务已停止，未对主站发送操作")
 
 
-def run_helper(request, timeout=10, *, stop_path=None, cancel_event=None, popen=None, clock=None):
+def run_helper(request, timeout=10, *, stop_path=None, cancel_event=None, popen=None, clock=None,
+               helper_module="testbench.master104_helper"):
     """超时或取消时仅终止本函数创建的辅助进程，绝不结束主站。"""
+    if helper_module not in ("testbench.master104_helper", "testbench.master104_command_helper"):
+        raise ValueError("主站辅助进程模块不在固定白名单中")
     try:
         valid_timeout = not isinstance(timeout, bool) and math.isfinite(float(timeout)) and float(timeout) > 0
     except (ValueError, TypeError, OverflowError):
@@ -48,7 +51,7 @@ def run_helper(request, timeout=10, *, stop_path=None, cancel_event=None, popen=
     executable = Path(sys.executable)
     if executable.name.casefold() == "pythonw.exe":
         executable = executable.with_name("python.exe")
-    process = factory([str(executable), "-m", "testbench.master104_helper"],
+    process = factory([str(executable), "-m", helper_module],
                       cwd=Path(__file__).resolve().parents[1], env=env,
                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                       text=True, encoding="utf-8", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

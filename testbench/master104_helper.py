@@ -67,7 +67,69 @@ def _verify(identity, path, gui, processes):
     return actual
 
 
+def _panel_title(control):
+    """按真实祖先标题区分同列名的遥信与遥调面板，不以列表序号推断归属。"""
+    parent = control.parent()
+    for _ in range(20):
+        if parent is None:
+            break
+        title = parent.window_text().strip()
+        if title in ("遥信信息", "遥调信息"):
+            return title
+        parent = parent.parent()
+    return ""
+
+
+def collect_table(control, *, table_scope=None):
+    """只读可见ListView的列及逐格文本；失败和截断显式保留，不能伪造完整表。"""
+    table = {"class_name": control.class_name(), "control_id": control.control_id(),
+             "hwnd": control.handle, "visible": bool(control.is_visible()),
+             "columns": [], "rows": [], "panel_title": "", "partial": False, "errors": []}
+    if not table["visible"]:
+        return table
+    try:
+        columns = control.columns()
+        table["columns"] = [str(column["text"]) for column in columns]
+        signal_columns = ("序号", "信息地址", "信息描述", "值", "品质描述", "更新时间")
+        same_columns = tuple(column.strip() for column in table["columns"]) == signal_columns
+        if same_columns:
+            table["panel_title"] = _panel_title(control)
+        if table_scope == "signals":
+            relevant = ((same_columns and table["panel_title"] == "遥信信息")
+                        or (table["control_id"] == 4 and len(columns) in (0, 2)))
+            if not relevant:
+                return None
+        count = len(columns) or control.column_count()
+        if not count and table_scope == "signals" and table["control_id"] == 4:
+            count = 2
+        if type(count) is not int or not 0 < count <= 32:
+            raise RuntimeError("ListView列数不可确认或超过采集上限")
+        row_count = control.item_count()
+        if type(row_count) is not int or row_count < 0:
+            raise RuntimeError("ListView行数无法确认")
+        for row in range(min(row_count, 10000)):
+            cells = [str(control.get_item(row, column).text()) for column in range(count)]
+            confirmed = [str(control.get_item(row, column).text()) for column in range(count)]
+            if cells != confirmed:
+                raise RuntimeError("读取期间ListView行内容变化，不能组合不同时刻的单元格")
+            if any(len(cell) >= 1999 for cell in cells):
+                raise RuntimeError("ListView单元格达到原生读取缓冲上限，不能确认文本完整")
+            table["rows"].append(cells)
+        if row_count > 10000:
+            table["partial"] = True
+            table["errors"].append("ListView行数超过10000，结果已截断")
+        if control.item_count() != row_count:
+            raise RuntimeError("读取期间ListView行数已变化")
+    except Exception as error:
+        table["partial"] = True
+        table["errors"].append(f"ListView逐格读取失败：{type(error).__name__}：{error}")
+    return table
+
+
 def collect(request):
+    table_scope = request.get("table_scope")
+    if table_scope not in (None, "signals"):
+        raise ValueError("原生表采集范围不受支持")
     Desktop, gui, processes = _native()
     path = request.get("path", "")
     backend = request.get("backend", "win32")
@@ -89,7 +151,8 @@ def collect(request):
             candidates.append(dict(identity, hwnd=hwnd))
         expected = select_identity(candidates, path)
     identity = _verify(expected, path, gui, processes)
-    window = Desktop(backend=backend).window(handle=identity["hwnd"]).wrapper_object()
+    sampling_backend = "win32" if table_scope == "signals" else backend
+    window = Desktop(backend=sampling_backend).window(handle=identity["hwnd"]).wrapper_object()
     result = {"identity": identity, "title": window.window_text(), "backend": backend,
               "observed_at": datetime.now().astimezone().isoformat(timespec="milliseconds")}
     if request["action"] == "capture":
@@ -121,21 +184,55 @@ def collect(request):
                                     "owner_hwnd": identity["hwnd"]}
         return result
     controls = []
+    tables = []
     errors = []
     # 限制结果体积；截断明确记录，不能宣称已读取全部点表。
     wrappers = window.descendants()
+    # 遥信页可能显示为同一主窗拥有的浮动面板；只读取同进程且根所有者匹配的窗口。
+    seen_handles = {getattr(control, "handle", 0) for control in wrappers}
+    for popup in Desktop(backend=sampling_backend).windows(visible_only=True):
+        hwnd = popup.handle
+        if (hwnd == identity["hwnd"] or hwnd in seen_handles
+                or processes.GetWindowThreadProcessId(hwnd)[1] != identity["pid"]
+                or gui.GetAncestor(hwnd, 3) != identity["hwnd"]):
+            continue
+        _verify(dict(identity, hwnd=hwnd), path, gui, processes)
+        for control in [popup, *popup.descendants()]:
+            handle = getattr(control, "handle", 0)
+            if handle and handle in seen_handles:
+                continue
+            if handle:
+                seen_handles.add(handle)
+            wrappers.append(control)
     for control in wrappers[:2000]:
         try:
+            class_name = control.class_name()
+            if table_scope == "signals" and class_name != "SysListView32":
+                # 业务观察不读取报文树、编辑框等无关文本，避免持续增长的日志污染完整性。
+                continue
+            if table_scope == "signals" and class_name == "SysListView32":
+                # 标准Win32 ListView使用固定的逐格API，不依赖UIA是否提供完整Grid模式。
+                native_control = (control if sampling_backend == "win32" else
+                                  Desktop(backend="win32").window(handle=control.handle).wrapper_object())
+                table = collect_table(native_control, table_scope=table_scope)
+                if table is None:
+                    continue
+                tables.append(table)
+                errors.extend(table["errors"])
+                texts = [cell for row in table["rows"] for cell in row]
+            else:
+                texts = control.texts()
             rect = control.rectangle()
-            controls.append({"text": control.window_text(), "texts": control.texts(),
-                             "class_name": control.class_name(), "control_id": control.control_id(),
+            controls.append({"text": control.window_text(), "texts": texts,
+                             "class_name": class_name, "control_id": control.control_id(),
                              "rectangle": [rect.left, rect.top, rect.right, rect.bottom]})
         except Exception as error:
             errors.append(f"部分控件读取失败（{type(error).__name__}）")
     if not controls or not any(row["text"] or any(row["texts"]) for row in controls):
         raise RuntimeError("主站控件内容为空，不能确认状态读取成功")
     _verify(identity, path, gui, processes)
-    result.update(controls=controls, partial=bool(errors) or len(wrappers) > 2000, errors=errors[:20])
+    result.update(controls=controls, tables=tables, table_scope=table_scope,
+                  partial=bool(errors) or len(wrappers) > 2000, errors=errors[:20])
     return result
 
 

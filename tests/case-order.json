@@ -36,6 +36,16 @@
         "tests/test_modbus_rtu.py::test_rtu_two_stations_do_not_cross_values",
         "tests/test_huawei_fleet.py::test_huawei_six_buses_21_devices_match"
       ]
+    },
+    {
+      "name": "AGC 增减闭锁",
+      "cases": [
+        "tests/test_agc_direction_blocks.py::test_agc_upper_limit_sets_increase_block",
+        "tests/test_agc_direction_blocks.py::test_agc_lower_target_clears_increase_block",
+        "tests/test_agc_direction_blocks.py::test_agc_lower_limit_sets_decrease_block",
+        "tests/test_agc_direction_blocks.py::test_agc_higher_target_clears_decrease_block",
+        "tests/test_agc_direction_blocks.py::test_agc_increase_block_does_not_wait_for_measured_limit"
+      ]
     }
   ]
 }
