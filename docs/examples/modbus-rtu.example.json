@@ -9,7 +9,7 @@
   "stop_bits": 1,
   "parity": "无校验",
   "poll_interval_ms": 1000,
-  "acquisition_timeout": 20,
+  "acquisition_timeout": 300,
   "stations": [
     {"station_id": 1, "address": 0},
     {"station_id": 2, "address": 0}

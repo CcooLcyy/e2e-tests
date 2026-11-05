@@ -18,7 +18,7 @@ const environmentSections = [
   ['environment-master104','104 模拟主站','按用例需要启用'],
   ['environment-modbus','Modbus RTU','运行时跟随模拟器配置'],
 ] as const;
-const emptyEnvironment: Environment = withModbusDefaults({name:'本机测试环境',app_path:'',driver_path:'',mode:'fresh',workspace_path:'',baseline_path:'',timeout:60,close_app:true,slavesim_url:'http://192.168.1.219:16000',annotation_enabled:true,master104_enabled:false,master104_path:'',master104_backend:'win32',master104_timeout:10} as Environment);
+const emptyEnvironment: Environment = withModbusDefaults({name:'本机测试环境',app_path:'',driver_path:'',mode:'fresh',workspace_path:'',baseline_path:'',timeout:300,close_app:true,slavesim_url:'http://192.168.1.219:16000',annotation_enabled:true,master104_enabled:false,master104_path:'',master104_backend:'win32',master104_timeout:10} as Environment);
 const duration = (value?: number) => value === undefined ? '—' : `${value.toFixed(2)} s`;
 function Status({ status, text = true }: {status: string; text?: boolean}) { return <span className={`status ${status}`}><i />{text && (labels[status] || status)}{status === 'running' && <LoaderCircle size={12} className="spin"/>}</span>; }
 

@@ -10,6 +10,17 @@ def configuration():
             "serial_devices": [f"/dev/huawei-test-{i}" for i in range(1, 7)]}
 
 
+def test_huawei_acquisition_wait_defaults_to_five_minutes_and_accepts_custom_values():
+    """华为机群默认采集五分钟，支持300秒上限并保留显式30秒。"""
+    config = HuaweiFleetConfig.from_dict(configuration())
+    assert config.acquisition_timeout == 300
+    assert HuaweiFleetConfig(config.manager_address, config.serial_devices).acquisition_timeout == 300
+    for timeout in (30, 300):
+        assert HuaweiFleetConfig.from_dict({**configuration(), "acquisition_timeout": timeout}).acquisition_timeout == timeout
+    with pytest.raises(ValueError, match="采集时限"):
+        HuaweiFleetConfig.from_dict({**configuration(), "acquisition_timeout": 301})
+
+
 def test_six_buses_contain_one_to_six_devices_without_duplicate_identities():
     """总计21台，站号每路重置，电压及光照场景可区分串路串站。"""
     buses = build_fleet(HuaweiFleetConfig.from_dict(configuration()), "test-run")

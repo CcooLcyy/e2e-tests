@@ -13,6 +13,7 @@ import time
 import uuid
 from .catalog import discover_cases
 from .reporting import write_task_report
+from .modbus_environment import BASIC_CASE_IDS, HUAWEI_CASE_ID
 
 
 class TaskController:
@@ -24,6 +25,7 @@ class TaskController:
         self._partial = b""
         self._stop_at = None
         self._started = 0
+        self._last_progress = 0
         self._process = None
         self._current = None
         self._selected = []
@@ -68,11 +70,16 @@ class TaskController:
                                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         self._offset, self._partial, self._stop_at = 0, b"", None
         self._started = time.monotonic()
+        self._last_progress = self._started
         self._selected, self._finished, self._current = list(case_ids), {}, None
-        # 总任务期限覆盖启用主站后的单次原生等待，避免界面配置的期限被提前截断。
+        # 无进展保护覆盖界面、主站及所选RTU采集等待；持续推进的长流程不受总墙钟截断。
         operation_timeout = max(float(environment.timeout),
-                                float(environment.master104_timeout) if environment.master104_enabled else 0)
+                                float(environment.master104_timeout) if environment.master104_enabled else 0,
+                                float(environment.modbus_acquisition_timeout)
+                                if any(case in BASIC_CASE_IDS or case == HUAWEI_CASE_ID for case in case_ids) else 0)
         self._timeout = operation_timeout * max(len(case_ids), 1) * 10 + 120
+        logging.getLogger(__name__).info("界面单次等待%s秒，采集等待%s秒，无进展保护%s秒",
+                                         environment.timeout, environment.modbus_acquisition_timeout, self._timeout)
         self._finalized, self._cleanup, self._pending_finish = False, None, None
         self._cleanup_reason, self._cleanup_error_reported = None, False
         self.active = True
@@ -86,6 +93,8 @@ class TaskController:
         events = self._read_events()
         outgoing = []
         for event in events:
+            if event["type"] in ("case_started", "case_finished", "step") and event.get("case_id") in self._selected:
+                self._last_progress = time.monotonic()
             if event["type"] == "case_started":
                 self._current = event["case_id"]
             elif event["type"] == "case_finished":
@@ -110,8 +119,8 @@ class TaskController:
         if self.active:
             if self._stop_at and time.monotonic() - self._stop_at > 3:
                 self._begin_cleanup("cancelled", "用户停止了测试任务")
-            elif time.monotonic() - self._started > self._timeout:
-                self._begin_cleanup("failed", "工作进程超过任务等待时间")
+            elif time.monotonic() - max(self._started, self._last_progress) > self._timeout:
+                self._begin_cleanup("failed", "工作进程长时间无步骤进展，超过等待时限")
             elif self._process.poll() not in (None, 0):
                 self._begin_cleanup("failed", "测试工作进程启动失败")
             elif not (self.run_dir / "worker.json").exists() and time.monotonic() - self._started > 15:

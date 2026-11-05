@@ -33,9 +33,9 @@ def _shared(environment):
     poll = environment.get("modbus_poll_interval_ms", 1000)
     if type(poll) is not int or not 100 <= poll <= 60000:
         raise ValueError("轮询周期必须为100至60000毫秒的整数")
-    timeout = decimal_value(environment.get("modbus_acquisition_timeout", 30))
-    if not 5 <= timeout <= 120:
-        raise ValueError("采集等待时限必须为5至120秒")
+    timeout = decimal_value(environment.get("modbus_acquisition_timeout", 300))
+    if not 5 <= timeout <= 300:
+        raise ValueError("采集等待时限必须为5至300秒")
     # slaveSim 使用PTY，不提供UART参数；历史手填波特率不再作为执行来源。
     return {"manager_address": manager, "baud_rate": 9600,
             "poll_interval_ms": poll, "acquisition_timeout": float(timeout)}

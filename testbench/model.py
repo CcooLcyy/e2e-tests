@@ -42,7 +42,7 @@ class Environment:
     mode: str = "fresh"
     workspace_path: str = ""
     baseline_path: str = ""
-    timeout: float = 60
+    timeout: float = 300
     close_app: bool = True
     annotation_enabled: bool = True
     slavesim_url: str = "http://192.168.1.219:16000"
@@ -53,7 +53,7 @@ class Environment:
     modbus_manager_address: str = "192.168.1.219:17000"
     modbus_baud_rate: int = 9600
     modbus_poll_interval_ms: int = 1000
-    modbus_acquisition_timeout: float = 30
+    modbus_acquisition_timeout: float = 300
     modbus_basic: dict = field(default_factory=dict)
     modbus_huawei: dict = field(default_factory=dict)
 

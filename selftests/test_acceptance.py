@@ -16,6 +16,15 @@ def make_environment(tmp_path, **changes):
     return Environment(**values)
 
 
+def test_default_waits_are_five_minutes_without_overriding_saved_custom_values():
+    """新环境和缺失字段默认等待五分钟，显式保存的短等待仍原样保留。"""
+    for environment in (Environment(), Environment.from_dict({"name": "旧环境"})):
+        assert environment.timeout == environment.modbus_acquisition_timeout == 300
+        assert environment.master104_timeout == 10
+    environment = Environment.from_dict({"timeout": 12, "modbus_acquisition_timeout": 35})
+    assert environment.timeout == 12 and environment.modbus_acquisition_timeout == 35
+
+
 def test_environment_round_trip_preserves_mode_and_cleanup(tmp_path):
     """保存重载后工作区、等待参数与清理策略保持一致。"""
     env = make_environment(tmp_path, mode="workspace", workspace_path=str(tmp_path / "workspace"), close_app=False)

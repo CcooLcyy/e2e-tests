@@ -17,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description="验证已编译 Release 上位机的真实界面自动化")
     parser.add_argument("--app", required=True, type=Path, help="已安装或已编译的上位机 exe")
     parser.add_argument("--driver", required=True, type=Path, help="匹配 WebView2 的 msedgedriver.exe")
-    parser.add_argument("--timeout", type=float, default=60, help="界面等待秒数")
+    parser.add_argument("--timeout", type=float, default=300, help="界面等待秒数，默认300秒（5分钟）")
     parser.add_argument("--_worker-dir", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if sys.platform != "win32":

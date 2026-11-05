@@ -15,8 +15,9 @@ export function ModbusEnvironment({environment, onChange}: {environment:Environm
     </div>
     <div className="form-split">
       <NumberField label="轮询周期" id="environment-modbus-poll-interval" value={current.modbus_poll_interval_ms} min={100} max={60000} unit="毫秒" onChange={value=>onChange({...environment,modbus_poll_interval_ms:value})}/>
-      <NumberField label="采集等待时限" id="environment-modbus-acquisition-timeout" value={current.modbus_acquisition_timeout} min={5} max={120} unit="秒" onChange={value=>onChange({...environment,modbus_acquisition_timeout:value})}/>
+      <NumberField label="采集等待时限" id="environment-modbus-acquisition-timeout" value={current.modbus_acquisition_timeout} min={5} max={300} unit="秒" onChange={value=>onChange({...environment,modbus_acquisition_timeout:value})}/>
     </div>
+    <p className="protocol-note">采集匹配默认最多等待300秒（5分钟），匹配成功即继续，不固定等待满5分钟。</p>
     <p className="protocol-note">总线、串口路径、站号、寄存器及模型在执行时读取，无需在这里重复配置。资源不足时，用例会通过 slaveSim 管理页面补充配置，确认保存生效后执行验收。</p>
     <p className="protocol-note">请使用测试环境及全新上位机副本。保存模拟器配置会重建运行状态，配置前后及本次调整会保留在执行记录中；华为用例新增的模型和连接保留供检查。</p>
   </details>;

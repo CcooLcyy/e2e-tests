@@ -10,6 +10,18 @@ def environment():
                 {"station_id": 1, "address": 0}, {"station_id": 2, "address": 65535}]}
 
 
+def test_rtu_acquisition_wait_defaults_to_five_minutes_and_accepts_custom_values():
+    """基础RTU构造及配置默认五分钟，300秒可用，显式20秒保留。"""
+    config = RtuEnvironment.from_dict(environment())
+    assert config.acquisition_timeout == 300
+    assert RtuEnvironment(config.device_name, config.manager_address, config.bus,
+                          config.serial_device, config.stations).acquisition_timeout == 300
+    for timeout in (20, 300):
+        assert RtuEnvironment.from_dict({**environment(), "acquisition_timeout": timeout}).acquisition_timeout == timeout
+    with pytest.raises(ValueError, match="采集时限"):
+        RtuEnvironment.from_dict({**environment(), "acquisition_timeout": 301})
+
+
 def test_station_address_bounds_and_distinct_stations():
     """零基首末地址可用，不同站号允许同址，重复站号必须拒绝。"""
     assert RtuEnvironment.from_dict(environment()).stations[1].address == 65535

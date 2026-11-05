@@ -56,6 +56,28 @@ def test_uniform_environment_round_trip_and_config_builders(tmp_path):
     restored.validate_for_cases([*BASIC_CASE_IDS, HUAWEI_CASE_ID])
 
 
+@pytest.mark.parametrize("timeout", [None, 300, 35])
+def test_shared_acquisition_wait_defaults_to_five_minutes_and_preserves_custom_values(tmp_path, timeout):
+    """运行时两类RTU参数默认五分钟，支持上限300秒且不覆盖显式短等待。"""
+    data = populated_environment(tmp_path).to_dict()
+    if timeout is None:
+        data.pop("modbus_acquisition_timeout")
+    else:
+        data["modbus_acquisition_timeout"] = timeout
+    basic = basic_config_from_environment(data, {"bus": "现场", "serial_device": "/srv/actual",
+        "stations": [{"station_id": 1, "address": 0}, {"station_id": 2, "address": 0}]})
+    huawei = huawei_config_from_environment(data, {"serial_devices": [f"/srv/actual{i}" for i in range(6)]})
+    assert basic.acquisition_timeout == huawei.acquisition_timeout == (300 if timeout is None else timeout)
+
+
+def test_shared_acquisition_wait_above_five_minutes_is_rejected(tmp_path):
+    """超过支持上限的采集时限必须在开始业务用例前明确失败。"""
+    environment = populated_environment(tmp_path)
+    environment.modbus_acquisition_timeout = 301
+    with pytest.raises(ValueError, match="采集"):
+        environment.validate_for_cases([HUAWEI_CASE_ID])
+
+
 def test_task_dict_is_a_snapshot_not_a_reference(tmp_path):
     """任务快照包含当时配置，后续编辑或导入不会改变已生成任务参数。"""
     environment = populated_environment(tmp_path)

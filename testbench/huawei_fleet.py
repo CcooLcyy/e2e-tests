@@ -65,7 +65,7 @@ STATUS_WORD_VALUES = {"发电": 6, "有功调节": 10, "无功调节": 10, "负�
 class HuaweiFleetConfig:
     manager_address: str
     serial_devices: tuple
-    acquisition_timeout: float = 30
+    acquisition_timeout: float = 300
     poll_interval_ms: int = 1000
     baud_rate: int = 9600
 
@@ -99,9 +99,9 @@ class HuaweiFleetConfig:
                        or any(char.isspace() or ord(char) < 32 for char in path) for path in paths)
                 or len(set(paths)) != 6):
             raise ValueError("serial_devices 必须提供六条不同的Linux绝对串口路径，不含相对段或重复斜线")
-        timeout = decimal_value(value.get("acquisition_timeout", 30))
-        if not 5 <= timeout <= 120:
-            raise ValueError("采集时限须为5至120秒")
+        timeout = decimal_value(value.get("acquisition_timeout", 300))
+        if not 5 <= timeout <= 300:
+            raise ValueError("采集时限须为5至300秒")
         poll = value.get("poll_interval_ms", 1000)
         baud = value.get("baud_rate", 9600)
         if type(poll) is not int or not 100 <= poll <= 60000 or type(baud) is not int or not 1 <= baud <= 4000000:

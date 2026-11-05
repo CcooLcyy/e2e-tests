@@ -9,6 +9,17 @@ test('旧环境提供空白路径，资源确认保持未勾选', () => {
   assert.deepEqual(value.modbus_huawei.serial_devices, ['', '', '', '', '', '']);
   assert.equal(value.modbus_huawei.dedicated_simulator, false);
   assert.equal(value.modbus_basic.dedicated_test_resources, false);
+  assert.equal(value.modbus_acquisition_timeout, 300);
+});
+
+test('五分钟采集默认值不覆盖用户保存的界面和采集等待时限', () => {
+  const value = withModbusDefaults({ timeout: 45, modbus_acquisition_timeout: 90 });
+  assert.equal(value.timeout, 45);
+  assert.equal(value.modbus_acquisition_timeout, 90);
+  const fiveMinutes = withModbusDefaults({ timeout: 300, modbus_acquisition_timeout: 300 });
+  const loaded = withModbusDefaults(JSON.parse(JSON.stringify(fiveMinutes)));
+  assert.equal(loaded.timeout, 300);
+  assert.equal(loaded.modbus_acquisition_timeout, 300);
 });
 
 test('回填保留零基地址、自定义通信参数与显式确认', () => {

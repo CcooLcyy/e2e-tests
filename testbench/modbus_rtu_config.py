@@ -41,7 +41,7 @@ class RtuEnvironment:
     stop_bits: int = 1
     parity: str = "无校验"
     poll_interval_ms: int = 1000
-    acquisition_timeout: float = 20
+    acquisition_timeout: float = 300
 
     @classmethod
     def load(cls, path):
@@ -108,9 +108,9 @@ class RtuEnvironment:
         if parity not in ("无校验", "奇校验", "偶校验"):
             raise ValueError("RTU parity 必须为无校验、奇校验或偶校验")
         options["parity"] = parity
-        timeout = decimal_value(value.get("acquisition_timeout", 20))
-        if not 1 <= timeout <= 120:
-            raise ValueError("RTU 采集时限必须在 1 至 120 秒之间")
+        timeout = decimal_value(value.get("acquisition_timeout", 300))
+        if not 1 <= timeout <= 300:
+            raise ValueError("RTU 采集时限必须在 1 至 300 秒之间")
         options["acquisition_timeout"] = float(timeout)
         LOGGER.info("已读取专用 RTU 环境：总线=%s，从站数=%s", options["bus"], len(parsed))
         return cls(**options)

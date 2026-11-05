@@ -26,6 +26,6 @@ export function withModbusDefaults<T extends ModbusEnvironmentFields>(environmen
       ? '192.168.1.219:17000' : string(environment.modbus_manager_address),
     modbus_baud_rate: number(environment.modbus_baud_rate, 9600),
     modbus_poll_interval_ms: number(environment.modbus_poll_interval_ms, 1000),
-    modbus_acquisition_timeout: number(environment.modbus_acquisition_timeout, 30),
+    modbus_acquisition_timeout: number(environment.modbus_acquisition_timeout, 300),
     modbus_basic: normalizedBasic, modbus_huawei: normalizedHuawei };
 }
