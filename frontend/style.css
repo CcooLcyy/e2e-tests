@@ -16,3 +16,97 @@
 
 /* 默认报告展示业务结论，原始技术资料通过独立入口查看。 */
 .business-case-details{padding:12px 0;min-width:0}.business-goal,.business-summary{font-size:12px;line-height:1.9;color:#536781;white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:14px}.business-goal strong,.business-summary strong{display:block;color:#26354c;font-size:12px;margin-bottom:5px}.business-checks{overflow-x:auto;margin:12px 0 18px}.business-checks table{width:100%;border-collapse:collapse;font-size:11px;line-height:1.8}.business-checks th,.business-checks td{padding:9px;border-bottom:1px solid #e5ebf3;text-align:left;vertical-align:top;overflow-wrap:anywhere;min-width:75px;white-space:pre-wrap}.business-checks th{color:#7587a1;background:#f7f9fc;font-weight:500}.business-actions{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.history-case>.business-case-details{padding:14px 18px}.business-case-details .evidence{margin-top:18px}
+
+/* 环境配置页使用清晰的文字层级、紧凑表单和持续可见的配置导航。 */
+.environment-page{max-width:1320px;grid-template-columns:minmax(0,1fr) 240px;gap:22px}
+.environment-page .form-panel{min-width:0;overflow:visible}
+.environment-page .panel-heading{padding:20px 24px}
+.environment-page .panel-heading h2{font-size:17px;color:#1e293b}
+.environment-page .panel-heading p{color:#526174;line-height:1.7}
+.environment-page .soft-tag{font-size:11px;color:#526174;background:#f1f5f9;border-color:#dbe3ed}
+.environment-page fieldset:disabled{opacity:1}
+.environment-page fieldset:disabled input,.environment-page fieldset:disabled select{background:#f1f5f9;color:#64748b;cursor:not-allowed}
+.environment-page .form-section{padding:22px 24px 18px;scroll-margin-block:24px}
+.environment-page .form-section+.form-section{margin-top:0;border-top-color:#dfe6ef}
+.environment-page .form-section:focus{outline:2px solid #87a9ed;outline-offset:-2px}
+.environment-page .section-title{margin-bottom:18px;gap:10px}
+.environment-page .section-title>span{font-size:11px;font-weight:600;color:#2857b5;background:#eaf1ff;padding:5px 7px}
+.environment-page .section-title h3{font-size:15px;color:#24344b;line-height:1.7}
+.environment-page .section-title p{font-size:12px;color:#526174;line-height:1.7;margin-top:2px}
+.environment-page .field{margin-bottom:16px}
+.environment-page .field:last-child{margin-bottom:0}
+.environment-page .field>label{font-size:13px;color:#334155;margin-bottom:7px}
+.environment-page .field>p{font-size:12px;color:#59697d;margin-top:5px;line-height:1.7}
+.environment-page .field>input,.environment-page .path-input,.environment-page .number-input,.environment-page .field select{min-height:40px;border-color:#bdcbdc;background:#fff}
+.environment-page input,.environment-page .field select{font-size:13px;color:#25364d}
+.environment-page .path-input input{font-family:Consolas,"Microsoft YaHei",monospace;font-size:12px;padding:10px 12px}
+.environment-page .path-input button{width:42px;color:#45658d;border-left-color:#d8e1ed}
+.environment-page .path-input:focus-within,.environment-page .number-input:focus-within{outline:2px solid #87a9ed;outline-offset:2px}
+.environment-page .number-input span{font-size:12px;color:#526174}
+.environment-page .environment-basics .field{display:grid;grid-template-columns:125px minmax(0,1fr);column-gap:16px;align-items:center;margin-bottom:15px}
+.environment-page .environment-basics .field>label{margin:0}
+.environment-page .environment-basics .field>p{grid-column:2}
+.environment-page .mode-options{gap:12px;margin-bottom:18px}
+.environment-page .mode-card{padding:14px;border-color:#c9d5e5}
+.environment-page .mode-card.chosen{border-color:#5280df;background:#eff5ff}
+.environment-page .mode-card strong{font-size:13px;color:#24344b}
+.environment-page .mode-card p{font-size:12px;color:#526174;line-height:1.7}
+.environment-page .form-split{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;align-items:start}
+.environment-page .cleanup-toggle{font-size:13px;color:#334155;align-items:flex-start;line-height:1.7;padding:10px 0}
+.environment-page .cleanup-toggle input{margin-top:4px}
+.environment-page .cleanup-toggle small{font-size:12px;color:#59697d;line-height:1.7;margin-top:3px}
+.environment-page .form-actions{position:sticky;bottom:0;z-index:5;align-items:center;flex-wrap:wrap;padding:14px 24px;border-top-color:#ccd8e7;background:#fff;box-shadow:0 -4px 16px #2037540a;border-radius:0 0 10px 10px}
+.environment-page .form-actions>span{margin-right:auto;font-size:12px;color:#526174;line-height:1.7}
+.environment-page .slavesim-actions>span{color:#526174;font-size:12px}
+.environment-page .environment-help{position:sticky;top:20px;display:block;padding:0;min-width:0}
+.environment-directory{padding:18px 14px;border:1px solid #dce4ef;border-radius:10px;background:#fff}
+.environment-directory h3{font-size:14px;color:#24344b;margin:0 8px 4px}
+.environment-directory>p{font-size:12px;color:#59697d;line-height:1.7;margin:0 8px 12px}
+.environment-directory nav{gap:4px}
+.environment-directory button{display:flex;align-items:center;gap:10px;text-align:left;border:0;border-radius:6px;background:transparent;padding:11px 8px;width:100%;color:#425978}
+.environment-directory button:hover,.environment-directory button:focus-visible{background:#edf3ff;color:#2857b5}
+.environment-directory button>span{font-size:11px;font-variant-numeric:tabular-nums;color:#526b8c}
+.environment-directory button>div{min-width:0;flex:1}
+.environment-directory strong{display:block;font-size:13px;font-weight:600}
+.environment-directory small{display:block;font-size:11px;line-height:1.7;margin-top:2px;color:#59697d}
+.environment-guide{margin-top:14px;padding:16px;border:1px solid #dce4ef;background:#f8faff;border-radius:10px}
+.environment-guide summary{cursor:pointer;font-size:12px;font-weight:600;color:#425978;line-height:1.8}
+.environment-guide summary svg{vertical-align:middle;margin-right:5px}
+.environment-guide h4{font-size:12px;color:#334155;margin:15px 0 4px}
+.environment-guide p{font-size:12px;line-height:1.8;color:#59697d}
+.protocol-group{margin:18px 0;border:1px solid #d3dfed;border-radius:8px;padding:0 16px 16px;background:#fcfdff}
+.protocol-group>summary{cursor:pointer;font-size:14px;color:#24344b;padding:14px 0;line-height:1.7}
+.protocol-group:not([open]){padding-bottom:0}
+.protocol-group>p,.protocol-note{font-size:12px;color:#526174;line-height:1.8;margin-bottom:16px}
+.protocol-note{margin:12px 0 0}
+.protocol-group .cleanup-toggle{background:#edf3ff;border:1px solid #cfddf3;border-radius:6px;padding:12px;margin-top:12px}
+.notice.error{align-items:flex-start;color:#a63244;border-color:#edbdc5}
+.notice-content{flex:1;min-width:0}
+.notice-content>strong{font-size:13px;display:block}
+.notice-content p{font-size:12px;line-height:1.8;margin-top:3px;white-space:pre-wrap}
+.notice-content details{margin-top:6px;font-size:11px}
+.notice-content summary{cursor:pointer}
+.notice>button.error-location{display:inline-flex;align-self:center;gap:6px;background:#fff;border:1px solid #edbdc5;padding:8px 12px;margin-left:0;color:#a63244;font-size:12px}
+@media(max-width:1180px){
+  .environment-page{grid-template-columns:minmax(0,1fr) 210px;gap:16px}
+  .environment-page .environment-basics .field{grid-template-columns:105px minmax(0,1fr);column-gap:12px}
+}
+@media(max-width:970px){
+  .environment-page{grid-template-columns:minmax(0,1fr)}
+  .environment-page .environment-help{position:static;grid-row:1}
+  .environment-directory nav{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .environment-directory button>svg{display:none}
+}
+@media(max-width:640px){
+  .environment-page .panel-heading,.environment-page .form-section,.environment-page .form-actions{padding:16px}
+  .environment-page .environment-basics .field,.environment-page .form-split,.environment-page .mode-options{grid-template-columns:minmax(0,1fr)}
+  .environment-page .environment-basics .field>label{margin-bottom:7px}
+  .environment-page .environment-basics .field>p{grid-column:1}
+  .environment-directory nav{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .environment-page .form-actions>span{flex-basis:100%}
+  .notice.error{flex-wrap:wrap}
+}
+
+.environment-page-scroll .page-title{margin-bottom:20px}
+.environment-page-scroll .page-title p{font-size:13px;color:#526174;line-height:1.8}
+.environment-page-scroll .eyebrow{color:#526b8c}

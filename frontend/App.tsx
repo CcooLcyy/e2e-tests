@@ -10,6 +10,14 @@ import { withModbusDefaults } from './modbus-environment';
 import { caseGroup, summarizeGroups, visibleCases, toggleCases, selectionState, selectedCaseIds, reconcileSelection, groupedSections, toggleExpandedGroup } from './case-groups';
 
 type Page = 'execution' | 'environment' | 'history';
+const environmentSections = [
+  ['environment-basics','基础信息','程序与驱动'],
+  ['environment-isolation','运行与隔离','工作区与等待时间'],
+  ['environment-annotation','截图标注','操作位置与说明'],
+  ['environment-slavesim','slaveSim 模拟器','管理地址与连接检查'],
+  ['environment-master104','104 模拟主站','按用例需要启用'],
+  ['environment-modbus','Modbus RTU','基础采集 / 华为六路'],
+] as const;
 const emptyEnvironment: Environment = withModbusDefaults({name:'本机测试环境',app_path:'',driver_path:'',mode:'fresh',workspace_path:'',baseline_path:'',timeout:60,close_app:true,slavesim_url:'http://192.168.1.219:16000',annotation_enabled:true,master104_enabled:false,master104_path:'',master104_backend:'win32',master104_timeout:10} as Environment);
 const duration = (value?: number) => value === undefined ? '—' : `${value.toFixed(2)} s`;
 function Status({ status, text = true }: {status: string; text?: boolean}) { return <span className={`status ${status}`}><i />{text && (labels[status] || status)}{status === 'running' && <LoaderCircle size={12} className="spin"/>}</span>; }
@@ -30,6 +38,7 @@ export default function App() {
   const [loading,setLoading] = useState(false);
   const [error,setError] = useState('');
   const [notice,setNotice] = useState('');
+  const [environmentTarget,setEnvironmentTarget] = useState('');
   const [environment,setEnvironment] = useState<Environment>(emptyEnvironment);
   const [cases,setCases] = useState<CaseInfo[]>([]);
   const [history,setHistory] = useState<History[]>([]);
@@ -57,6 +66,24 @@ export default function App() {
   const checkingMaster104 = useRef(false);
   const master104Polling = useRef(false);
   const disabled = active || busy;
+  const resourceConfirmationError = error.includes('dedicated_test_resources=true');
+
+  function goToEnvironment(id:string) {
+    setPage('environment');
+    setEnvironmentTarget(id);
+    console.info('定位测试环境配置：',id);
+  }
+  useEffect(()=>{
+    if(page!=='environment'||!environmentTarget)return;
+    const target=document.getElementById(environmentTarget);
+    if(target){
+      const group=target.closest('details');
+      if(group)group.open=true;
+      target.scrollIntoView({block:'center'});
+      target.focus({preventScroll:true});
+    }
+    setEnvironmentTarget('');
+  },[page,environmentTarget]);
 
   async function refreshHistory() { const result = await call<History[]>('history'); setHistory(result); }
   async function bootstrap() {
@@ -185,10 +212,10 @@ export default function App() {
 
     <main className="workspace">
       <header className="topbar"><div className="breadcrumb">工作空间 <ChevronRight size={14}/><span>{{execution:'测试执行',environment:'测试环境',history:'历史报告'}[page]}</span></div><div className="topbar-right"><span className="local-label"><span className="tiny-dot"/>本地工作区</span><span className="avatar">M</span></div></header>
-      <div className="page-scroll">
+      <div className={page==='environment'?'page-scroll environment-page-scroll':'page-scroll'}>
         <section className="page-title"><div><div className="eyebrow">{page==='execution'?'TEST RUNNER':page==='environment'?'ENVIRONMENT':'REPORTS'}</div><h1>{{execution:'测试执行',environment:'测试环境',history:'历史报告'}[page]}</h1><p>{{execution:'选择测试用例，验证系统的每一个关键流程。',environment:'管理上位机运行环境，保持每次测试可控、可重复。',history:'回溯每次测试结果，查看执行记录与问题证据。'}[page]}</p></div>{page==='execution'&&<div className="title-actions"><button className="button" disabled={!ready||disabled||loading} onClick={()=>void refreshCases()} data-testid="cases-refresh"><RefreshCw size={15} className={loading?'spin':''}/>刷新用例</button>{active?<button className="button danger" data-testid="run-stop" disabled={stopping} onClick={()=>void stop()}>{stopping?<LoaderCircle size={15} className="spin"/>:<Square size={13}/>} {stopping?'正在停止…':'停止测试'}</button>:<button className="button primary" data-testid="run-start" disabled={!ready||disabled||loading||!selected.size} onClick={()=>void start()}>{busy?<LoaderCircle size={16} className="spin"/>:<Play size={15} fill="currentColor"/>}开始测试<span className="button-count">{selected.size}</span></button>}</div>}</section>
         {!desktop&&<div className="notice info"><CircleHelp size={18}/><div><strong>请使用桌面版测试上位机</strong><p>浏览器仅用于界面开发。连接测试内核、执行用例和选择本机文件需要通过 Tauri 桌面窗口。</p></div></div>}
-        {error&&<div className="notice error" role="alert" data-testid="error-message"><Activity size={17}/><span>{error}</span><button onClick={()=>setError('')} aria-label="关闭错误提示"><X size={16}/></button></div>}
+        {error&&<div className="notice error" role="alert" data-testid="error-message"><Activity size={17}/><div className="notice-content"><strong>{resourceConfirmationError?'基础采集：请确认测试资源用途':'操作未完成'}</strong>{resourceConfirmationError?<><p>请在「Modbus RTU → 基础采集」中确认串口和模拟点为专用测试资源，再勾选确认项。</p><details><summary>查看原始错误</summary><p>{error}</p></details></>:<p>{error}</p>}</div>{resourceConfirmationError&&<button className="button error-location" onClick={()=>goToEnvironment('environment-modbus-basic-dedicated')}>定位确认项<ArrowRight size={14}/></button>}<button onClick={()=>setError('')} aria-label="关闭错误提示"><X size={16}/></button></div>}
         {notice&&<div className="notice success" role="status"><CheckCheck size={17}/><span>{notice}</span><button onClick={()=>setNotice('')} aria-label="关闭提示"><X size={16}/></button></div>}
         {loading&&!ready&&<div className="loading-state"><LoaderCircle className="spin"/>正在连接本地测试内核并发现用例…</div>}
 
@@ -224,17 +251,17 @@ export default function App() {
           <footer className="page-footer"><span><ShieldCheck size={14}/>测试在本地执行，日志与截图仅保存在本机</span><button className="text-button" disabled={!runDir} onClick={()=>void open(runDir)}><FolderOpen size={14}/>打开本次报告目录</button></footer>
         </>}
 
-        {page==='environment'&&<div className="environment-page"><div className="panel form-panel"><div className="panel-heading"><div><h2>环境配置</h2><p>配置一次，即可重复运行测试用例。</p></div><span className="soft-tag">本地保存</span></div><fieldset disabled={disabled||!ready}>
-          <div className="form-section"><div className="section-title"><span>01</span><div><h3>基础信息</h3><p>选择需要测试的上位机及自动化驱动</p></div></div><Field label="环境名称" hint="用于区分不同测试环境"><input data-testid="environment-name" value={environment.name} onChange={e=>setEnvironment({...environment,name:e.target.value})}/></Field><Field label="上位机程序" hint="选择已安装或编译完成的 Release 可执行程序"><PathInput value={environment.app_path} onChange={v=>setEnvironment({...environment,app_path:v})} onBrowse={()=>void pick('app_path')} testId="environment-app"/></Field><Field label="WebView2 驱动" hint="驱动版本应与本机 WebView2 Runtime 匹配"><PathInput value={environment.driver_path} onChange={v=>setEnvironment({...environment,driver_path:v})} onBrowse={()=>void pick('driver_path')} testId="environment-driver"/></Field></div>
-          <div className="form-section"><div className="section-title"><span>02</span><div><h3>运行与隔离</h3><p>根据测试需求选择干净环境或保留配置</p></div></div><div className="mode-options">{(['fresh','workspace'] as const).map(mode=><button type="button" data-testid={`mode-${mode}`} className={environment.mode===mode?'mode-card chosen':'mode-card'} key={mode} onClick={()=>setEnvironment({...environment,mode})}><span className="radio-dot"/><div><strong>{mode==='fresh'?'全新独立副本':'固定测试工作区'}</strong><p>{mode==='fresh'?'每项用例使用新的程序副本和数据':'复用专用工作区，保留已有测试配置'}</p></div>{environment.mode===mode&&<Check size={16}/>}</button>)}</div>{environment.mode==='workspace'&&<Field label="固定工作区" hint="请选择专用测试目录，不使用原上位机安装目录"><PathInput value={environment.workspace_path} onChange={v=>setEnvironment({...environment,workspace_path:v})} onBrowse={()=>void pick('workspace_path')} testId="environment-workspace"/></Field>}<Field label="初始配置基线（可选）" hint="仅导入顶层 JSON 测试配置，登录配置不会导入"><PathInput value={environment.baseline_path} onChange={v=>setEnvironment({...environment,baseline_path:v})} onBrowse={()=>void pick('baseline_path')}/></Field><div className="form-split"><Field label="等待时间"><div className="number-input"><input data-testid="environment-timeout" type="number" min="1" value={Number.isFinite(environment.timeout)?environment.timeout:''} onChange={e=>setEnvironment({...environment,timeout:Number(e.target.value)})}/><span>秒</span></div></Field><label className="cleanup-toggle"><input type="checkbox" checked={environment.close_app} onChange={e=>setEnvironment({...environment,close_app:e.target.checked})}/><span>测试结束后关闭本次上位机实例<small>仅清理本次测试创建的实例</small></span></label></div></div>
-          <div className="form-section"><div className="section-title"><span>03</span><div><h3>截图标注</h3><p>统一为步骤截图添加操作位置和简短说明</p></div></div><label className="cleanup-toggle"><input data-testid="environment-annotation-enabled" type="checkbox" checked={environment.annotation_enabled} onChange={e=>setEnvironment({...environment,annotation_enabled:e.target.checked})}/><span>自动生成标注图<small>保留原图；查看截图时可切换原图和标注图</small></span></label></div>
-          <div className="form-section"><div className="section-title"><span>04</span><div><h3>slaveSim 模拟器</h3><p>统一保存管理页地址，随时打开查看模拟器状态</p></div></div>
+        {page==='environment'&&<div className="environment-page"><div className="panel form-panel"><div className="panel-heading"><div><h2>环境配置</h2><p>先配置程序与运行方式，再按所选用例填写协议参数。</p></div><span className="soft-tag">需点击保存</span></div><fieldset disabled={disabled||!ready}>
+          <div className="form-section environment-basics" id="environment-basics" tabIndex={-1}><div className="section-title"><span>01</span><div><h3>基础信息</h3><p>选择需要测试的上位机及自动化驱动</p></div></div><Field label="环境名称" hint="用于区分不同测试环境"><input data-testid="environment-name" value={environment.name} onChange={e=>setEnvironment({...environment,name:e.target.value})}/></Field><Field label="上位机程序" hint="选择已安装或编译完成的 Release 可执行程序"><PathInput value={environment.app_path} onChange={v=>setEnvironment({...environment,app_path:v})} onBrowse={()=>void pick('app_path')} testId="environment-app"/></Field><Field label="WebView2 驱动" hint="驱动版本应与本机 WebView2 Runtime 匹配"><PathInput value={environment.driver_path} onChange={v=>setEnvironment({...environment,driver_path:v})} onBrowse={()=>void pick('driver_path')} testId="environment-driver"/></Field></div>
+          <div className="form-section" id="environment-isolation" tabIndex={-1}><div className="section-title"><span>02</span><div><h3>运行与隔离</h3><p>根据测试需求选择干净环境或保留配置</p></div></div><div className="mode-options">{(['fresh','workspace'] as const).map(mode=><button type="button" data-testid={`mode-${mode}`} className={environment.mode===mode?'mode-card chosen':'mode-card'} key={mode} onClick={()=>setEnvironment({...environment,mode})}><span className="radio-dot"/><div><strong>{mode==='fresh'?'全新独立副本':'固定测试工作区'}</strong><p>{mode==='fresh'?'每项用例使用新的程序副本和数据':'复用专用工作区，保留已有测试配置'}</p></div>{environment.mode===mode&&<Check size={16}/>}</button>)}</div>{environment.mode==='workspace'&&<Field label="固定工作区" hint="请选择专用测试目录，不使用原上位机安装目录"><PathInput value={environment.workspace_path} onChange={v=>setEnvironment({...environment,workspace_path:v})} onBrowse={()=>void pick('workspace_path')} testId="environment-workspace"/></Field>}<Field label="初始配置基线（可选）" hint="仅导入顶层 JSON 测试配置，登录配置不会导入"><PathInput value={environment.baseline_path} onChange={v=>setEnvironment({...environment,baseline_path:v})} onBrowse={()=>void pick('baseline_path')}/></Field><div className="form-split"><Field label="等待时间"><div className="number-input"><input data-testid="environment-timeout" type="number" min="1" value={Number.isFinite(environment.timeout)?environment.timeout:''} onChange={e=>setEnvironment({...environment,timeout:Number(e.target.value)})}/><span>秒</span></div></Field><label className="cleanup-toggle"><input type="checkbox" checked={environment.close_app} onChange={e=>setEnvironment({...environment,close_app:e.target.checked})}/><span>测试结束后关闭本次上位机实例<small>仅清理本次测试创建的实例</small></span></label></div></div>
+          <div className="form-section" id="environment-annotation" tabIndex={-1}><div className="section-title"><span>03</span><div><h3>截图标注</h3><p>统一为步骤截图添加操作位置和简短说明</p></div></div><label className="cleanup-toggle"><input data-testid="environment-annotation-enabled" type="checkbox" checked={environment.annotation_enabled} onChange={e=>setEnvironment({...environment,annotation_enabled:e.target.checked})}/><span>自动生成标注图<small>保留原图；查看截图时可切换原图和标注图</small></span></label></div>
+          <div className="form-section" id="environment-slavesim" tabIndex={-1}><div className="section-title"><span>04</span><div><h3>slaveSim 模拟器</h3><p>统一保存管理页地址，随时打开查看模拟器状态</p></div></div>
             <Field label="管理页地址（可选）" hint="填写完整的 HTTP 或 HTTPS 地址；修改后保存环境，下次打开会自动回填">
               <input data-testid="environment-slavesim-url" type="url" placeholder="http://192.168.1.219:16000" value={environment.slavesim_url} onChange={e=>{setEnvironment({...environment,slavesim_url:e.target.value});setNotice('');setError('');}}/>
             </Field>
             <div className="slavesim-actions"><button className="button" data-testid="slavesim-open" disabled={!environment.slavesim_url.trim()} onClick={()=>void slavesimAction('open_slavesim')}><ArrowRight size={15}/>打开管理页</button><button className="button" data-testid="slavesim-check" disabled={!environment.slavesim_url.trim()} onClick={()=>void slavesimAction('check_slavesim')}><Activity size={15}/>检查连接</button><span>使用当前填写的地址，在默认浏览器中打开</span></div>
           </div>
-          <div className="form-section"><div className="section-title"><span>05</span><div><h3>104 模拟主站</h3><p>使用已打开的 ProIEC104Client；检查只读取窗口，不自动连接或发送命令</p></div></div>
+          <div className="form-section" id="environment-master104" tabIndex={-1}><div className="section-title"><span>05</span><div><h3>104 模拟主站</h3><p>使用已打开的 ProIEC104Client；检查只读取窗口，不自动连接或发送命令</p></div></div>
             <label className="cleanup-toggle"><input data-testid="environment-master104-enabled" type="checkbox" checked={environment.master104_enabled} onChange={e=>{setEnvironment({...environment,master104_enabled:e.target.checked});setMaster104Snapshot(null);}}/><span>启用 104 主站<small>仅供需要主站的用例使用，既有用例保持原行为</small></span></label>
             <fieldset disabled={!environment.master104_enabled}>
               <Field label="主站程序" hint="选择已打开实例对应的 ProIEC104Client.exe；检查无需先保存环境">
@@ -247,7 +274,10 @@ export default function App() {
             {master104Snapshot&&<details className="master104-snapshot" data-testid="master104-snapshot"><summary>本次主站窗口快照</summary><pre>{JSON.stringify(master104Snapshot,null,2)}</pre></details>}
           </div>
           <ModbusEnvironment environment={environment} onChange={setEnvironment}/>
-        </fieldset><div className="form-actions"><button className="button" disabled={disabled||!ready} onClick={()=>void load()}><ArrowDownToLine size={15}/>载入配置</button><button className="button primary" data-testid="environment-save" disabled={disabled||!ready} onClick={()=>void save()}><Check size={16}/>保存环境</button></div></div><aside className="environment-help"><div className="help-symbol"><ShieldCheck size={27}/></div><h3>可重复的测试环境</h3><p>程序、工作区与初始状态共同决定测试条件。建议为不同版本保留独立的测试工作区。</p><div className="help-divider"/><h4>关于已有配置</h4><p>固定工作区会保留测试配置；全新副本适合首次启动及默认状态验证。</p><h4>关于运行中的任务</h4><p>任务执行期间环境配置会锁定，停止并完成清理后可再次修改。</p><h4>关于模拟器连接</h4><p>连接检查确认状态接口可访问。控制是否生效，需要对应业务用例检查。</p><h4>关于 104 主站</h4><p>首版只接管已打开实例，不启动或关闭主站，不修改主站配置。</p><h4>关于 Modbus RTU</h4><p>按所选用例填写基础采集或华为六路参数。开始前会校验完整性，缺少配置时不创建测试任务。</p></aside></div>}
+        </fieldset><div className="form-actions"><span role="status">{active?'任务运行中，环境配置已锁定':busy?'正在处理，请稍候…':'修改后请保存环境'}</span><button className="button" disabled={disabled||!ready} onClick={()=>void load()}><ArrowDownToLine size={15}/>载入配置</button><button className="button primary" data-testid="environment-save" disabled={disabled||!ready} onClick={()=>void save()}><Check size={16}/>保存环境</button></div></div><aside className="environment-help" aria-label="环境配置导航">
+          <div className="environment-directory"><h3>配置导航</h3><p>点击定位到对应配置</p><nav aria-label="配置分区">{environmentSections.map(([id,title,hint],index)=><button type="button" key={id} onClick={()=>goToEnvironment(id)}><span>{String(index+1).padStart(2,'0')}</span><div><strong>{title}</strong><small>{hint}</small></div><ChevronRight size={14}/></button>)}</nav></div>
+          <details className="environment-guide"><summary><ShieldCheck size={16}/>配置说明与使用边界</summary><h4>保留已有配置</h4><p>固定工作区会保留测试配置；全新副本适合首次启动及默认状态验证。</p><h4>运行中的任务</h4><p>执行期间配置锁定，停止并完成清理后可再次修改。</p><h4>模拟器连接</h4><p>连接检查仅确认状态接口可访问，控制效果由业务用例验证。</p><h4>104 主站</h4><p>只接管已打开实例，不启动或关闭主站，不修改主站配置。</p><h4>Modbus RTU</h4><p>按所选用例填写基础采集或华为六路参数；开始前校验完整性，缺少配置时不创建任务。</p></details>
+        </aside></div>}
 
         {page==='history'&&<>
           <div className="history-top"><span>{history.length} 条本地测试记录</span><button className="button" disabled={!ready} onClick={()=>void refreshHistory().catch(e=>setError(String(e)))}><RefreshCw size={14}/>刷新记录</button></div>
