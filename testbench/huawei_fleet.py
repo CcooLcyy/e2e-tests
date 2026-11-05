@@ -118,7 +118,7 @@ def build_fleet(config, run_id):
             ordinal += 1
             devices.append({"station_id": station, "ordinal": ordinal,
                             "dc_available_kw": 10 + ordinal, "grid_line_voltage_v": 380 + ordinal,
-                            "grid_frequency_hz": 50, "ambient_temperature_c": 25, "efficiency": 0.98,
+                            "grid_frequency_hz": 50, "ambient_temperature_c": 25, "efficiency": 1,
                             "disturbance_enabled": False})
         buses.append({"name": f"e2e-huawei-{run_id}-485-{index}", "index": index,
                       "serial_device": path, "devices": devices})

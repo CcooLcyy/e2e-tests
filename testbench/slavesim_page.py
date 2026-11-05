@@ -264,7 +264,7 @@ class SlaveSimPage:
         link = self._field(card, "串口软链接路径").get_attribute("value")
         return name, link
 
-    def _save_configuration(self, label):
+    def _save_configuration(self, label, *, runtime_impact=None):
         with self._step(f"保存并应用slaveSim必要配置：{label}"):
             self._configuration_snapshot(label + "保存前草稿")
             self.driver.find_element(By.ID, "save-config").click()
@@ -275,7 +275,7 @@ class SlaveSimPage:
                 return node.text.startswith("配置已保存并应用")
             self._wait(saved, "slaveSim配置未确认保存并应用")
             self.desktop.metadata.setdefault("slaveSim配置调整", []).append({
-                "内容": label, "运行影响": "保存整份配置会重建所有模型并重置临时手动值及指令；原有配置定义保留"})
+                "内容": label, "运行影响": runtime_impact or "保存整份配置会重建所有模型并重置临时手动值及指令；原有配置定义保留"})
         return self._read_configuration(label + "保存后实际配置")
 
     def prepare_basic(self, environment, *, check_paths=None):

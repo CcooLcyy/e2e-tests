@@ -32,8 +32,8 @@ def sample_run(tmp_path):
     for address in (32069, 32070, 32071):
         registers[address]["value"] = int(Decimal(device["grid_line_voltage_v"]) / Decimal(3).sqrt() * 10)
     for address in (32072, 32074, 32076):
-        registers[address]["value"] = 16336
-    for address, value in {32080: 10780, 32082: 0, 32084: 1000, 32000: 6, 32089: 512,
+        registers[address]["value"] = 16669
+    for address, value in {32080: 11000, 32082: 0, 32084: 1000, 32000: 6, 32089: 512,
                            35303: 40125, 35307: 40122}.items():
         registers[address]["value"] = value
     registers[30075] = {"value": 55000, "type": "UINT32"}
@@ -61,6 +61,32 @@ def test_stable_device_requires_all_eighteen_points_and_fresh_source(tmp_path):
     result = scenario.sample("发电", bus, device)
     assert result["通过"] and len(result["点位"]) == 18
     assert result["模拟器后采样"]["refresh_tick"] > result["模拟器前采样"]["refresh_tick"]
+
+
+@pytest.mark.parametrize("stage", ["发电", "恢复发电"])
+def test_unit_efficiency_generation_and_recovery_reject_old_loss_target(tmp_path, stage):
+    """发电和恢复均要求11kW；两端相同的旧10.78kW也不能通过固定工况校验。"""
+    scenario, _bus, device, raw, _upper = sample_run(tmp_path)
+    snapshot = {"registers": raw}
+    assert scenario._physics_errors(stage, device, snapshot) == []
+    raw[32080]["value"] = 10780
+    assert any("固定目标11kW" in error for error in scenario._physics_errors(stage, device, snapshot))
+
+
+@pytest.mark.parametrize("point", READ_POINTS, ids=lambda point: point.key)
+def test_each_collected_point_is_compared_with_independent_simulator_value(tmp_path, point):
+    """18个采集点任意一个偏离独立模拟器源值，即使质量和时间有效仍失败。"""
+    scenario, bus, device, raw, upper = sample_run(tmp_path)
+    scenario.config = replace(scenario.config, acquisition_timeout=0)
+    original = deepcopy(raw)
+    value = upper[point.key]["value"]
+    upper[point.key]["value"] = not value if point.data_type == "BOOL" else str(Decimal(value) + 1)
+    result = scenario.sample("发电", bus, device)
+    assert raw == original
+    assert not result["通过"]
+    failed = [row for row in result["点位"] if not row["通过"]]
+    assert len(failed) == 1
+    assert failed[0]["点标识"] == point.key
 
 
 def test_same_values_cannot_hide_wrong_register_identity(tmp_path):

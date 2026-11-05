@@ -22,7 +22,7 @@ def validate_fleet_capacity(actual_buses, planned_buses):
                         raise ValueError(f"能力寄存器{address}缺失、重复或不是固定来源")
                     capacity[key] = decimal_value(matches[0].get("value")) / 1000
                 pmax, smax, qmax, qmin = (capacity[key] for key in ("pmax", "smax", "qmax", "qmin"))
-                generation = decimal_value(device["dc_available_kw"]) * Decimal("0.98")
+                generation = decimal_value(device["dc_available_kw"]) * decimal_value(device["efficiency"])
                 limited = pmax * (Decimal(10) + Decimal(device["ordinal"]) / 10) / 100
                 pf_q = limited * (1 / Decimal("0.9") ** 2 - 1).sqrt()
                 negative_q = -Decimal("0.2") * smax

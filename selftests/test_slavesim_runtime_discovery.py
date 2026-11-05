@@ -128,6 +128,7 @@ def fleet_page(tmp_path):
         yield {}
     page._step = step
     page._snapshot = lambda result: None
+    page._verify_zero_runtime = lambda: None
     return page
 
 
@@ -163,37 +164,106 @@ def test_fleet_starts_from_zero_and_creates_all_twenty_one_devices(tmp_path, bef
 
 
 @pytest.mark.parametrize("model", ["huawei_v3", "未知模型", ""])
-def test_any_existing_device_fails_before_creating_or_changing_resources(tmp_path, model):
-    """已有模型或类型无法确认的静态从站均阻止零起点测试，不删除、不复用。"""
+def test_existing_devices_are_cleared_and_confirmed_before_creating(tmp_path, model):
+    """已有模型和静态从站先删除并确认零台，再从头创建，禁止复用。"""
     page = fleet_page(tmp_path)
     before = [{"name": "其他总线", "link": "/srv/other", "slaves": [
         {"station_id": 17, "model": model, "registers": []}]}]
-    original = deepcopy(before)
-    page._read_configuration = lambda _: before
-    page.create_fleet = lambda *_args, **_kwargs: pytest.fail("已有设备时不得创建或覆盖机群")
+    saved = deepcopy(before)
+    page._read_configuration = lambda _: deepcopy(saved)
+    calls = []
+    def clear(actual):
+        assert actual == before
+        calls.append("删除并保存")
+        for bus in saved:
+            bus["slaves"] = []
+        return deepcopy(saved)
+    page._clear_existing_devices = clear
+    page._verify_zero_runtime = lambda: calls.append("运行零台")
+    def create(*_args, **_kwargs):
+        assert calls == ["删除并保存", "运行零台"]
+        assert all(not bus["slaves"] for bus in saved)
+        raise RuntimeError("已进入从零创建")
+    page.create_fleet = create
     page.apply_scenario = lambda *_args, **_kwargs: pytest.fail("已有设备时不得应用工况")
     page.apply_control = lambda *_: pytest.fail("已有设备时不得修改控制")
-    def check_paths(_):
-        pytest.fail("零起点失败时不得继续检查DSP资源")
-    with pytest.raises(AssertionError, match="初始模拟逆变器必须为0台"):
-        page.prepare_fleet(environment(), "本次", check_paths=check_paths)
-    assert before == original
+    with pytest.raises(RuntimeError, match="已进入从零创建"):
+        page.prepare_fleet(environment(), "本次")
     evidence = page.desktop.metadata["华为初始逆变器检查"]
     assert evidence["已有从站数"] == 1
     assert len(evidence["设备"]) == 1
 
 
-def test_complete_existing_fleet_is_rejected_instead_of_reused(tmp_path):
-    """完整六路21台也必须前置失败，不能因配置匹配而绕过从零创建。"""
+def test_complete_existing_fleet_is_cleared_instead_of_reused(tmp_path):
+    """完整六路21台也必须清空，不能因配置匹配而绕过从零创建。"""
     page = fleet_page(tmp_path)
     before, _ = capacity_fleet()
     page._read_configuration = lambda _: deepcopy(before)
-    page.create_fleet = lambda *_args, **_kwargs: pytest.fail("完整既有机群不得复用或重新创建")
+    def clear(actual):
+        assert sum(len(bus["slaves"]) for bus in actual) == 21
+        raise RuntimeError("清空完整既有机群")
+    page._clear_existing_devices = clear
+    page.create_fleet = lambda *_args, **_kwargs: pytest.fail("清空完成前不得创建机群")
     page.apply_scenario = lambda *_args, **_kwargs: pytest.fail("完整既有机群不得重置工况")
     page.apply_control = lambda *_: pytest.fail("完整既有机群不得重置控制")
-    with pytest.raises(AssertionError, match="初始模拟逆变器必须为0台"):
+    with pytest.raises(RuntimeError, match="清空完整既有机群"):
         page.prepare_fleet(environment(), "本次")
     assert page.desktop.metadata["华为初始逆变器检查"]["已有从站数"] == 21
+
+
+@pytest.mark.parametrize("failure", ["save", "remaining", "runtime"])
+def test_zero_start_cannot_be_bypassed_when_clear_or_confirmation_fails(tmp_path, failure):
+    """保存失败、读回仍有设备或运行页不为零时，禁止创建新机群。"""
+    page = fleet_page(tmp_path)
+    before = [{"name": "旧总线", "link": "/srv/old", "slaves": [manual(1, 0)]}]
+    page._read_configuration = lambda _: deepcopy(before)
+    def clear(actual):
+        if failure == "save":
+            raise AssertionError("清空保存失败")
+        return actual if failure == "remaining" else [{**actual[0], "slaves": []}]
+    page._clear_existing_devices = clear
+    def runtime():
+        if failure == "runtime":
+            raise AssertionError("运行页面仍有设备")
+    page._verify_zero_runtime = runtime
+    page.create_fleet = lambda *_args, **_kwargs: pytest.fail("未确认实际零台时不得创建")
+    with pytest.raises(AssertionError):
+        page.prepare_fleet(environment(), "本次")
+
+
+def test_clear_deletes_each_station_then_saves_zero_without_deleting_buses(tmp_path):
+    """真实清空编排逐台点击删除，全部删完才保存，保留两条总线定义。"""
+    page = fleet_page(tmp_path)
+    before = [{"name": "一", "link": "/srv/one", "slaves": [manual(1, 0), manual(2, 0)]},
+              {"name": "二", "link": "/srv/two", "slaves": [manual(7, 0)]}]
+    draft = deepcopy(before)
+    calls = []
+    class Station:
+        def __init__(self, bus):
+            self.bus = bus
+        def find_element(self, _by, xpath):
+            assert "删除从站" in xpath
+            def click():
+                calls.append((self.bus["name"], self.bus["slaves"].pop(0)["station_id"]))
+            return SimpleNamespace(click=click)
+    class Card:
+        def __init__(self, bus):
+            self.bus = bus
+        def find_elements(self, *_):
+            return [Station(self.bus) for _ in self.bus["slaves"]]
+    page._config_bus = lambda name: Card(next(bus for bus in draft if bus["name"] == name))
+    page._open = lambda _: None
+    page._wait = lambda predicate, _message: predicate(None) or pytest.fail("删除后数量未减少")
+    def save(_label, *, runtime_impact):
+        assert all(not bus["slaves"] for bus in draft)
+        assert "原有从站及点表已删除" in runtime_impact and "不自动恢复" in runtime_impact
+        calls.append("保存零台")
+        return deepcopy(draft)
+    page._save_configuration = save
+    result = page._clear_existing_devices(before)
+    assert calls == [("一", 1), ("一", 2), ("二", 7), "保存零台"]
+    assert result == [{**bus, "slaves": []} for bus in before]
+    assert [len(bus["slaves"]) for bus in before] == [2, 1]
 
 
 def test_zero_start_path_conflict_remains_a_precondition_failure(tmp_path):

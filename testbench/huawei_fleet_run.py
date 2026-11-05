@@ -23,7 +23,7 @@ class HuaweiFleetRun:
         desktop.metadata["华为六路拓扑"] = self.buses
         desktop.metadata["华为遥控缺口"] = list(UNIMPLEMENTED_CONTROLS)
         desktop.metadata["华为验收范围"] = "模拟器场景/控制变化后的DSP抄读匹配；DSP下发调节及104遥控未验证"
-        desktop.metadata["华为保留配置"] = "不删除本次创建的模拟器总线及DSP连接；重复运行前须手动清空模拟从站并处理已占用测试路径"
+        desktop.metadata["华为保留配置"] = "结束时保留本次模拟器总线及DSP连接；重跑时自动清空模拟从站，DSP已有连接占用仍需处理"
 
     @staticmethod
     def _identity(bus, device):
@@ -89,7 +89,7 @@ class HuaweiFleetRun:
             if any(registers[address]["value"] != 0 for address in (32072, 32074, 32076)):
                 errors.append("待机/限电停运的三相电流应为0")
         else:
-            target = (Decimal(str(device["dc_available_kw"])) * Decimal("0.98")
+            target = (Decimal(str(device["dc_available_kw"])) * Decimal(str(device["efficiency"]))
                       if stage in ("发电", "恢复发电") else
                       Decimal(registers[30075]["value"]) / 1000
                       * (Decimal(10) + Decimal(device["ordinal"]) / 10) / 100)
