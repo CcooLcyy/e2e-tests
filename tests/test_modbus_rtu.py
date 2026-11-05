@@ -13,7 +13,7 @@ import pytest
 
 from testbench.login_page import PlatformLoginPage, load_login_account
 from testbench.modbus_rtu_config import assert_dual_observation, decimal_value, expected_value
-from testbench.modbus_environment import basic_config_from_environment
+from testbench.modbus_environment import BASIC_CASE_IDS, validate_selected_modbus_cases
 
 
 pytestmark = pytest.mark.case_group("Modbus RTU")
@@ -121,7 +121,7 @@ class RtuScenario:
 
 @pytest.fixture
 def rtu(request):
-    """先校验专用环境，再创建两端会话；失败证据先于资源清理。"""
+    """先校验访问入口，执行时从实际模拟器准备资源；失败先取证再清理。"""
     from testbench.modbus_rtu_page import ModbusRtuPage
     from testbench.slavesim_page import SlaveSimPage
     from testbench.model import validate_slavesim_url
@@ -131,13 +131,12 @@ def rtu(request):
         raise RuntimeError("RTU 双端用例需要从测试上位机运行，以读取任务环境和 slaveSim 地址")
     task = json.loads(Path(task_path).read_text(encoding="utf-8"))
     environment = task["environment"]
-    config = basic_config_from_environment(environment)
+    validate_selected_modbus_cases(environment, BASIC_CASE_IDS)
     if environment.get("mode") != "fresh":
         raise RuntimeError("RTU 双端用例要求全新独立副本，每项独立准备环境")
     simulator_url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)
     account = load_login_account(ROOT / "local" / "login-account.json")
     desktop = request.getfixturevalue("desktop")
-    desktop.metadata["RTU环境"] = asdict(config)
     desktop.metadata["RTU验收阶段"] = "前置条件"
     upper = ModbusRtuPage(desktop)
     errors = []
@@ -155,7 +154,9 @@ def rtu(request):
             setup_failed = False
             try:
                 PlatformLoginPage(desktop).login(account, remember=False, auto=False)
-                upper.open_device(config.manager_address)
+                upper.open_device(environment["modbus_manager_address"])
+                config = simulator.prepare_basic(environment, check_paths=upper.assert_serial_paths_available)
+                desktop.metadata["RTU环境"] = asdict(config)
                 scenario = RtuScenario(desktop, simulator, upper, config)
                 # 在任何模拟点修改前确认两站身份、路径和可操作性。
                 for index in range(2):

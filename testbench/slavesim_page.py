@@ -12,6 +12,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import Select
 
 from .model import validate_slavesim_url
 
@@ -201,6 +202,128 @@ class SlaveSimPage:
         if type(address) is not int or not 0 <= address <= 65535:
             raise ValueError("模拟器协议地址必须在 0～65535 范围内")
         return bus, station_id, function, address
+
+    @staticmethod
+    def _replace(element, value):
+        element.click()
+        element.send_keys(Keys.CONTROL, "a", Keys.NULL, Keys.BACKSPACE)
+        element.send_keys(str(value), Keys.TAB)
+
+    def _config_bus(self, name):
+        return self._unique([node for node in self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")
+                             if self._field(node, "总线名称").get_attribute("value") == name], "目标配置总线")
+
+    def _configuration_snapshot(self, label):
+        """只读取页面配置控件，不访问隐藏草稿或业务接口。"""
+        buses = self.driver.execute_script("""
+            const fields = root => Object.fromEntries(Array.from(root.querySelectorAll('label.config-field'), label => {
+                const input = label.querySelector('input,select');
+                return [label.querySelector('span').textContent.trim(), input?.type === 'checkbox' ? input.checked : input?.value];
+            }));
+            return Array.from(document.querySelectorAll('#config-buses > details.bus-editor'), bus => {
+                const f = fields(bus.querySelector(':scope > .bus-fields'));
+                return {name: f['总线名称'], link: f['串口软链接路径'], slaves:
+                    Array.from(bus.querySelectorAll(':scope > details.slave-editor'), slave => {
+                        const sf = fields(slave.querySelector(':scope > .config-grid'));
+                        const model = slave.querySelector(':scope > .model-editor');
+                        return {station_id: Number(sf['站号（1～247）']), fields: sf,
+                            model: model ? (model.textContent.includes('当前页面不支持模型') ? '未知模型' : 'huawei_v3') : '',
+                            model_fields: model ? fields(model) : {},
+                            registers: Array.from(slave.querySelectorAll(':scope > details.register-group > details.register-editor'), reg => {
+                                const rf = fields(reg);
+                                return {function: rf['功能码'], address: Number(rf['协议地址']), type: rf['数据类型'],
+                                    source: rf['数值来源'], byte_order: rf['字节序'], word_order: rf['32 位字序'],
+                                    access: rf['访问权限'], value: rf['原始值'], fields: rf};
+                            })};
+                    })};
+            });
+        """)
+        from .slavesim_runtime import validate_topology
+        validate_topology(buses)
+        self._snapshot({"类型": "模拟器实际配置", "阶段": label, "buses": buses})
+        self.desktop.metadata.setdefault("slaveSim配置读取", []).append({"阶段": label, "总线数": len(buses)})
+        return buses
+
+    def _read_configuration(self, label):
+        with self._step(f"读取slaveSim当前配置：{label}"):
+            self.driver.find_element(By.ID, "show-config").click()
+            self._wait(lambda _: self.driver.find_element(By.ID, "config-fields").is_enabled(), "配置读取尚未完成")
+            self.driver.find_element(By.ID, "reload-config").click()
+            self._wait(lambda _: (self.driver.find_element(By.ID, "config-fields").is_enabled()
+                                  and self.driver.find_element(By.ID, "config-status").text == "已读取当前配置"),
+                       "未读取slaveSim当前实际配置")
+            return self._configuration_snapshot(label)
+
+    def _add_default_bus(self):
+        before = len(self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor"))
+        self.driver.find_element(By.ID, "add-bus").click()
+        self._wait(lambda _: len(self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")) == before + 1,
+                   "新增总线未显示")
+        card = self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")[-1]
+        name = self._field(card, "总线名称").get_attribute("value")
+        link = self._field(card, "串口软链接路径").get_attribute("value")
+        return name, link
+
+    def _save_configuration(self, label):
+        with self._step(f"保存并应用slaveSim必要配置：{label}"):
+            self._configuration_snapshot(label + "保存前草稿")
+            self.driver.find_element(By.ID, "save-config").click()
+            def saved(_):
+                node = self.driver.find_element(By.ID, "config-status")
+                if "error" in (node.get_attribute("class") or ""):
+                    raise AssertionError(f"slaveSim配置保存失败：{node.text}")
+                return node.text.startswith("配置已保存并应用")
+            self._wait(saved, "slaveSim配置未确认保存并应用")
+            self.desktop.metadata.setdefault("slaveSim配置调整", []).append({
+                "内容": label, "运行影响": "保存整份配置会重建所有模型并重置临时手动值及指令；原有配置定义保留"})
+        return self._read_configuration(label + "保存后实际配置")
+
+    def prepare_basic(self, environment, *, check_paths=None):
+        """执行时选择真实资源，不足时通过页面新增总线及两站手动测试点。"""
+        from .modbus_environment import basic_config_from_environment
+        from .slavesim_runtime import basic_candidate, assert_existing_preserved
+        before = self._read_configuration("基础采集准备前")
+        selected = basic_candidate(before)
+        if selected is None:
+            with self._step("按当前模拟器页面新增基础采集总线与两站手动点"):
+                name, new_link = self._add_default_bus()
+                for station in range(1, 3):
+                    card = self._config_bus(name)
+                    self._open(card)
+                    Select(card.find_element(By.CSS_SELECTOR, "select[name='device-type']")).select_by_value("__custom_modbus__")
+                    card.find_element(By.XPATH, ".//button[normalize-space(.)='添加设备']").click()
+                    self._wait(lambda _: len(self._config_bus(name).find_elements(By.CSS_SELECTOR, ":scope > details.slave-editor")) == station,
+                               "新增自定义从站未显示")
+                    slave = self._config_bus(name).find_elements(By.CSS_SELECTOR, ":scope > details.slave-editor")[-1]
+                    self._open(slave)
+                    group = slave.find_element(By.CSS_SELECTOR, ":scope > details.register-group")
+                    self._open(group)
+                    reg = self._unique(group.find_elements(By.CSS_SELECTOR, ":scope > details.register-editor"), "新增从站默认寄存器")
+                    self._open(reg)
+                    Select(self._field(reg, "访问权限")).select_by_value("readwrite")
+                    Select(self._field(reg, "数值来源")).select_by_value("manual")
+                if check_paths is not None:
+                    check_paths((new_link,))
+            actual = self._save_configuration("新增基础采集总线及两站手动寄存器")
+            assert_existing_preserved(before, actual)
+            selected = basic_candidate([bus for bus in actual if bus["name"] == name])
+            if selected is None:
+                raise AssertionError("新增资源保存后未形成两站manual UINT16 AB读写测试点")
+        bus, stations = selected
+        if check_paths is not None:
+            check_paths((bus["link"],))
+        runtime = {"device_name": environment.get("name") or environment["modbus_manager_address"],
+                   "bus": bus["name"], "serial_device": bus["link"], "stations": stations,
+                   "data_bits": 8, "stop_bits": 1, "parity": "无校验"}
+        config = basic_config_from_environment(environment, runtime)
+        self.desktop.metadata["RTU运行时资源"] = runtime
+        self.desktop.metadata["RTU串口参数来源"] = "slaveSim采用PTY，无UART参数；DSP使用9600/8N1，路径是否可访问由真实连接及采集结果判定"
+        self.driver.find_element(By.ID, "show-runtime").click()
+        for station in config.stations:
+            observed = self.observe(config.bus, station.station_id, "0x03", station.address)
+            if observed["link_path"] != config.serial_device:
+                raise AssertionError("slaveSim运行路径与实际保存配置不一致，未猜测宿主机路径")
+        return config
 
     def _verify_manual(self, key):
         """只读配置页，确认原值恢复不会破坏动态来源或行为模型。"""

@@ -28,10 +28,7 @@ def test_existing_fixture_reads_task_environment_without_sidecar_files(tmp_path,
     environment = {"mode": "fresh", "slavesim_url": "http://192.0.2.1:16000",
                    "modbus_manager_address": "192.0.2.1:50051", "modbus_baud_rate": 9600,
                    "modbus_poll_interval_ms": 1000, "modbus_acquisition_timeout": 30,
-                   "modbus_basic": {"device_name": "测试设备", "bus": "专用总线", "serial_device": "/dev/rtu-test",
-                       "stations": [{"station_id": 1, "address": 0}, {"station_id": 2, "address": 0}],
-                       "dedicated_test_resources": True, "data_bits": 8, "stop_bits": 1, "parity": "无校验"},
-                   "modbus_huawei": {"dedicated_simulator": True, "serial_devices": [f"/dev/rtu-{i}" for i in range(6)]}}
+                   "modbus_basic": {}, "modbus_huawei": {}}
     task = tmp_path / "task.json"
     task.write_text(json.dumps({"environment": environment}), encoding="utf-8")
     monkeypatch.setenv("TESTBENCH_TASK", str(task))

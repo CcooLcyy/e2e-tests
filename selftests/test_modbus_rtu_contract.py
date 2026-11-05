@@ -19,6 +19,19 @@ def test_station_address_bounds_and_distinct_stations():
         RtuEnvironment.from_dict(value)
 
 
+@pytest.mark.parametrize("path", ["/srv/serial-sim/tty0", "/dev/pts/12"])
+def test_runtime_pty_absolute_paths_are_preserved(path):
+    """实际模拟器共享路径不必位于/dev，但必须原样传递给DSP连接。"""
+    assert RtuEnvironment.from_dict({**environment(), "serial_device": path}).serial_device == path
+
+
+@pytest.mark.parametrize("path", ["/", "relative/tty0", "/srv/../tty0", "/srv//tty0", "/srv/tty 0", "/srv/tty0/"])
+def test_noncanonical_serial_paths_are_rejected(path):
+    """拒绝歧义路径，不能自行归一化后指向其他串口。"""
+    with pytest.raises(ValueError, match="绝对"):
+        RtuEnvironment.from_dict({**environment(), "serial_device": path})
+
+
 @pytest.mark.parametrize("field,invalid", [
     ("station_id", 0), ("station_id", 248), ("station_id", True),
     ("address", -1), ("address", 65536), ("address", 1.5),

@@ -64,36 +64,6 @@ def parse_visible_value(text):
 
 
 class HuaweiRtuPage(ModbusRtuPage):
-    def assert_serial_paths_available(self, paths):
-        """只读查看既有连接，任何目标串口被配置占用都在新建模型前拒绝。"""
-        with self.desktop.step("检查六条测试串口未被既有RTU连接使用"):
-            refresh = (By.CSS_SELECTOR, 'button[aria-label="刷新连接列表"]')
-            def ready(_):
-                button = self._visible(refresh)
-                return button and button.is_enabled() and "ant-btn-loading" not in (button.get_attribute("class") or "")
-            self._until(ready, "RTU连接列表仍在加载")
-            self._click(refresh, "只读刷新既有RTU连接列表")
-            self._until(ready, "RTU连接列表刷新未完成")
-            for alert in self.driver.find_elements(By.CSS_SELECTOR, ".modbus-page-alert"):
-                if alert.is_displayed() and "连接列表刷新失败" in alert.text:
-                    raise AssertionError("既有RTU连接列表刷新失败，不能确认测试串口空闲")
-            names = [node.text.strip() for node in self.driver.find_elements(
-                By.CSS_SELECTOR, ".protocol-connection-item-main strong")]
-            observed = []
-            for name in names:
-                self._click(self._connection_locator(name), f"只读检查既有连接 {name}")
-                title = (By.XPATH, "//div[contains(@class,'modbus-connection-card')]"
-                         "//div[contains(@class,'ant-card-head-title')]//span[normalize-space(.)=" + xpath_text(name) + "]")
-                self._until(lambda _: self._visible(title), "既有连接详情未切换至目标连接")
-                labels = [node.text.strip() for node in self.driver.find_elements(
-                    By.CSS_SELECTOR, ".modbus-connection-card .ant-descriptions-item-label")]
-                if "串口设备" in labels:
-                    path = self._detail("串口设备")
-                    observed.append({"连接": name, "串口": path})
-                    if path in paths:
-                        raise AssertionError(f"串口 {path} 已被既有连接 {name} 使用，未创建或覆盖任何测试资源")
-            self.desktop.metadata["华为既有串口检查"] = observed
-
     def add_huawei_point(self, spec, tag):
         point = normalize_point(spec)
         if not isinstance(tag, str) or not tag.strip() or len(tag) > 128:

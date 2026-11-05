@@ -41,14 +41,18 @@ def test_uniform_environment_round_trip_and_config_builders(tmp_path):
     save_environment(path, environment)
     restored = load_environment(path)
     assert restored.to_dict() == environment.to_dict()
-    basic = basic_config_from_environment(restored.to_dict())
-    huawei = huawei_config_from_environment(restored.to_dict())
+    basic = basic_config_from_environment(restored.to_dict(), {
+        "bus": "实际总线", "serial_device": "/srv/serial-sim/actual",
+        "stations": [{"station_id": 7, "address": 30}, {"station_id": 9, "address": 40}]})
+    huawei = huawei_config_from_environment(restored.to_dict(), {
+        "serial_devices": [f"/srv/serial-sim/actual{i}" for i in range(6)]})
     assert basic.manager_address == huawei.manager_address == "192.0.2.1:50051"
-    assert basic.baud_rate == huawei.baud_rate == 19200
+    assert basic.baud_rate == huawei.baud_rate == 9600
     assert basic.poll_interval_ms == huawei.poll_interval_ms == 500
     assert basic.acquisition_timeout == huawei.acquisition_timeout == 35
-    assert basic.stations[1].address == 20
-    assert huawei.serial_devices[-1] == "/srv/serial-sim/tty5"
+    assert basic.stations[1].address == 40
+    assert basic.bus == "实际总线"
+    assert huawei.serial_devices[-1] == "/srv/serial-sim/actual5"
     restored.validate_for_cases([*BASIC_CASE_IDS, HUAWEI_CASE_ID])
 
 
@@ -74,25 +78,23 @@ def test_incomplete_rtu_draft_can_be_saved_and_does_not_block_login(tmp_path):
     assert loaded.modbus_basic == environment.modbus_basic
 
 
-def test_each_rtu_family_requires_only_its_own_settings(tmp_path):
-    """只选择华为用例不要求基础两站参数，反之亦然。"""
+def test_rtu_preflight_does_not_require_static_simulator_resources(tmp_path):
+    """两类用例均在执行阶段读取模拟器，不要求静态参数和专用资源勾选。"""
     environment = populated_environment(tmp_path)
     environment.modbus_basic = {}
-    environment.validate_for_cases([HUAWEI_CASE_ID])
-    with pytest.raises(ValueError, match="基础采集"):
-        environment.validate_for_cases([next(iter(BASIC_CASE_IDS))])
-    environment = populated_environment(tmp_path)
     environment.modbus_huawei = {}
-    environment.validate_for_cases([next(iter(BASIC_CASE_IDS))])
-    with pytest.raises(ValueError, match="华为六路"):
-        environment.validate_for_cases([HUAWEI_CASE_ID])
+    environment.validate_for_cases([*BASIC_CASE_IDS, HUAWEI_CASE_ID])
+    environment.modbus_basic = {"dedicated_test_resources": False, "stations": "过期值"}
+    environment.modbus_huawei = {"dedicated_simulator": False, "serial_devices": ["过期路径"]}
+    environment.validate_for_cases([*BASIC_CASE_IDS, HUAWEI_CASE_ID])
 
 
 @pytest.mark.parametrize("change,label", [
-    ({"modbus_manager_address": ""}, "基础采集"),
+    ({"modbus_manager_address": ""}, "ModuleManager"),
     ({"mode": "workspace"}, "全新独立副本"),
     ({"slavesim_url": ""}, "slaveSim"),
-    ({"modbus_basic": {"manager_address": "bad"}}, "基础采集"),
+    ({"modbus_poll_interval_ms": None}, "轮询"),
+    ({"modbus_acquisition_timeout": 0}, "采集"),
 ])
 def test_preflight_errors_name_the_configuration_entry(tmp_path, change, label):
     """开始前直接指出界面入口，不在worker启动后报独立JSON缺失。"""
@@ -104,22 +106,32 @@ def test_preflight_errors_name_the_configuration_entry(tmp_path, change, label):
 
 
 def test_shared_configuration_cannot_be_overridden_by_nested_data(tmp_path):
-    """导入文件中嵌套的重复共享参数不能覆盖界面显示的参数。"""
+    """历史嵌套配置被忽略，运行时数据也不能覆盖共享连接参数。"""
     data = populated_environment(tmp_path).to_dict()
     data["modbus_huawei"]["manager_address"] = "unexpected:50051"
-    with pytest.raises(ValueError, match="未知参数"):
-        huawei_config_from_environment(data)
+    actual = {"serial_devices": [f"/srv/serial-sim/actual{i}" for i in range(6)],
+              "manager_address": "unexpected:50051", "baud_rate": 115200}
+    config = huawei_config_from_environment(data, actual)
+    assert config.manager_address == data["modbus_manager_address"]
+    assert config.baud_rate == 9600
+
+
+@pytest.mark.parametrize("builder", [basic_config_from_environment, huawei_config_from_environment])
+def test_runtime_configuration_must_be_explicit(tmp_path, builder):
+    """尚未读取模拟器时禁止退回环境中的过期路径或伪造发现成功。"""
+    with pytest.raises(ValueError, match="运行时"):
+        builder(populated_environment(tmp_path).to_dict())
 
 
 def test_controller_rejects_missing_configuration_before_artifacts_or_worker(tmp_path, monkeypatch):
     """业务用例存在但RTU配置缺失时，不创建失败任务目录，也不启动任何工作进程。"""
     environment = populated_environment(tmp_path)
-    environment.modbus_basic = {}
+    environment.modbus_manager_address = ""
     case_id = next(iter(BASIC_CASE_IDS))
     monkeypatch.setattr("testbench.controller.discover_cases", lambda _: [CaseInfo(case_id, "RTU用例")])
     monkeypatch.setattr("testbench.controller.subprocess.Popen", lambda *args, **kwargs: pytest.fail("配置缺失后启动了worker"))
     controller = TaskController(tmp_path)
-    with pytest.raises(ValueError, match="测试环境→Modbus RTU→基础采集"):
+    with pytest.raises(ValueError, match="ModuleManager"):
         controller.start(environment, [case_id])
     assert controller.run_dir is None and controller.active is False
     assert not (tmp_path / "artifacts").exists()

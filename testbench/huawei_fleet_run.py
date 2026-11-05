@@ -14,9 +14,10 @@ STAGES = ("发电", "有功调节", "无功调节", "负无功调节", "待机",
 
 
 class HuaweiFleetRun:
-    def __init__(self, desktop, simulator, upper, config, run_id):
+    def __init__(self, desktop, simulator, upper, config, run_id, *, buses=None):
         self.desktop, self.simulator, self.upper, self.config = desktop, simulator, upper, config
-        self.buses = build_fleet(config, run_id)
+        # 执行时准备的实际总线名称和站号优先，不能重新生成假名称覆盖发现结果。
+        self.buses = build_fleet(config, run_id) if buses is None else buses
         self.connections, self.results, self.previous, self.evidence_errors = {}, [], {}, []
         self.addresses = sorted({point.address for point in READ_POINTS} | {30075})
         desktop.metadata["华为六路拓扑"] = self.buses

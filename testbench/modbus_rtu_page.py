@@ -90,6 +90,36 @@ class ModbusRtuPage:
             self._until(ready, "未确认目标下位机连接成功且 ModbusRTU 模块运行，请人工准备环境")
         self._rtu()
 
+    def assert_serial_paths_available(self, paths):
+        """只读检查目标串口占用，在修改模拟资源前调用；不接管既有DSP连接。"""
+        with self.desktop.step("检查目标串口未被既有RTU连接使用"):
+            refresh = (By.CSS_SELECTOR, 'button[aria-label="刷新连接列表"]')
+            def ready(_):
+                button = self._visible(refresh)
+                return button and button.is_enabled() and "ant-btn-loading" not in (button.get_attribute("class") or "")
+            self._until(ready, "RTU连接列表仍在加载")
+            self._click(refresh, "只读刷新既有RTU连接列表")
+            self._until(ready, "RTU连接列表刷新未完成")
+            for alert in self.driver.find_elements(By.CSS_SELECTOR, ".modbus-page-alert"):
+                if alert.is_displayed() and "连接列表刷新失败" in alert.text:
+                    raise AssertionError("既有RTU连接列表刷新失败，不能确认测试串口空闲")
+            names = [node.text.strip() for node in self.driver.find_elements(
+                By.CSS_SELECTOR, ".protocol-connection-item-main strong")]
+            observed = []
+            for name in names:
+                self._click(self._connection_locator(name), f"只读检查既有连接 {name}")
+                title = (By.XPATH, "//div[contains(@class,'modbus-connection-card')]"
+                         "//div[contains(@class,'ant-card-head-title')]//span[normalize-space(.)=" + xpath_text(name) + "]")
+                self._until(lambda _: self._visible(title), "既有连接详情未切换至目标连接")
+                labels = [node.text.strip() for node in self.driver.find_elements(
+                    By.CSS_SELECTOR, ".modbus-connection-card .ant-descriptions-item-label")]
+                if "串口设备" in labels:
+                    path = self._detail("串口设备")
+                    observed.append({"连接": name, "串口": path})
+                    if path in paths:
+                        raise AssertionError(f"串口 {path} 已被既有连接 {name} 使用，停止新增DSP连接；模拟器准备情况见执行记录")
+            self.desktop.metadata["RTU既有串口检查"] = observed
+
     @staticmethod
     def _replace(element, value):
         element.click()

@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 
-from testbench.modbus_environment import huawei_config_from_environment
+from testbench.modbus_environment import HUAWEI_CASE_ID, validate_selected_modbus_cases
 from testbench.huawei_fleet_run import HuaweiFleetRun
 from testbench.login_page import PlatformLoginPage, load_login_account
 from testbench.model import validate_slavesim_url
@@ -29,7 +29,7 @@ def huawei_fleet(request):
         raise RuntimeError("请从测试上位机执行华为机群用例，以读取任务环境和模拟器地址")
     task = json.loads(Path(task_path).read_text(encoding="utf-8"))
     environment = task["environment"]
-    config = huawei_config_from_environment(environment)
+    validate_selected_modbus_cases(environment, [HUAWEI_CASE_ID])
     if environment.get("mode") != "fresh":
         raise RuntimeError("华为21台配置用例要求全新独立副本")
     url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)
@@ -38,25 +38,42 @@ def huawei_fleet(request):
     desktop.metadata["华为验收阶段"] = "前置条件"
     upper = HuaweiRtuPage(desktop)
     with HuaweiSlaveSimPage(desktop, url) as simulator:
-        scenario = HuaweiFleetRun(desktop, simulator, upper, config, uuid.uuid4().hex[:8])
+        scenario = None
         setup_failed = False
+
+        def capture_failure(description):
+            if scenario is not None:
+                scenario.capture_both(description)
+                return
+            # 资源发现/补充配置失败时还没有业务场景，也必须保留两端现场。
+            for source, capture in (("slaveSim", simulator.capture), ("DSP上位机", desktop.capture)):
+                try:
+                    capture("huawei-runtime-preparation-failed", description=f"{source}：{description}")
+                except Exception as error:
+                    logging.getLogger(__name__).exception("%s 运行时准备失败现场采集异常", source)
+                    desktop.metadata.setdefault("华为取证错误", []).append(f"{source}：{error}")
+
         try:
             PlatformLoginPage(desktop).login(account, remember=False, auto=False)
-            upper.open_device(config.manager_address)
+            upper.open_device(environment["modbus_manager_address"])
+            run_id = uuid.uuid4().hex[:8]
+            config, buses = simulator.prepare_fleet(environment, run_id, check_paths=upper.assert_serial_paths_available)
+            scenario = HuaweiFleetRun(desktop, simulator, upper, config, run_id, buses=buses)
             desktop.metadata["华为验收阶段"] = "六路模型、21台连接与点表配置及抄读"
             yield scenario
         except BaseException as error:
             setup_failed = True
             desktop.failure = desktop.failure or str(error)
-            scenario.capture_both("前置阶段失败，保留两端现场")
+            capture_failure("前置阶段失败，保留两端现场")
             raise
         finally:
             if not setup_failed and any(report.failed for report in getattr(request.node, "_bench_reports", [])):
-                scenario.capture_both("机群验收失败，关闭浏览器前现场")
+                capture_failure("机群验收失败，关闭浏览器前现场")
             had_failure = setup_failed or sys.exc_info()[0] is not None or any(
                 report.failed for report in getattr(request.node, "_bench_reports", []))
             try:
-                scenario.write_report()
+                if scenario is not None:
+                    scenario.write_report()
             except Exception as error:
                 desktop.metadata["华为报告写入错误"] = str(error)
                 logging.getLogger(__name__).exception("华为汇总报告写入失败，保留原始业务错误")

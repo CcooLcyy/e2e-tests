@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import json
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 
@@ -76,8 +76,11 @@ class RtuEnvironment:
             valid_manager = False
         if not valid_manager:
             raise ValueError("manager_address 必须是现场直连 ModuleManager 的主机:端口，不含凭据或路径")
-        if not options["serial_device"].startswith("/dev/"):
-            raise ValueError("本批 RTU 的 serial_device 必须为下位机 /dev/ 串口路径")
+        path = options["serial_device"]
+        if (not path.startswith("/") or path == "/" or str(PurePosixPath(path)) != path
+                or ".." in PurePosixPath(path).parts or "\\" in path
+                or any(char.isspace() for char in path)):
+            raise ValueError("serial_device 必须为规范的Linux绝对串口路径")
         stations = value.get("stations")
         if not isinstance(stations, list) or len(stations) != 2:
             raise ValueError("首批 RTU 用例需要恰好两个专用从站")
