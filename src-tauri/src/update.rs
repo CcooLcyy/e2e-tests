@@ -2,18 +2,16 @@ mod catalog;
 
 use crate::shell::ShellState;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use catalog::{
-    Catalog, Package, PackageMetadata, CHANNEL, DOWNLOAD_TIMEOUT, MAX_CHUNK, PLATFORM, PRODUCT,
-};
+use catalog::{Catalog, Package, PackageMetadata, DOWNLOAD_TIMEOUT, MAX_CHUNK, PLATFORM, PRODUCT};
 use http::uri::Authority;
 use minisign_verify::{PublicKey, Signature};
 use semver::Version;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{cmp::Ordering, time::Duration};
+use std::{cmp::Ordering, fs, io::Write, path::PathBuf, time::Duration};
 use tauri::{async_runtime::Mutex, AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
-use tempfile::{Builder, TempPath};
+use tempfile::{Builder, NamedTempFile, TempPath};
 use tokio::{fs::File, io::AsyncWriteExt, time::timeout};
 use tonic::transport::Endpoint;
 
@@ -23,27 +21,84 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Default)]
 pub(crate) struct PendingUpdate(Mutex<Option<Candidate>>);
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum UpdateChannel {
+    #[default]
+    Stable,
+    Ci,
+}
+
+impl UpdateChannel {
+    fn parse(channel: &str) -> Result<Self, String> {
+        match channel {
+            "stable" => Ok(Self::Stable),
+            "ci" => Ok(Self::Ci),
+            _ => Err("不支持的更新通道".into()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Ci => "ci",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stable => "Stable",
+            Self::Ci => "CI",
+        }
+    }
+
+    fn accepts_version(self, version: &Version) -> bool {
+        if !version.build.is_empty() {
+            return false;
+        }
+        match self {
+            Self::Stable => version.pre.is_empty(),
+            Self::Ci => {
+                let Some((run, attempt)) = version
+                    .pre
+                    .as_str()
+                    .strip_prefix("ci.")
+                    .and_then(|suffix| suffix.split_once('.'))
+                else {
+                    return false;
+                };
+                [run, attempt].into_iter().all(|number| {
+                    !number.is_empty()
+                        && number != "0"
+                        && number.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            }
+        }
+    }
+}
+
 #[derive(PartialEq)]
 struct Candidate {
+    channel: UpdateChannel,
     id: String,
     version: Version,
     metadata: PackageMetadata,
 }
 
 impl Candidate {
-    fn from_package(package: Package) -> Result<Self, String> {
+    fn from_package(package: Package, channel: UpdateChannel) -> Result<Self, String> {
         let metadata = package.metadata.ok_or("平台软件包缺少元数据")?;
         let version = Version::parse(&metadata.version).map_err(|_| "平台更新版本不合法")?;
-        let suffix = format!("_{version}_x64-setup.exe");
+        let file_name = format!("{PRODUCT}_{version}_x64-setup.exe");
+        let metadata_channel_matches = metadata.channel == channel.as_str()
+            || channel == UpdateChannel::Stable && metadata.channel.is_empty();
         if package.id.is_empty()
             || !package.ever_published
-            || !package.channels.iter().any(|channel| channel == CHANNEL)
+            || !package.channels.iter().any(|value| value == channel.as_str())
             || metadata.product != PRODUCT
             || metadata.platform != PLATFORM
-            || !matches!(metadata.channel.as_str(), "" | CHANNEL)
-            || !version.pre.is_empty()
-            || !version.build.is_empty()
-            || !metadata.file_name.ends_with(&suffix)
+            || !metadata_channel_matches
+            || !channel.accepts_version(&version)
+            || metadata.file_name != file_name
             || metadata.size == 0
             || metadata.size > MAX_INSTALLER_SIZE
             || metadata.sha256.len() != 64
@@ -54,11 +109,30 @@ impl Candidate {
             return Err("平台软件包身份、大小、摘要或签名不合法".into());
         }
         Ok(Self {
+            channel,
             id: package.id,
             version,
             metadata,
         })
     }
+}
+
+fn channel_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_local_data_dir()
+        .map(|path| path.join("local/update-channel"))
+        .map_err(|e| format!("无法访问更新通道配置目录：{e}"))
+}
+
+fn selected_channel(app: &AppHandle) -> UpdateChannel {
+    if !app.state::<ShellState>().installed {
+        return UpdateChannel::Stable;
+    }
+    channel_path(app)
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|value| UpdateChannel::parse(value.trim()).ok())
+        .unwrap_or_default()
 }
 
 fn update_config(app: &AppHandle) -> Option<(Endpoint, &str)> {
@@ -89,7 +163,28 @@ pub(crate) fn update_info(app: AppHandle) -> Value {
         "version": app.package_info().version.to_string(),
         "installed": app.state::<ShellState>().installed,
         "enabled": update_config(&app).is_some(),
+        "channel": selected_channel(&app).as_str(),
     })
+}
+
+#[tauri::command]
+pub(crate) fn set_update_channel(app: AppHandle, channel: String) -> Result<(), String> {
+    let channel = UpdateChannel::parse(&channel)?;
+    update_config(&app).ok_or("当前版本未配置平台更新")?;
+    let state = app.state::<PendingUpdate>();
+    let mut pending = state.0.try_lock().map_err(|_| "更新操作正在进行")?;
+    let path = channel_path(&app)?;
+    let dir = path.parent().ok_or("无法定位更新通道配置目录")?;
+    let save = || -> std::io::Result<()> {
+        fs::create_dir_all(dir)?;
+        let mut file = NamedTempFile::new_in(dir)?;
+        file.write_all(channel.as_str().as_bytes())?;
+        file.persist(&path)?;
+        Ok(())
+    };
+    save().map_err(|e| format!("保存更新通道失败：{e}"))?;
+    *pending = None;
+    Ok(())
 }
 
 #[tauri::command]
@@ -98,16 +193,17 @@ pub(crate) async fn check_update(app: AppHandle) -> Result<Option<Value>, String
     let state = app.state::<PendingUpdate>();
     let mut pending = state.0.try_lock().map_err(|_| "更新操作正在进行")?;
     *pending = None;
+    let channel = selected_channel(&app);
     let mut catalog = Catalog::connect(endpoint).await?;
-    let mut packages = catalog.list().await?;
-    // Stable 由平台指向唯一的当前包。
+    let mut packages = catalog.list(channel.as_str()).await?;
+    // 每个通道由平台指向唯一的当前包。
     if packages.len() > 1 {
-        return Err("平台返回了多个 Stable 更新包".into());
+        return Err(format!("平台返回了多个 {} 更新包", channel.label()));
     }
     let current = &app.package_info().version;
     let update = packages
         .pop()
-        .map(Candidate::from_package)
+        .map(|package| Candidate::from_package(package, channel))
         .transpose()?
         .filter(|candidate| candidate.version.cmp_precedence(current) == Ordering::Greater);
     let info = update.as_ref().map(|update| {
@@ -125,19 +221,21 @@ pub(crate) async fn install_update(app: AppHandle, version: String) -> Result<bo
     let (endpoint, key) = update_config(&app).ok_or("当前版本未配置平台更新")?;
     let state = app.state::<PendingUpdate>();
     let pending = state.0.try_lock().map_err(|_| "更新操作正在进行")?;
+    let channel = selected_channel(&app);
     let candidate = pending
         .as_ref()
-        .filter(|candidate| candidate.metadata.version == version)
+        .filter(|candidate| candidate.channel == channel && candidate.metadata.version == version)
         .ok_or("更新候选版本已变化，请重新检查更新")?;
     let key = decode_base64(key)
         .and_then(|key| PublicKey::decode(&key).ok())
         .ok_or("平台更新公钥格式不合法")?;
     let dialog_app = app.clone();
+    let channel_label = channel.label();
     let confirmed = tauri::async_runtime::spawn_blocking(move || {
         dialog_app
             .dialog()
             .message(format!(
-                "安装 {version} 将退出测试上位机。请先保存环境配置。"
+                "安装 {channel_label} 通道的 {version} 将退出测试上位机。请先保存环境配置。"
             ))
             .title("确认安装更新")
             .buttons(MessageDialogButtons::OkCancelCustom(
@@ -153,7 +251,7 @@ pub(crate) async fn install_update(app: AppHandle, version: String) -> Result<bo
     }
 
     let mut catalog = Catalog::connect(endpoint).await?;
-    let latest = Candidate::from_package(catalog.get(candidate.id.clone()).await?)?;
+    let latest = Candidate::from_package(catalog.get(candidate.id.clone()).await?, channel)?;
     if latest != *candidate {
         return Err("平台软件包身份已变化，请重新检查更新".into());
     }
@@ -277,4 +375,61 @@ fn launch_installer(installer: TempPath) -> Result<(), String> {
 #[cfg(not(windows))]
 fn launch_installer(_installer: TempPath) -> Result<(), String> {
     Err("平台更新仅支持 Windows x64 安装版".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_versions_are_exclusive_to_each_channel() {
+        let stable = Version::parse("0.1.1").unwrap();
+        let ci = Version::parse("0.1.1-ci.12.1").unwrap();
+        assert!(UpdateChannel::Stable.accepts_version(&stable));
+        assert!(!UpdateChannel::Ci.accepts_version(&stable));
+        assert!(UpdateChannel::Ci.accepts_version(&ci));
+        assert!(!UpdateChannel::Stable.accepts_version(&ci));
+        for invalid in [
+            "0.1.1-beta.12.1",
+            "0.1.1-ci.0.1",
+            "0.1.1-ci.12.0",
+            "0.1.1-ci.12",
+            "0.1.1-ci.12.1.2",
+            "0.1.1-ci.12.1+build",
+        ] {
+            assert!(!UpdateChannel::Ci.accepts_version(&Version::parse(invalid).unwrap()));
+        }
+        assert!(UpdateChannel::parse("beta").is_err());
+    }
+
+    #[test]
+    fn candidate_requires_channel_membership_metadata_and_archive_name() {
+        let mut package = Package {
+            id: "ci-package".into(),
+            channels: vec!["ci".into()],
+            ever_published: true,
+            metadata: Some(PackageMetadata {
+                product: PRODUCT.into(),
+                platform: PLATFORM.into(),
+                channel: "ci".into(),
+                version: "0.1.1-ci.12.1".into(),
+                file_name: "mskdsp-testbench_0.1.1-ci.12.1_x64-setup.exe".into(),
+                size: 1,
+                sha256: "0".repeat(64),
+                signature: "signature".into(),
+                ..Default::default()
+            }),
+        };
+        assert!(Candidate::from_package(package.clone(), UpdateChannel::Ci).is_ok());
+        assert!(Candidate::from_package(package.clone(), UpdateChannel::Stable).is_err());
+        package.channels.clear();
+        assert!(Candidate::from_package(package.clone(), UpdateChannel::Ci).is_err());
+        package.channels.push("ci".into());
+        package.metadata.as_mut().unwrap().channel = "stable".into();
+        assert!(Candidate::from_package(package.clone(), UpdateChannel::Ci).is_err());
+        let metadata = package.metadata.as_mut().unwrap();
+        metadata.channel = "ci".into();
+        metadata.file_name = "other-product_0.1.1-ci.12.1_x64-setup.exe".into();
+        assert!(Candidate::from_package(package, UpdateChannel::Ci).is_err());
+    }
 }

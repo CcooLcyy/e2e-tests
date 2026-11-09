@@ -4,7 +4,7 @@
 
 ## Windows 安装版
 
-测试电脑可使用 Windows x64 安装包。安装包自带 Python 测试内核和用例，后续版本从 MskDSPPlatform Stable 检查与下载。参见[安装版与平台更新](docs/安装版与平台更新.md)和[发布配置](docs/Windows安装包与Stable发布.md)。
+测试电脑可使用 Windows x64 安装包。安装包自带 Python 测试内核和用例，默认从 MskDSPPlatform Stable 检查与下载，也可主动切换到 CI 通道。参见[安装版与平台更新](docs/安装版与平台更新.md)和[发布配置](docs/Windows安装包与Stable发布.md)。
 
 ## 从仓库启动
 

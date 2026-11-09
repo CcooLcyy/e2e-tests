@@ -58,6 +58,8 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 40
     environment: testbench-signing
+    env:
+      RELEASE_CHANNEL: ${{ github.event_name == 'push' && 'ci' || 'stable' }}
     outputs:
       artifact-id: ${{ steps.installer.outputs.artifact-id }}
     steps:
@@ -85,7 +87,7 @@ jobs:
         env:
           PLATFORM_GRPC_ENDPOINT: ${{ vars.PLATFORM_GRPC_ENDPOINT }}
           TESTBENCH_UPDATER_PUBLIC_KEY: ${{ vars.TESTBENCH_UPDATER_PUBLIC_KEY }}
-        run: python scripts/windows_release.py configure
+        run: python scripts/windows_release.py configure $env:RELEASE_CHANNEL
       - name: Build and sign NSIS installer
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TESTBENCH_TAURI_SIGNING_PRIVATE_KEY }}
@@ -95,26 +97,33 @@ jobs:
           $releaseConfig = Join-Path $env:RUNNER_TEMP 'testbench-tauri-release.json'
           npm run tauri -- build --target x86_64-pc-windows-msvc --bundles nsis --ci --config $releaseConfig -- --locked
       - name: Record installer identity
-        run: python scripts/windows_release.py stage
+        run: python scripts/windows_release.py stage $env:RELEASE_CHANNEL
       - name: Retain signed installer
         id: installer
         uses: actions/upload-artifact@v4
         with:
-          name: testbench-windows-x64-nsis-${{ github.run_id }}-${{ github.run_attempt }}
+          name: testbench-windows-x64-nsis-${{ env.RELEASE_CHANNEL }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: release/
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
 
-  publish-stable:
+  publish:
+    name: Publish ${{ github.event_name == 'push' && 'CI' || 'Stable' }}
     needs: build-installer
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_stable
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' && vars.TESTBENCH_CI_PUBLISH_ENABLED == 'true') ||
+       (github.event_name == 'workflow_dispatch' && inputs.publish_stable))
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    environment: testbench-stable
+    environment: ${{ github.event_name == 'push' && 'testbench-ci' || 'testbench-stable' }}
     concurrency:
-      group: testbench-platform-stable
-      cancel-in-progress: false
+      group: ${{ github.event_name == 'push' && 'testbench-platform-ci' || 'testbench-platform-stable' }}
+      # Builds can finish out of order. Let the current-main guard decide which may publish.
+      queue: max
+    env:
+      PLATFORM_GRPC_ENDPOINT: ${{ vars.PLATFORM_GRPC_ENDPOINT }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -140,10 +149,17 @@ jobs:
           artifact-ids: ${{ needs.build-installer.outputs.artifact-id }}
           path: release/
       - name: Publish to MskDSPPlatform Stable
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
-          PLATFORM_GRPC_ENDPOINT: ${{ vars.PLATFORM_GRPC_ENDPOINT }}
           TESTBENCH_PUBLISHER_TOKEN: ${{ secrets.TESTBENCH_PUBLISHER_TOKEN }}
           TESTBENCH_RELEASE_NOTES: ${{ inputs.release_notes }}
           PYTHONPATH: ${{ runner.temp }}
-        run: python scripts/windows_release.py publish
+        run: python scripts/windows_release.py publish stable
+      - name: Publish to MskDSPPlatform CI
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTBENCH_CI_PUBLISHER_TOKEN: ${{ secrets.TESTBENCH_CI_PUBLISHER_TOKEN }}
+          PYTHONPATH: ${{ runner.temp }}
+        run: python scripts/windows_release.py publish ci

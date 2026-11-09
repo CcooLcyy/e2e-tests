@@ -10,7 +10,6 @@ use tonic::{
 
 pub(super) const PRODUCT: &str = "mskdsp-testbench";
 pub(super) const PLATFORM: &str = "windows-x86_64-nsis";
-pub(super) const CHANNEL: &str = "stable";
 pub(super) const MAX_CHUNK: usize = 256 * 1024;
 pub(super) const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -26,10 +25,10 @@ impl Catalog {
         Ok(Self(Grpc::new(channel)))
     }
 
-    pub(super) async fn list(&mut self) -> Result<Vec<Package>, String> {
+    pub(super) async fn list(&mut self, channel: &str) -> Result<Vec<Package>, String> {
         let request = ListPackagesRequest {
             product: PRODUCT.into(),
-            channel: CHANNEL.into(),
+            channel: channel.into(),
             platform: PLATFORM.into(),
         };
         let response: ListPackagesResponse = self

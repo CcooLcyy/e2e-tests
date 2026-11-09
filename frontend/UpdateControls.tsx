@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { call, choose, desktop } from './api';
 
-type UpdateInfo = { version: string; installed: boolean; enabled: boolean };
+type UpdateChannel = 'stable' | 'ci';
+type UpdateInfo = { version: string; installed: boolean; enabled: boolean; channel: UpdateChannel };
 type Candidate = { version: string; notes: string | null };
+const channelLabels = { stable: 'Stable', ci: 'CI' };
 
 export function UpdateControls({ locked, onMaintenance, onImport }: {
   locked: boolean;
@@ -28,7 +30,22 @@ export function UpdateControls({ locked, onMaintenance, onImport }: {
     try {
       const available = await invoke<Candidate | null>('check_update');
       setCandidate(available);
-      if (!available) setStatus('当前已是最新版本。');
+      if (!available) setStatus('所选通道暂无比当前版本更新的安装包。');
+    } catch (error) {
+      setStatus(String(error));
+    } finally {
+      setOperation('');
+    }
+  }
+
+  async function selectChannel(channel: string) {
+    if (!info || (channel !== 'stable' && channel !== 'ci') || channel === info.channel) return;
+    setStatus('');
+    setOperation('正在保存更新通道…');
+    try {
+      await invoke('set_update_channel', { channel });
+      setCandidate(null);
+      setInfo({ ...info, channel });
     } catch (error) {
       setStatus(String(error));
     } finally {
@@ -54,14 +71,22 @@ export function UpdateControls({ locked, onMaintenance, onImport }: {
   if (!info.installed) return <span className="local-label">v{info.version} · 开发版</span>;
 
   return <details className="update-menu">
-    <summary className="button">版本与更新 · v{info.version}</summary>
+    <summary className="button">版本与更新 · v{info.version} · {channelLabels[info.channel]}</summary>
     <div className="update-panel">
+      <label className="field">
+        <span>更新通道</span>
+        <select value={info.channel} disabled={!info.enabled || !!operation}
+          onChange={event => void selectChannel(event.currentTarget.value)}>
+          <option value="stable">Stable（正式版）</option>
+          <option value="ci">CI（持续集成版）</option>
+        </select>
+      </label>
       <button className="button" disabled={!info.enabled || !!operation} onClick={() => void check()}>
         检查更新
       </button>
       {!info.enabled && <p>当前版本未配置平台更新。</p>}
       {candidate && <div className="update-candidate">
-        <strong>可安装 v{candidate.version}</strong>
+        <strong>{channelLabels[info.channel]} 通道可安装 v{candidate.version}</strong>
         {candidate.notes && <p>{candidate.notes}</p>}
         <button className="button primary" disabled={locked || !!operation} onClick={() => {
           void runMaintenance('等待确认或正在下载并验证更新包…', async () => {

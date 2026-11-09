@@ -16,13 +16,21 @@ from urllib.request import Request, urlopen
 
 PRODUCT = "mskdsp-testbench"
 PLATFORM = "windows-x86_64-nsis"
-CHANNEL = "stable"
+PUBLISH_TARGETS = {
+    "ci": ("push", "TESTBENCH_CI_PUBLISHER_TOKEN"),
+    "stable": ("workflow_dispatch", "TESTBENCH_PUBLISHER_TOKEN"),
+}
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
 RELEASE = ROOT / "release"
+TAURI_CONFIG = ROOT / "src-tauri/tauri.conf.json"
 
 
 class ReleaseError(Exception):
+    pass
+
+
+class StaleRelease(ReleaseError):
     pass
 
 
@@ -30,13 +38,14 @@ def config_path():
     return Path(os.environ["RUNNER_TEMP"]) / "testbench-tauri-release.json"
 
 
-def configure():
-    package_version()
+def configure(channel):
+    version = release_version(channel)
     endpoint = grpc_endpoint()
     key = os.environ.get("TESTBENCH_UPDATER_PUBLIC_KEY", "").strip()
     if not key:
         raise ReleaseError("Missing Testbench updater public key")
     config = json.loads((ROOT / "src-tauri/tauri.release.conf.json").read_text(encoding="utf-8"))
+    config["version"] = version
     plugins = config.setdefault("plugins", {})
     # Tauri CLI needs this key to generate the NSIS updater signature.
     plugins["updater"] = {"pubkey": key}
@@ -45,7 +54,7 @@ def configure():
 
 
 def package_version():
-    version = json.loads((ROOT / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))["version"]
+    version = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))["version"]
     if not isinstance(version, str) or not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", version):
         raise ReleaseError("Stable version must use MAJOR.MINOR.PATCH")
     npm = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
@@ -59,7 +68,30 @@ def package_version():
     return version
 
 
-def identity(archive, version):
+def release_version(channel, recorded=None):
+    version = package_version()
+    if channel == "stable":
+        if recorded is not None and recorded != version:
+            raise ReleaseError("Stable build version differs from the source version")
+        return version
+
+    run_number = os.environ.get("GITHUB_RUN_NUMBER", "")
+    run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    if not all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_number, run_attempt)):
+        raise ReleaseError("Missing or invalid GitHub run number or attempt")
+    major, minor, patch = version.split(".")
+    prefix = f"{major}.{minor}.{int(patch) + 1}-ci.{run_number}."
+    if recorded is None:
+        return prefix + run_attempt
+
+    # A publish-only rerun keeps the signed artifact from its original build attempt.
+    match = re.fullmatch(re.escape(prefix) + r"([1-9][0-9]*)", recorded) if isinstance(recorded, str) else None
+    if not match or int(match[1]) > int(run_attempt):
+        raise ReleaseError("CI build version differs from this workflow run")
+    return recorded
+
+
+def identity(archive, version, channel):
     signature = archive.with_suffix(".exe.sig").read_text(encoding="utf-8").strip()
     size = archive.stat().st_size
     if not signature or not size:
@@ -67,7 +99,7 @@ def identity(archive, version):
     with archive.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     return dict(
-        product=PRODUCT, platform=PLATFORM, channel=CHANNEL, version=version,
+        product=PRODUCT, platform=PLATFORM, channel=channel, version=version,
         file_name=archive.name, size=size, sha256=digest, signature=signature,
         source_repository=f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}",
         source_ref="main", source_sha=os.environ["GITHUB_SHA"],
@@ -90,18 +122,21 @@ def minisign_key_id(box, payload_size):
     return payload[2:10]
 
 
-def stage():
-    version = package_version()
+def stage(channel):
+    version = release_version(channel)
+    config = json.loads(config_path().read_text(encoding="utf-8"))
+    if config["version"] != version:
+        raise ReleaseError("Tauri build version differs from the expected release version")
+    product_name = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))["productName"]
     installers = list(BUNDLE.glob("*.exe"))
-    if len(installers) != 1 or not installers[0].name.endswith(f"_{version}_x64-setup.exe"):
+    if len(installers) != 1 or installers[0].name != f"{product_name}_{version}_x64-setup.exe":
         raise ReleaseError("Expected exactly one version-matched x64 NSIS installer")
     installer = installers[0]
     archive = release_archive(version)
     RELEASE.mkdir(exist_ok=False)
     copyfile(installer, archive)
     copyfile(installer.with_suffix(".exe.sig"), archive.with_suffix(".exe.sig"))
-    metadata = identity(archive, version)
-    config = json.loads(config_path().read_text(encoding="utf-8"))
+    metadata = identity(archive, version, channel)
     updater = config["plugins"]["testbenchUpdate"]
     public_key = updater["pubkey"]
     if minisign_key_id(public_key, 42) != minisign_key_id(metadata["signature"], 74):
@@ -131,7 +166,7 @@ def require_current_main():
     })
     with urlopen(request, timeout=30) as response:
         if json.load(response)["object"]["sha"] != os.environ["GITHUB_SHA"]:
-            raise ReleaseError("Stable dispatch is stale. Run the workflow from current main")
+            raise StaleRelease("Publication requires the current main commit")
 
 
 def transfer(archive, expected, endpoint, token):
@@ -141,6 +176,7 @@ def transfer(archive, expected, endpoint, token):
 
     auth = (("authorization", f"Bearer {token}"),)
     expected = messages.PackageMetadata(**expected)
+    release_channel = expected.channel
     retryable = {grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.CANCELLED}
 
     with grpc.insecure_channel(endpoint.removeprefix("http://"), options=(("grpc.enable_http_proxy", 0),)) as channel:
@@ -181,11 +217,11 @@ def transfer(archive, expected, endpoint, token):
             raise ReleaseError("Stored package differs from the artifact identity")
         require_current_main()
         released = publisher.PublishRelease(
-            messages.PublishReleaseRequest(package_id=package.id, channel=CHANNEL), metadata=auth, timeout=90,
+            messages.PublishReleaseRequest(package_id=package.id, channel=release_channel), metadata=auth, timeout=90,
         ).package
-        if released.id != package.id or released.metadata != expected or CHANNEL not in released.channels:
-            raise ReleaseError("Platform did not confirm publication to Stable")
-        print(f"Platform Stable publication confirmed by RPC for {PRODUCT} {expected.version}, package {package.id}", flush=True)
+        if released.id != package.id or released.metadata != expected or release_channel not in released.channels:
+            raise ReleaseError(f"Platform did not confirm publication to {release_channel}")
+        print(f"Platform {release_channel} publication confirmed by RPC for {PRODUCT} {expected.version}, package {package.id}", flush=True)
         confirm_catalog(SoftwareCatalogServiceStub(channel), expected, package.id)
 
 
@@ -193,11 +229,11 @@ def confirm_catalog(catalog, expected, package_id):
     import software_pb2 as messages
 
     packages = catalog.ListPackages(messages.ListPackagesRequest(
-        product=PRODUCT, platform=PLATFORM, channel=CHANNEL,
+        product=PRODUCT, platform=PLATFORM, channel=expected.channel,
     ), timeout=30).packages
     if (len(packages) != 1 or packages[0].id != package_id or packages[0].metadata != expected
-            or CHANNEL not in packages[0].channels):
-        raise ReleaseError("Stable catalog entry differs from the published installer identity")
+            or expected.channel not in packages[0].channels):
+        raise ReleaseError("Catalog entry differs from the published installer identity")
 
     stream = catalog.DownloadPackage(messages.DownloadPackageRequest(package_id=package_id), timeout=480)
     digest = hashlib.sha256()
@@ -207,52 +243,59 @@ def confirm_catalog(catalog, expected, package_id):
         if (eof or chunk.offset != received or chunk.total_size != expected.size
                 or chunk.sha256 != expected.sha256 or not chunk.data
                 or received + len(chunk.data) > expected.size):
-            raise ReleaseError("Stable installer download has an invalid chunk identity")
+            raise ReleaseError("Installer download has an invalid chunk identity")
         digest.update(chunk.data)
         received += len(chunk.data)
         eof = chunk.eof
     if not eof or received != expected.size or digest.hexdigest() != expected.sha256:
-        raise ReleaseError("Stable installer download differs from the published installer bytes")
+        raise ReleaseError("Installer download differs from the published installer bytes")
 
 
-def publish():
-    import grpc
-
-    if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch" or os.environ.get("GITHUB_REF") != "refs/heads/main":
-        raise ReleaseError("Stable publishing requires a manual dispatch on main")
+def publish(channel):
+    event, token_variable = PUBLISH_TARGETS[channel]
+    if os.environ.get("GITHUB_EVENT_NAME") != event or os.environ.get("GITHUB_REF") != "refs/heads/main":
+        raise ReleaseError(f"Publishing to {channel} requires a {event} event on main")
     endpoint = grpc_endpoint()
-    token = os.environ.get("TESTBENCH_PUBLISHER_TOKEN", "")
+    token = os.environ.get(token_variable, "")
     if not token or any(not 33 <= ord(char) <= 126 for char in token):
-        raise ReleaseError("Missing or invalid Testbench upload token")
-    version = package_version()
-    archive = release_archive(version)
-    metadata = identity(archive, version)
+        raise ReleaseError(f"Missing or invalid {token_variable}")
     recorded = json.loads((RELEASE / "metadata.json").read_text(encoding="utf-8"))
+    version = release_version(channel, recorded["version"])
+    archive = release_archive(version)
+    metadata = identity(archive, version, channel)
     if dict(metadata, endpoint=endpoint) != recorded:
         raise ReleaseError("Installer artifact or gRPC endpoint differs from the recorded build identity")
-    notes = os.environ.get("TESTBENCH_RELEASE_NOTES", "")
+    notes = os.environ.get("TESTBENCH_RELEASE_NOTES", "") if channel == "stable" else ""
     if len(notes.encode("utf-8")) > 65536:
         raise ReleaseError("Release notes exceed 65536 UTF-8 bytes")
     metadata["notes"] = notes
-    require_current_main()
+    import grpc
+
     try:
+        require_current_main()
         transfer(archive, metadata, endpoint, token)
+    except StaleRelease:
+        if channel != "ci":
+            raise
+        print("Skipped CI publication because this commit is no longer current on main")
+        return
     except grpc.RpcError as error:
         raise ReleaseError(f"Platform gRPC returned {error.code().name}") from None
-    print("Verified the public gRPC Stable catalog entry and installer SHA256")
+    print(f"Verified the public gRPC {channel} catalog entry and installer SHA256")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("configure", "stage", "publish"))
-    action = parser.parse_args().action
+    parser.add_argument("channel", choices=PUBLISH_TARGETS)
+    args = parser.parse_args()
     try:
-        {"configure": configure, "stage": stage, "publish": publish}[action]()
+        {"configure": configure, "stage": stage, "publish": publish}[args.action](args.channel)
     except ReleaseError as error:
-        print(f"Release {action} failed. {error}", file=sys.stderr)
+        print(f"Release {args.action} failed. {error}", file=sys.stderr)
         return 1
     except Exception as error:
-        print(f"Release {action} failed ({type(error).__name__})", file=sys.stderr)
+        print(f"Release {args.action} failed ({type(error).__name__})", file=sys.stderr)
         return 1
     return 0
 

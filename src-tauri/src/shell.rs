@@ -397,6 +397,7 @@ pub fn run() {
             choose_path,
             open_artifact,
             update::update_info,
+            update::set_update_channel,
             update::check_update,
             update::install_update
         ])
