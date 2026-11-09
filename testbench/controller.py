@@ -17,8 +17,9 @@ from .modbus_environment import RTU_OBSERVATION_CASE_IDS
 
 
 class TaskController:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, data_root: Path | None = None):
         self.root = Path(root).resolve()
+        self.data_root = Path(data_root).resolve() if data_root is not None else self.root
         self.run_dir = None
         self.active = False
         self._offset = 0
@@ -53,16 +54,18 @@ class TaskController:
         case_ids = [case_id for case_id in available if case_id in requested]
         environment.validate_for_cases(case_ids)
         logging.getLogger(__name__).info("按分组及组内顺序准备执行 %s 项用例", len(case_ids))
-        self.run_dir = self.root / "artifacts" / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
+        self.run_dir = self.data_root / "artifacts" / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
         self.run_dir.mkdir(parents=True)
         task_path = self.run_dir / "task.json"
-        task_path.write_text(json.dumps({"root": str(self.root), "environment": environment.to_dict(),
+        task_path.write_text(json.dumps({"root": str(self.root), "data_root": str(self.data_root),
+                                        "testbench_version": os.environ.get("TESTBENCH_VERSION", ""),
+                                        "environment": environment.to_dict(),
                                         "case_ids": case_ids,
                                         "case_names": {case.id: getattr(case, "name", "测试用例") for case in discovered if case.id in requested},
                                         "started_at": datetime.now().astimezone().isoformat(timespec="seconds")},
                                        ensure_ascii=False, indent=2), encoding="utf-8")
         worker = Path(__file__).resolve().with_name("worker.py")
-        command = [sys.executable, str(worker), "--task", str(task_path)]
+        command = [sys.executable, "-X", "utf8", "-B", str(worker), "--task", str(task_path)]
         if sys.platform == "win32" and ctypes.windll.shell32.IsUserAnAdmin():
             command[0] = str(Path(sys.executable).with_name("pythonw.exe"))
             command = ["runas.exe", "/trustlevel:0x20000", subprocess.list2cmdline(command)]

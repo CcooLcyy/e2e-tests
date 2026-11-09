@@ -17,7 +17,8 @@ def main():
     task = json.loads(task_path.read_text(encoding="utf-8"))
     run = task_path.parent
     os.environ.update(TESTBENCH_EVENTS=str(run / "events.jsonl"), TESTBENCH_STOP=str(run / "stop"),
-                      TESTBENCH_SUMMARY=str(run / "summary.json"), TESTBENCH_TASK=str(task_path), PYTHONUTF8="1")
+                      TESTBENCH_SUMMARY=str(run / "summary.json"), TESTBENCH_TASK=str(task_path),
+                      TESTBENCH_DATA_ROOT=task.get("data_root", task["root"]), PYTHONUTF8="1")
     from testbench.events import emit
     from testbench.reporting import write_task_report
     status, code = "failed", 1

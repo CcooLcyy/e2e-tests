@@ -12,10 +12,10 @@ from testbench.huawei_fleet_run import HuaweiFleetRun
 from testbench.login_page import PlatformLoginPage, load_login_account
 from testbench.model import validate_slavesim_url
 from testbench.rtu_observation import FleetObservationProfile, PreparedRtuPage
+from testbench.workspace import local_config
 
 
 pytestmark = pytest.mark.case_group("Modbus RTU")
-ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -30,9 +30,9 @@ def huawei_fleet(request):
     environment = task["environment"]
     validate_selected_modbus_cases(environment, [HUAWEI_CASE_ID])
     url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)
-    config, buses = FleetObservationProfile.load(ROOT / "local" / "huawei-rtu.json",
+    config, buses = FleetObservationProfile.load(local_config("huawei-rtu.json"),
                                                 float(environment.get("modbus_acquisition_timeout", 300)))
-    account = load_login_account(ROOT / "local" / "login-account.json")
+    account = load_login_account(local_config("login-account.json"))
     desktop = request.getfixturevalue("desktop")
     desktop.metadata["华为验收阶段"] = "前置条件"
     upper = PreparedRtuPage(desktop)

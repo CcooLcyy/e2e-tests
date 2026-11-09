@@ -2,7 +2,6 @@
 from decimal import Decimal
 import json
 import math
-from pathlib import Path
 
 import pytest
 from selenium.common.exceptions import TimeoutException
@@ -12,10 +11,10 @@ from testbench.login_page import PlatformLoginPage, load_login_account
 from testbench.modbus_rtu_page import xpath_text
 from testbench.rtu_observation import PreparedRtuPage
 from testbench.rtu_quality_frames import capture_frames, decode_frame
+from testbench.workspace import local_config
 
 
 pytestmark = pytest.mark.case_group("Modbus RTU")
-ROOT = Path(__file__).resolve().parents[1]
 PHASES = (
     ("首次有效采集", 0x00),
     ("通信超时", 0x40),
@@ -25,7 +24,7 @@ PHASES = (
 
 
 def _profile():
-    path = ROOT / "local" / "modbus-rtu-104-quality.json"
+    path = local_config("modbus-rtu-104-quality.json")
     try:
         profile = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
@@ -53,7 +52,7 @@ def _profile():
 
 
 def _open_prepared_point(desktop, profile):
-    PlatformLoginPage(desktop).login(load_login_account(ROOT / "local" / "login-account.json"),
+    PlatformLoginPage(desktop).login(load_login_account(local_config("login-account.json")),
                                      remember=False, auto=False)
     page = PreparedRtuPage(desktop)
     with desktop.step("打开已预配置的 RTU 点表", expected=profile["rtu_tag"]):

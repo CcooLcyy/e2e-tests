@@ -7,6 +7,7 @@ import type { BenchEvent, CaseRecord } from './state';
 import { BusinessCaseDetails } from './BusinessCaseDetails';
 import { formatPassRate } from './pass-rate';
 import { ModbusEnvironment } from './ModbusEnvironment';
+import { UpdateControls } from './UpdateControls';
 import { withModbusDefaults } from './modbus-environment';
 import { caseGroup, summarizeGroups, visibleCases, toggleCases, selectionState, selectedCaseIds, reconcileSelection, groupedSections, toggleExpandedGroup } from './case-groups';
 
@@ -52,6 +53,7 @@ export default function App() {
   const [active,setActive] = useState(false);
   const [stopping,setStopping] = useState(false);
   const [busy,setBusy] = useState(false);
+  const [maintenance,setMaintenance] = useState(false);
   const [master104Checking,setMaster104Checking] = useState(false);
   const [master104Snapshot,setMaster104Snapshot] = useState<Record<string,unknown>|null>(null);
   const [runDir,setRunDir] = useState('');
@@ -66,7 +68,7 @@ export default function App() {
   const starting = useRef(false);
   const checkingMaster104 = useRef(false);
   const master104Polling = useRef(false);
-  const disabled = active || busy;
+  const disabled = active || busy || maintenance;
 
   function goToEnvironment(id:string) {
     setPage('environment');
@@ -97,7 +99,7 @@ export default function App() {
   }
   useEffect(()=>{void bootstrap();},[]);
   useEffect(()=>{
-    if (!ready) return;
+    if (!ready || maintenance) return;
     const timer=setInterval(async()=>{
       if(polling.current || starting.current) return;
       polling.current=true;
@@ -118,7 +120,7 @@ export default function App() {
       }catch(e){setError(String(e));}finally{polling.current=false;}
     },400);
     return()=>clearInterval(timer);
-  },[ready]);
+  },[ready,maintenance]);
   const record=records[focused];
   useEffect(()=>{
     setDetail(null);setTab('steps');
@@ -218,11 +220,18 @@ export default function App() {
         ['execution','测试执行',ListChecks],['environment','测试环境',Settings2],['history','历史报告',HistoryIcon],
       ] as const).map(([id,title,Icon])=><button key={id} data-testid={`nav-${id}`} className={page===id?'nav-item selected':'nav-item'} onClick={()=>setPage(id)}><Icon size={18}/>{title}{id==='execution'&&<span className="nav-count">{cases.length}</span>}</button>)}</nav>
       <div className="sidebar-bottom"><span className={`connection-dot ${ready?'online':''}`}/><div>{ready?'本地执行内核已连接':'等待本地连接'}<small>所有测试数据保存在本机</small></div><ShieldCheck size={17}/></div>
-      <div className="version">DESKTOP EDITION <span>v0.1.0</span></div>
+      <div className="version">DESKTOP EDITION</div>
     </aside>
 
     <main className="workspace">
-      <header className="topbar"><div className="breadcrumb">工作空间 <ChevronRight size={14}/><span>{{execution:'测试执行',environment:'测试环境',history:'历史报告'}[page]}</span></div><div className="topbar-right"><span className="local-label"><span className="tiny-dot"/>本地工作区</span><span className="avatar">M</span></div></header>
+      <header className="topbar">
+        <div className="breadcrumb">工作空间 <ChevronRight size={14}/><span>{{execution:'测试执行',environment:'测试环境',history:'历史报告'}[page]}</span></div>
+        <div className="topbar-right">
+          <span className="local-label"><span className="tiny-dot"/>本地工作区</span>
+          <UpdateControls locked={disabled || loading || master104Checking} onMaintenance={setMaintenance} onImport={bootstrap}/>
+          <span className="avatar">M</span>
+        </div>
+      </header>
       <div className={page==='environment'?'page-scroll environment-page-scroll':'page-scroll'}>
         <section className="page-title"><div><div className="eyebrow">{page==='execution'?'TEST RUNNER':page==='environment'?'ENVIRONMENT':'REPORTS'}</div><h1>{{execution:'测试执行',environment:'测试环境',history:'历史报告'}[page]}</h1><p>{{execution:'选择测试用例，验证系统的每一个关键流程。',environment:'管理上位机运行环境，保持每次测试可控、可重复。',history:'回溯每次测试结果，查看执行记录与问题证据。'}[page]}</p></div>{page==='execution'&&<div className="title-actions"><button className="button" disabled={!ready||disabled||loading} onClick={()=>void refreshCases()} data-testid="cases-refresh"><RefreshCw size={15} className={loading?'spin':''}/>刷新用例</button>{active?<button className="button danger" data-testid="run-stop" disabled={stopping} onClick={()=>void stop()}>{stopping?<LoaderCircle size={15} className="spin"/>:<Square size={13}/>} {stopping?'正在停止…':'停止测试'}</button>:<button className="button primary" data-testid="run-start" disabled={!ready||disabled||loading||!selected.size} onClick={()=>void start()}>{busy?<LoaderCircle size={16} className="spin"/>:<Play size={15} fill="currentColor"/>}开始测试<span className="button-count">{selected.size}</span></button>}</div>}</section>
         {!desktop&&<div className="notice info"><CircleHelp size={18}/><div><strong>请使用桌面版测试上位机</strong><p>浏览器仅用于界面开发。连接测试内核、执行用例和选择本机文件需要通过 Tauri 桌面窗口。</p></div></div>}

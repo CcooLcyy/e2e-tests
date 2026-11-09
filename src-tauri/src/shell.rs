@@ -1,3 +1,4 @@
+use crate::update::{self, PendingUpdate};
 use serde_json::{json, Value};
 use std::{
     fs::{self, OpenOptions},
@@ -29,6 +30,7 @@ const METHODS: &[&str] = &[
     "history",
     "history_detail",
     "case_detail",
+    "migrate_workspace",
     "shutdown",
 ];
 fn allowed_method(method: &str) -> bool {
@@ -43,26 +45,41 @@ struct BridgeProcess {
 }
 
 impl BridgeProcess {
-    fn spawn(root: &Path) -> Result<Self, String> {
-        let python = root.join(".venv/Scripts/python.exe");
+    fn spawn(
+        root: &Path,
+        data_root: &Path,
+        python: &Path,
+        installed: bool,
+        version: &str,
+    ) -> Result<Self, String> {
         if !python.is_file() {
-            return Err("未找到测试内核，请先运行 scripts/setup.ps1".into());
+            let message = if installed {
+                "未找到安装版测试内核，请修复安装"
+            } else {
+                "未找到测试内核，请先运行 scripts/setup.ps1"
+            };
+            return Err(message.into());
         }
-        fs::create_dir_all(root.join("local")).map_err(|e| format!("创建日志目录失败：{e}"))?;
+        fs::create_dir_all(data_root.join("local"))
+            .map_err(|e| format!("创建日志目录失败：{e}"))?;
         let errors = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(root.join("local/bridge.log"))
+            .open(data_root.join("local/bridge.log"))
             .map_err(|e| format!("打开桥接日志失败：{e}"))?;
         let mut command = Command::new(python);
         command
-            .args(["-u", "-m", "testbench.bridge", "--root"])
+            .args(["-X", "utf8", "-B", "-u", "-m", "testbench.bridge", "--root"])
             .arg(root)
             .current_dir(root)
             .env("PYTHONUTF8", "1")
+            .env("TESTBENCH_VERSION", version)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(errors);
+        if installed {
+            command.arg("--data-root").arg(data_root);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -113,9 +130,14 @@ impl BridgeProcess {
         self.input
             .flush()
             .map_err(|e| format!("刷新内核通道失败：{e}"))?;
+        let timeout = if method == "migrate_workspace" {
+            Duration::from_secs(1800)
+        } else {
+            Duration::from_secs(90)
+        };
         let line = self
             .output
-            .recv_timeout(Duration::from_secs(90))
+            .recv_timeout(timeout)
             .map_err(|_| "测试内核响应超时，请查看日志或等待当前任务结束")??;
         let response: Value =
             serde_json::from_str(&line).map_err(|e| format!("内核协议错误：{e}"))?;
@@ -132,10 +154,32 @@ impl BridgeProcess {
                 .into())
         }
     }
+
+    fn wait_for_exit(&mut self) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if self
+                .child
+                .try_wait()
+                .map_err(|e| format!("查询内核退出状态失败：{e}"))?
+                .is_some()
+            {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("测试内核未在规定时间退出，请重新打开测试上位机后重试".into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
-struct ShellState {
+pub(crate) struct ShellState {
     root: PathBuf,
+    data_root: PathBuf,
+    python: PathBuf,
+    pub(crate) installed: bool,
+    version: String,
     bridge: Mutex<Option<BridgeProcess>>,
     closing: AtomicBool,
 }
@@ -146,13 +190,47 @@ impl ShellState {
             return Err("不支持的测试操作".into());
         }
         let mut bridge = self.bridge.lock().map_err(|_| "内核状态锁不可用")?;
+        if self.closing.load(Ordering::SeqCst) && method != "shutdown" {
+            return Err("测试上位机正在退出".into());
+        }
         if bridge.is_none() {
             if method == "shutdown" {
                 return Ok(json!({"closed":true}));
             }
-            *bridge = Some(BridgeProcess::spawn(&self.root)?);
+            *bridge = Some(BridgeProcess::spawn(
+                &self.root,
+                &self.data_root,
+                &self.python,
+                self.installed,
+                &self.version,
+            )?);
         }
         bridge.as_mut().unwrap().call(method, payload)
+    }
+
+    pub(crate) fn with_update_shutdown(
+        &self,
+        install: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.closing.swap(true, Ordering::SeqCst) {
+            return Err("测试上位机正在退出".into());
+        }
+        let result = (|| {
+            let mut bridge = self.bridge.lock().map_err(|_| "内核状态锁不可用")?;
+            if let Some(process) = bridge.as_mut() {
+                if process.call("update_ready", json!({}))?["ready"] != true {
+                    return Err("测试任务或连接检查仍在运行或清理，请稍后安装".into());
+                }
+                if process.call("shutdown", json!({}))?["closed"] != true {
+                    return Err("测试内核尚未完成清理，请稍后安装".into());
+                }
+                process.wait_for_exit()?;
+                *bridge = None;
+            }
+            install()
+        })();
+        self.closing.store(false, Ordering::SeqCst);
+        result
     }
 }
 
@@ -259,7 +337,7 @@ async fn choose_path(app: tauri::AppHandle, kind: String) -> Result<Option<Strin
 #[tauri::command]
 async fn open_artifact(app: tauri::AppHandle, path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let target = artifact_path(&app.state::<ShellState>().root, &path)?;
+        let target = artifact_path(&app.state::<ShellState>().data_root, &path)?;
         #[cfg(windows)]
         {
             // 系统关联打开使用参数传递，不把用户路径拼接到 shell 脚本。
@@ -283,11 +361,35 @@ async fn open_artifact(app: tauri::AppHandle, path: String) -> Result<(), String
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
+        .manage(PendingUpdate::default())
         .setup(|app| {
-            let root = repository_root().map_err(std::io::Error::other)?;
+            let installed = app.config().bundle.active;
+            if installed && update::configured(app.handle()) {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
+            let (root, data_root, python) = if installed {
+                let root = app.path().resource_dir()?.join("runtime");
+                let data_root = app.path().app_local_data_dir()?;
+                let python = root.join("python/python.exe");
+                (root, data_root, python)
+            } else {
+                let root = repository_root().map_err(std::io::Error::other)?;
+                let python = root.join(".venv/Scripts/python.exe");
+                (root.clone(), root, python)
+            };
             app.manage(ShellState {
                 root,
+                data_root,
+                python,
+                installed,
+                version: app.package_info().version.to_string(),
                 bridge: Mutex::new(None),
                 closing: AtomicBool::new(false),
             });
@@ -296,7 +398,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bridge_call,
             choose_path,
-            open_artifact
+            open_artifact,
+            update::update_info,
+            update::check_update,
+            update::install_update
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -344,7 +449,8 @@ mod tests {
     #[test]
     fn real_python_bridge_round_trip_and_shutdown() {
         let root = repository_root().unwrap();
-        let mut bridge = BridgeProcess::spawn(&root).unwrap();
+        let python = root.join(".venv/Scripts/python.exe");
+        let mut bridge = BridgeProcess::spawn(&root, &root, &python, false, "0.0.0").unwrap();
         let environment = bridge.call("get_environment", json!({})).unwrap();
         assert!(environment.get("app_path").is_some());
         assert!(bridge.call("get_environment", json!({})).is_ok());

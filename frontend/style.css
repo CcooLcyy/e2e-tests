@@ -127,3 +127,25 @@
 @media(max-width:1180px){.stat-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .environment-page .collapsible-section:not([open]){padding-bottom:22px}
 @media(max-width:640px){.environment-page .collapsible-section:not([open]){padding-bottom:16px}}
+
+.update-menu { position: relative; }
+.update-menu summary { cursor: pointer; list-style: none; }
+.update-menu summary::-webkit-details-marker { display: none; }
+.update-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: min(340px, 80vw);
+  padding: 16px;
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid #e2e8f2;
+  border-radius: 9px;
+  box-shadow: 0 4px 16px #253d671a;
+}
+.update-panel p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.update-candidate { display: grid; justify-items: start; gap: 8px; min-width: 0; }
+.update-candidate p { max-height: 180px; overflow: auto; }

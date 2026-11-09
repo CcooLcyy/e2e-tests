@@ -2,9 +2,13 @@
 
 基于 React + Tauri 的 Windows 本地桌面自动化测试软件。用例和执行内核使用 Python，界面自动发现并列出用例，单任务按顺序执行。环境由用户搭建，自带用例包括登录页校验和正确账号登录，不需要连接下位机；成功登录用例需要可访问的平台和有效测试账号。
 
-## 启动
+## Windows 安装版
 
-运行要求：Windows、仓库内准备好的 Python 3.11+ 虚拟环境、WebView2 Runtime 和匹配驱动。当前 Release 使用仓库中的 Python 内核，尚未制作脱离仓库的独立安装包。
+测试电脑可使用 Windows x64 安装包。安装包自带 Python 测试内核和用例，后续版本从 MskDSPPlatform Stable 检查与下载。参见[安装版与平台更新](docs/安装版与平台更新.md)和[发布配置](docs/Windows安装包与Stable发布.md)。
+
+## 从仓库启动
+
+运行要求包括 Windows、仓库内准备好的 Python 3.11+ 虚拟环境、WebView2 Runtime 和匹配驱动。从仓库启动时使用仓库中的 Python 内核。
 
 按需构建需要 Node.js 22.12+、Rust 和 Windows C++ 构建工具；准备依赖与驱动需要联网。
 

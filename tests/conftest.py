@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from desktop_demo import ReleaseDesktop
+from testbench.workspace import local_config
 
 
 # 直接运行 pytest 与界面工作进程共用同一套自动证据和报告逻辑。
@@ -80,7 +81,7 @@ def login_memory(request):
     from testbench.login_credentials import WindowsCredentialGuard, cleanup_login_credentials
 
     require_fresh_login_environment(os.environ.get("TESTBENCH_TASK"))
-    account = load_login_account(Path(__file__).resolve().parents[1] / "local" / "login-account.json")
+    account = load_login_account(local_config("login-account.json"))
     app = request.getfixturevalue("desktop")
     page = PlatformLoginPage(app)
     with app.step("确认专用测试账号没有已有保存凭据"):

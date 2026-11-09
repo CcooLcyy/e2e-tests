@@ -16,7 +16,7 @@ def discover_cases(root: Path):
         env = dict(os.environ, PYTHONUTF8="1", PYTHONPATH=source + os.pathsep + os.environ.get("PYTHONPATH", ""),
                    TESTBENCH_COLLECT=str(output))
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", "tests", "--rootdir", str(root), "--collect-only", "-q", "-p", "testbench.pytest_plugin",
+            [sys.executable, "-X", "utf8", "-B", "-m", "pytest", "tests", "--rootdir", str(root), "--collect-only", "-q", "-p", "testbench.pytest_plugin",
              "-p", "no:cacheprovider"], cwd=root, env=env, capture_output=True, encoding="utf-8",
             errors="replace", timeout=60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )

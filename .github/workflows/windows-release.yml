@@ -1,0 +1,150 @@
+name: Testbench Windows x64
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish_stable:
+        description: Publish the signed installer to MskDSPPlatform Stable
+        type: boolean
+        default: false
+      release_notes:
+        description: Release notes shown by the Stable updater
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - name: Python self-tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m venv .venv
+          ./.venv/Scripts/python.exe -m pip install -r requirements.txt
+          ./.venv/Scripts/python.exe -m pytest selftests -q
+      - name: Frontend checks
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm ci
+          npm test
+          npm run build
+      - name: Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+  build-installer:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 40
+    environment: testbench-signing
+    outputs:
+      artifact-id: ${{ steps.installer.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Stage installed runtime
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm ci
+          ./scripts/stage-windows-runtime.ps1
+      - name: Configure the updater
+        env:
+          TESTBENCH_UPDATER_PUBLIC_KEY: ${{ vars.TESTBENCH_UPDATER_PUBLIC_KEY }}
+          TESTBENCH_UPDATER_MANIFEST_URL: ${{ vars.TESTBENCH_UPDATER_MANIFEST_URL }}
+        run: python scripts/windows_release.py configure
+      - name: Build and sign NSIS installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TESTBENCH_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TESTBENCH_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'Missing Testbench updater signing key' }
+          $releaseConfig = Join-Path $env:RUNNER_TEMP 'testbench-tauri-release.json'
+          npm run tauri -- build --target x86_64-pc-windows-msvc --bundles nsis --ci --config $releaseConfig -- --locked
+      - name: Record installer identity
+        run: python scripts/windows_release.py stage
+      - name: Retain signed installer
+        id: installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbench-windows-x64-nsis-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-stable:
+    needs: build-installer
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish_stable
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    environment: testbench-stable
+    concurrency:
+      group: testbench-platform-stable
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check out the pinned publication protocol
+        uses: actions/checkout@v4
+        with:
+          repository: CcooLcyy/MskDSPPlatformProto
+          ref: e86be3f7caf858937b38ddb52a71e63b23af4cf2
+          path: platform-proto
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Prepare gRPC bindings
+        run: |
+          python -m pip install 'grpcio==1.76.0' 'grpcio-tools==1.76.0'
+          proto=platform-proto/platform/v1
+          python -m grpc_tools.protoc -I "$proto" --python_out="$RUNNER_TEMP" --grpc_python_out="$RUNNER_TEMP" "$proto/software.proto"
+      - name: Download the installer from this run
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build-installer.outputs.artifact-id }}
+          path: release/
+      - name: Publish to MskDSPPlatform Stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM_GRPC_ENDPOINT: ${{ vars.PLATFORM_GRPC_ENDPOINT }}
+          TESTBENCH_PUBLISHER_TOKEN: ${{ secrets.TESTBENCH_PUBLISHER_TOKEN }}
+          TESTBENCH_RELEASE_NOTES: ${{ inputs.release_notes }}
+          TESTBENCH_UPDATER_MANIFEST_URL: ${{ vars.TESTBENCH_UPDATER_MANIFEST_URL }}
+          PYTHONPATH: ${{ runner.temp }}
+        run: python scripts/windows_release.py publish

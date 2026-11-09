@@ -13,11 +13,11 @@ from testbench.modbus_rtu_config import assert_dual_observation, expected_value
 from testbench.modbus_environment import BASIC_CASE_IDS, validate_selected_modbus_cases
 from testbench.pytest_plugin import fail_e2e_prerequisite
 from testbench.rtu_observation import BasicObservationProfile, PreparedRtuPage
+from testbench.workspace import local_config
 
 
 pytestmark = pytest.mark.case_group("Modbus RTU")
 LOGGER = logging.getLogger(__name__)
-ROOT = Path(__file__).resolve().parents[1]
 
 
 class RtuScenario:
@@ -116,9 +116,9 @@ def rtu(request):
     environment = task["environment"]
     validate_selected_modbus_cases(environment, BASIC_CASE_IDS)
     simulator_url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)
-    config = BasicObservationProfile.load(ROOT / "local" / "modbus-rtu.json",
+    config = BasicObservationProfile.load(local_config("modbus-rtu.json"),
                                           float(environment.get("modbus_acquisition_timeout", 300)))
-    account = load_login_account(ROOT / "local" / "login-account.json")
+    account = load_login_account(local_config("login-account.json"))
     desktop = request.getfixturevalue("desktop")
     desktop.metadata["RTU验收阶段"] = "前置条件"
     upper = PreparedRtuPage(desktop)

@@ -7,6 +7,7 @@ from dataclasses import asdict
 from datetime import datetime
 import json
 import logging
+import os
 from pathlib import Path
 import sys
 import threading
@@ -19,15 +20,19 @@ from .catalog import discover_cases
 from .controller import TaskController
 from .model import Environment, load_environment, save_environment, validate_slavesim_url
 from .reporting import STATUS_LABELS, business_case
+from .workspace import import_workspace
 
 
 class TestbenchBridge:
     __test__ = False
 
-    def __init__(self, root):
+    def __init__(self, root, data_root=None):
         self.root = Path(root).resolve()
-        self.controller = TaskController(self.root)
-        self.environment_path = self.root / "local" / "environment.json"
+        self.data_root = Path(data_root).resolve() if data_root is not None else self.root
+        self.installed = self.data_root != self.root
+        self.artifacts = self.data_root / "artifacts"
+        self.controller = TaskController(self.root, self.data_root)
+        self.environment_path = self.data_root / "local" / "environment.json"
         self._master104_check = None
         self._master104_cancel = None
 
@@ -36,8 +41,19 @@ class TestbenchBridge:
         if not isinstance(payload, dict):
             raise ValueError("请求参数必须是对象")
         if method == "bootstrap":
-            return {"root": str(self.root), "environment": self._environment(),
+            return {"root": str(self.data_root), "installed": self.installed,
+                    "version": os.environ.get("TESTBENCH_VERSION", ""), "environment": self._environment(),
                     "cases": self._discover(), "history": self._history()}
+        if method == "update_ready":
+            return {"ready": not self.controller.active and self._master104_check is None}
+        if method == "migrate_workspace":
+            if not self.installed:
+                raise ValueError("请在安装版中导入旧工作区")
+            if self.controller.active or self._master104_check is not None:
+                raise ValueError("测试任务或 104 主站检查结束后才能导入旧工作区")
+            if not isinstance(payload.get("path"), str) or not payload["path"].strip():
+                raise ValueError("请选择旧测试上位机源代码目录")
+            return {"imported": True, **import_workspace(payload["path"], self.data_root)}
         if method == "discover":
             return self._discover()
         if method == "get_environment":
@@ -146,7 +162,7 @@ class TestbenchBridge:
             for case in summary.get("cases", []):
                 details = {"report": {}, "screenshots": []}
                 try:
-                    case_directory = self._history_case_directory(directory, case)
+                    case_directory = self._history_case_directory(directory, case, summary.get("run_dir"))
                     if case_directory is not None:
                         details = self._case_details(str(case_directory))
                 except (OSError, ValueError) as error:
@@ -216,7 +232,7 @@ class TestbenchBridge:
     def _environment(self):
         if self.environment_path.is_file():
             return load_environment(self.environment_path).to_dict()
-        candidates = list((self.root / ".tools" / "msedgedriver").glob("**/msedgedriver.exe"))
+        candidates = list((self.data_root / ".tools" / "msedgedriver").glob("**/msedgedriver.exe"))
         def version(path):
             try:
                 return tuple(int(part) for part in path.parent.name.split("."))
@@ -225,10 +241,10 @@ class TestbenchBridge:
         driver = str(max(candidates, key=version)) if candidates else ""
         return Environment(name="本机测试环境",
                            driver_path=driver,
-                           workspace_path=str(self.root / "local" / "workspaces" / "default")).to_dict()
+                           workspace_path=str(self.data_root / "local" / "workspaces" / "default")).to_dict()
 
     def _history(self):
-        paths = sorted((self.root / "artifacts").glob("*/summary.json"),
+        paths = sorted(self.artifacts.glob("*/summary.json"),
                        key=lambda path: path.stat().st_mtime, reverse=True)
         result = []
         for path in paths[:100]:
@@ -249,15 +265,22 @@ class TestbenchBridge:
 
     def _artifact_directory(self, value):
         directory = Path(value).resolve(strict=True)
-        area = (self.root / "artifacts").resolve()
+        area = self.artifacts.resolve()
         if not directory.is_dir() or not directory.is_relative_to(area) or directory == area:
             raise ValueError("只能访问本测试仓库内的任务产物目录")
         return directory
 
-    def _history_case_directory(self, run, case):
+    def _history_case_directory(self, run, case, recorded_run=None):
         """旧任务缺少报告入口时只读恢复，不能跨任务关联证据。"""
         if case.get("artifacts_dir"):
-            directory = self._artifact_directory(case["artifacts_dir"])
+            directory = Path(case["artifacts_dir"])
+            if isinstance(recorded_run, str) and Path(recorded_run).is_absolute():
+                # Historical evidence retains its original paths. Read the copied
+                # files by their position within the run, including after a move.
+                origin = Path(recorded_run)
+                if directory.is_relative_to(origin):
+                    directory = run / directory.relative_to(origin)
+            directory = self._artifact_directory(directory)
             if not directory.is_relative_to(run):
                 raise ValueError("用例产物不属于当前任务")
             return directory
@@ -291,7 +314,7 @@ class TestbenchBridge:
         if not path.exists():
             return {}
         resolved = path.resolve(strict=True)
-        if not resolved.is_relative_to((self.root / "artifacts").resolve()):
+        if not resolved.is_relative_to(self.artifacts.resolve()):
             raise ValueError("报告路径超出测试产物范围")
         if resolved.stat().st_size > 10 * 1024 * 1024:
             raise ValueError("报告过大，不能直接载入界面")
@@ -306,7 +329,7 @@ class TestbenchBridge:
         images = {}
         for path in sorted(directory.glob("*.png")):
             resolved = path.resolve(strict=True)
-            if not resolved.is_relative_to((self.root / "artifacts").resolve()):
+            if not resolved.is_relative_to(self.artifacts.resolve()):
                 raise ValueError("截图路径超出测试产物范围")
             if resolved.stat().st_size > 10 * 1024 * 1024:
                 continue
@@ -379,7 +402,9 @@ def respond(bridge, request):
 def main():
     parser = argparse.ArgumentParser(description="测试上位机桌面通信桥接")
     parser.add_argument("--root", required=True, type=Path)
-    bridge = TestbenchBridge(parser.parse_args().root)
+    parser.add_argument("--data-root", type=Path)
+    args = parser.parse_args()
+    bridge = TestbenchBridge(args.root, args.data_root)
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
     try:

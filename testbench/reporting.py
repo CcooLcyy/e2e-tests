@@ -241,6 +241,8 @@ def write_task_report(directory, summary, task):
             counts[status] += 1
     lines = ["# 测试任务报告", "", f"任务结果：**{_label(summary.get('status'))}**", "",
              " · ".join(f"{name} {count}" for name, count in counts.items())]
+    if version := _business_text(task.get("testbench_version"), ""):
+        lines.extend(["", f"测试上位机版本 {_cell(version)}"])
     for label, key in (("开始时间", "started_at"), ("结束时间", "finished_at")):
         text = _business_text(summary.get(key, summary.get("ended_at") if key == "finished_at" else task.get(key)), "")
         if text:

@@ -1,7 +1,6 @@
 """使用本机测试账号验证真实平台登录及工作台入口。"""
 
 import json
-from pathlib import Path
 
 import pytest
 from selenium.common.exceptions import WebDriverException
@@ -9,6 +8,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 
 from testbench.login_page import PlatformLoginPage
+from testbench.workspace import local_config
 
 pytestmark = pytest.mark.case_group("基础登录")
 
@@ -22,7 +22,7 @@ def test_valid_account_enters_workspace(desktop):
     logout_target = mark((By.XPATH, '//header//button[normalize-space(.)="退出"]'), "检查工作台退出入口")
     badge_target = mark(PlatformLoginPage.BADGE_ANNOTATION, "检查工作台账号信息")
     with desktop.step("读取本机测试账号"):
-        account_path = Path(__file__).resolve().parents[1] / "local" / "login-account.json"
+        account_path = local_config("login-account.json")
         if not account_path.is_file():
             raise RuntimeError("请先在 local/login-account.json 配置测试账号的 username 和 password")
         account = json.loads(account_path.read_text(encoding="utf-8"))
