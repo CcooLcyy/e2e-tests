@@ -1,118 +1,50 @@
-"""从真实主站可见遥信表判定值、品质及本轮变位；不发送任何协议命令。"""
-from datetime import datetime, timedelta
+"""从可见遥信点表核对单点值、品质及本轮接收时间。"""
+from datetime import datetime
 import logging
 import math
-import re
 import time
 
 
-COLUMNS = ("序号", "信息地址", "信息描述", "值", "品质描述", "更新时间")
 LOGGER = logging.getLogger(__name__)
-
-
-def _ioa(text):
-    value = str(text).strip()
-    if re.fullmatch(r"[0-9a-fA-F]+[hH]", value):
-        return int(value[:-1], 16)
-    if re.fullmatch(r"0[xX][0-9a-fA-F]+", value):
-        return int(value, 16)
-    if re.fullmatch(r"[0-9]+", value):
-        return int(value, 10)
-    raise RuntimeError(f"遥信信息地址无法解析：{value!r}")
-
-
-def _stamp(text):
-    value = str(text).strip()
-    if not re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}[ T]\d{2}:\d{2}:\d{2}", value):
-        raise RuntimeError(f"遥信更新时间缺少完整日期与时分秒：{value!r}")
-    try:
-        result = datetime.fromisoformat(value)
-    except ValueError:
-        try:
-            result = datetime.strptime(value, "%Y/%m/%d %H:%M:%S")
-        except ValueError:
-            raise RuntimeError(f"遥信更新时间无法解析：{value!r}") from None
-    # 主站与测试进程在同一台Windows机器；无时区的界面时间按本机时区解释。
-    return result.astimezone()
-
-
-def _good(text):
-    value = str(text).strip()
-    remaining = value
-    for phrase in ("未被取代", "未取代", "未被封锁", "未封锁", "未被闭锁", "未闭锁"):
-        remaining = remaining.replace(phrase, "")
-    if any(word in remaining for word in ("无效", "非当前", "旧值", "被取代", "被封锁", "被闭锁", "未知")):
-        return False
-    return ("有效" in value and "当前值" in value
-            and any(word in value for word in ("未被取代", "未取代"))
-            and any(word in value for word in ("未被封锁", "未封锁", "未被闭锁", "未闭锁")))
 
 
 class Master104PointObserver:
     """严格区分本轮收到的遥信与重新读取的历史点表。"""
 
-    def __init__(self, session, ioas):
+    def __init__(self, session, ioas, common_address):
         if (not isinstance(ioas, dict) or not ioas or
                 any(not isinstance(key, str) or not key or type(value) is not int or not 0 <= value <= 0xffffff
                     for key, value in ioas.items()) or len(set(ioas.values())) != len(ioas)):
             raise ValueError("主站遥信IOA映射须为非空唯一名称和24位整数地址")
-        self.session, self.ioas = session, dict(ioas)
+        self.session, self.ioas, self.common_address = session, dict(ioas), common_address
 
     def _read(self):
-        self.session._check_stop()
-        snapshot = self.session.snapshot(table_scope="signals")
-        if snapshot.get("partial") or not snapshot.get("identity"):
-            raise RuntimeError("主站快照不完整或缺少实例身份，不能判定遥信")
-        tables = [table for table in snapshot.get("tables", []) if table.get("visible") is True]
-        statuses = []
-        pause_states = []
-        for table in tables:
-            for row in table.get("rows", []):
-                if len(row) == 2 and str(row[0]).strip() == "连接状态":
-                    if table.get("partial"):
-                        raise RuntimeError("主站连接状态表读取不完整")
-                    statuses.append(str(row[1]).strip())
-                if len(row) == 2 and str(row[0]).strip() == "暂停状态":
-                    if table.get("partial"):
-                        raise RuntimeError("主站暂停状态表读取不完整")
-                    pause_states.append(str(row[1]).strip())
-        for control in snapshot.get("controls", []):
-            texts = control.get("texts", [])
-            if len(texts) == 2 and str(texts[0]).strip() == "连接状态":
-                statuses.append(str(texts[1]).strip())
-            if len(texts) == 2 and str(texts[0]).strip() == "暂停状态":
-                pause_states.append(str(texts[1]).strip())
-        if not statuses or any(status not in ("正常", "连接", "已连接") for status in statuses):
-            raise RuntimeError(f"主站尚未确认正常连接：{statuses!r}")
-        if not pause_states or any(state not in ("正常", "未暂停") for state in pause_states):
-            raise RuntimeError(f"主站尚未确认未暂停：{pause_states!r}")
-        candidates = [table for table in tables if table.get("panel_title") == "遥信信息"
-                      and tuple(str(col).strip() for col in table.get("columns", [])) == COLUMNS]
-        if len(candidates) != 1 or candidates[0].get("partial"):
-            raise RuntimeError("必须完整读取唯一可见的六列遥信表")
+        snapshot = self.session.read_signals()
         matches = {key: [] for key in self.ioas}
-        for row in candidates[0].get("rows", []):
-            if len(row) != len(COLUMNS):
-                raise RuntimeError("主站遥信表行缺少完整单元格")
-            address = _ioa(row[1])
-            for key, ioa in self.ioas.items():
-                if address != ioa:
+        for row in snapshot["rows"]:
+            ca, ioa, type_id, value, quality, protocol_time, _ = row["cells"]
+            if int(ca) != self.common_address:
+                continue
+            for key, expected_ioa in self.ioas.items():
+                if int(ioa) != expected_ioa:
                     continue
-                if str(row[3]).strip() not in ("分", "合", "0", "1", "false", "true"):
-                    raise RuntimeError(f"遥信{key}不是明确的单点BOOL值：{row[3]!r}")
-                if not _good(row[4]):
-                    raise RuntimeError(f"遥信{key}品质不是完整有效当前值：{row[4]!r}")
-                stamp = _stamp(row[5])
-                if stamp > datetime.now().astimezone() + timedelta(seconds=1):
-                    raise RuntimeError(f"遥信{key}更新时间超出本机时钟容差：{row[5]!r}")
-                matches[key].append({"ioa": ioa, "description": row[2],
-                                     "value": str(row[3]).strip() in ("合", "1", "true"),
-                                     "quality": row[4], "updated_at": stamp.isoformat(),
-                                     "raw_cells": list(row)})
+                if int(type_id) not in (1, 30) or value not in ("分", "合"):
+                    raise RuntimeError(f"遥信{key}不是明确的单点BOOL值：类型{type_id}，值{value!r}")
+                if int(quality, 16) & 0xF0:
+                    raise RuntimeError(f"遥信{key}不是有效、当前且未经取代或封锁的值：{quality!r}")
+                received_ms = int(row["received"])
+                frame_id = int(row["frame_id"])
+                if frame_id <= 0:
+                    raise RuntimeError(f"遥信{key}缺少有效接收帧序号")
+                if received_ms > time.time_ns() // 1_000_000 + 1000:
+                    raise RuntimeError(f"遥信{key}接收时间超出本机时钟容差：{received_ms}")
+                matches[key].append({"ioa": int(ioa), "value": value == "合", "quality": quality,
+                                     "updated_at": datetime.fromtimestamp(received_ms / 1000).astimezone().isoformat(),
+                                     "received_ms": received_ms, "frame_id": frame_id, "protocol_time": protocol_time,
+                                     "raw_cells": row["cells"]})
         if any(len(rows) != 1 for rows in matches.values()):
-            raise RuntimeError("遥信IOA必须在当前表中唯一存在，不能使用缺失或重复点")
-        return {"identity": snapshot["identity"], "observed_at": snapshot.get("observed_at"),
-                "connection_status": statuses, "pause_status": pause_states,
+            raise RuntimeError("遥信 IOA 必须在指定公共地址的点表中唯一存在")
+        return {"identity": snapshot["identity"], "observed_at": snapshot["observed_at"],
                 "points": {key: rows[0] for key, rows in matches.items()}}
 
     def checkpoint(self):
@@ -122,7 +54,7 @@ class Master104PointObserver:
                     {key: row["updated_at"] for key, row in result["points"].items()})
         return result
 
-    def wait_state(self, expected, baseline, timeout, *, fresh_keys):
+    def wait_state(self, expected, baseline, timeout, *, fresh_keys, sent_frame_id):
         if (not isinstance(expected, dict) or not expected or any(key not in self.ioas or type(value) is not bool
                                                                  for key, value in expected.items())
                 or not fresh_keys or any(key not in expected for key in fresh_keys)):
@@ -132,7 +64,9 @@ class Master104PointObserver:
         if (not isinstance(baseline, dict) or set(baseline.get("points", {})) != set(self.ioas)
                 or any(baseline["points"][key].get("ioa") != ioa for key, ioa in self.ioas.items())):
             raise ValueError("遥信基线与当前IOA映射不一致")
-        operation_boundary = _stamp(baseline["wall_time"]).replace(microsecond=0)
+        operation_boundary = round(datetime.fromisoformat(baseline["wall_time"]).timestamp() * 1000)
+        if type(sent_frame_id) is not int or sent_frame_id <= 0:
+            raise ValueError("须提供本次遥调实际发送帧序号")
         deadline = time.monotonic() + float(timeout)
         last = None
         while time.monotonic() < deadline:
@@ -142,8 +76,8 @@ class Master104PointObserver:
             if last["identity"] != baseline["identity"]:
                 raise RuntimeError("主站实例身份已变化，不能替代原业务现场")
             values_match = all(last["points"][key]["value"] == value for key, value in expected.items())
-            fresh = all(_stamp(last["points"][key]["updated_at"]) > _stamp(baseline["points"][key]["updated_at"])
-                        and _stamp(last["points"][key]["updated_at"]) >= operation_boundary for key in fresh_keys)
+            fresh = all(last["points"][key]["frame_id"] > max(baseline["points"][key]["frame_id"], sent_frame_id)
+                        and last["points"][key]["received_ms"] >= operation_boundary for key in fresh_keys)
             if values_match and fresh:
                 LOGGER.info("104遥信值、品质及本轮变位确认通过：期望=%s，变位点=%s", expected, fresh_keys)
                 return last

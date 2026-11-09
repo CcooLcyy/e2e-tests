@@ -1,4 +1,4 @@
-"""通过真实ProIEC104Client设值对话框发送单次短浮点直接执行命令。"""
+"""从 Msk104Master 界面发送单次短浮点直接执行命令。"""
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import json
@@ -6,7 +6,7 @@ import logging
 import struct
 import sys
 
-from .master104_native import run_helper
+from selenium.webdriver.common.by import By
 
 
 LOGGER = logging.getLogger(__name__)
@@ -28,21 +28,16 @@ def normalize_target(value):
 
 class Master104CommandSender:
     """只支持直接执行；不自动尝试SBO、不在任何异常后重发。"""
-    def __init__(self, session, common_address, command_ioa, *, runner=None):
-        if (type(common_address) is not int or not 1 <= common_address <= 65535
+    def __init__(self, session, common_address, command_ioa):
+        if (type(common_address) is not int or not 1 <= common_address <= 65534
                 or type(command_ioa) is not int or not 0 <= command_ioa <= 0xffffff):
-            raise ValueError("主站公共地址须为1～65535，遥调IOA须为24位整数")
+            raise ValueError("主站公共地址须为1～65534，遥调IOA须为24位整数")
         self.session, self.common_address, self.command_ioa = session, common_address, command_ioa
-        self.runner = runner or run_helper
 
     def send_target_kw(self, target, timeout=None):
         value = normalize_target(target)
         session = self.session
-        session._check_stop()
-        if session._closed or not session.identity:
-            raise RuntimeError("发送遥调前须接管已确认身份的主站会话")
-        request = {"action": "send_target_kw", "path": session.path, "backend": session.backend,
-                   "identity": dict(session.identity), "common_address": self.common_address,
+        request = {"identity": session.identity, "common_address": self.common_address,
                    "command_ioa": self.command_ioa, "target_kw": value}
         record = {"requested_at": datetime.now().astimezone().isoformat(), "request": request,
                   "result": "未取得发送结果，不表示下游执行成功"}
@@ -50,13 +45,57 @@ class Master104CommandSender:
         path = session.artifacts / ("master104-command-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json")
         try:
             with session.step(f"主站单次直接执行遥调 {value} kW", expected=f"CA={self.common_address}, IOA={self.command_ioa}, C_SE_NC_1"):
-                result = self.runner(request, session.timeout if timeout is None else timeout,
-                                     helper_module="testbench.master104_command_helper")
-                if (result.get("identity") != request["identity"] or result.get("target_kw") != value
-                        or result.get("send_attempted") is not True):
-                    raise RuntimeError("主站遥调返回身份或参数不一致，发送结果未知，不得重试")
+                session._assert_live_display()
+                ca = session._connection_fields()[2].get_property("value")
+                if ca != str(self.common_address):
+                    raise RuntimeError(f"遥调公共地址与当前连接不一致：{ca!r}")
+                driver = session.driver
+                driver.find_element(By.ID, "tab-setpoints").click()
+
+                def read_result():
+                    panel = driver.find_element(By.ID, "setpoint-result")
+                    return {name: panel.get_dom_attribute(f"data-{name}") for name in
+                            ("operation-id", "state", "ioa", "common-address", "value", "sent-at", "sent-frame-id")}
+
+                def enabled_button():
+                    button = driver.find_element(By.ID, "send-setpoint")
+                    return button if button.is_enabled() else False
+
+                button = session.wait_for(enabled_button, "主站未开放本次遥调发送操作", timeout)
+                session.fill(driver.find_element(By.ID, "setpoint-ioa"), str(self.command_ioa))
+                session.fill(driver.find_element(By.ID, "setpoint-value"), value)
+                previous = read_result()["operation-id"]
+                session._check_stop()
+                attempted_at = datetime.now().astimezone().isoformat()
+                record["attempted_at"] = attempted_at
+                button.click()
+
+                def confirmed():
+                    session._assert_live_display()
+                    operation = read_result()
+                    operation_id, state = operation["operation-id"], operation["state"]
+                    if not operation_id or operation_id == previous:
+                        return False
+                    record["observed_operation"] = operation
+                    if (operation["ioa"] != str(self.command_ioa)
+                            or operation["common-address"] != str(self.common_address)
+                            or struct.pack("<f", float(operation["value"])) != struct.pack("<f", float(value))):
+                        raise RuntimeError("主站本次遥调结果与目标参数不一致")
+                    if state in ("rejected", "failed", "timeout"):
+                        raise RuntimeError(f"104 遥调未获得肯定确认：{state}")
+                    if state in ("confirmed", "terminated"):
+                        sent_at = int(operation["sent-at"])
+                        sent_frame_id = int(operation["sent-frame-id"])
+                        if sent_at < int(datetime.fromisoformat(attempted_at).timestamp() * 1000) or sent_frame_id <= 0:
+                            raise RuntimeError("主站缺少本次遥调的有效发送证据")
+                        return {**request, "operation_id": operation_id, "state": state, "attempted_at": attempted_at,
+                                "sent_at": datetime.fromtimestamp(sent_at / 1000).astimezone().isoformat(),
+                                "sent_frame_id": sent_frame_id}
+                    return False
+
+                result = session.wait_for(confirmed, "104 主站未收到本次遥调的肯定确认", timeout)
                 record["result"] = result
-                LOGGER.info("已完成主站单次发送动作：CA=%s，IOA=%s，目标=%s；仍需核对AGC设点和新遥信",
+                LOGGER.info("已收到主站本次遥调的肯定确认：CA=%s，IOA=%s，目标=%s；仍需核对AGC设点和新遥信",
                             self.common_address, self.command_ioa, value)
                 return result
         except BaseException as error:

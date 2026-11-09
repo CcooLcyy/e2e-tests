@@ -19,7 +19,7 @@ const environmentSections = [
   ['environment-master104','104 模拟主站','按用例需要启用'],
   ['environment-modbus','Modbus RTU','运行时跟随模拟器配置'],
 ] as const;
-const emptyEnvironment: Environment = withModbusDefaults({name:'本机测试环境',app_path:'',driver_path:'',mode:'fresh',workspace_path:'',baseline_path:'',timeout:300,close_app:true,slavesim_url:'http://192.168.1.219:16000',annotation_enabled:true,master104_enabled:false,master104_path:'',master104_backend:'win32',master104_timeout:10} as Environment);
+const emptyEnvironment: Environment = withModbusDefaults({name:'本机测试环境',app_path:'',driver_path:'',mode:'fresh',workspace_path:'',baseline_path:'',timeout:300,close_app:true,slavesim_url:'http://192.168.1.219:16000',annotation_enabled:true,master104_enabled:false,master104_path:'',master104_timeout:10} as Environment);
 const duration = (value?: number) => value === undefined ? '—' : `${value.toFixed(2)} s`;
 function Status({ status, text = true }: {status: string; text?: boolean}) { return <span className={`status ${status}`}><i />{text && (labels[status] || status)}{status === 'running' && <LoaderCircle size={12} className="spin"/>}</span>; }
 
@@ -272,15 +272,14 @@ export default function App() {
             </Field>
             <div className="slavesim-actions"><button className="button" data-testid="slavesim-open" disabled={!environment.slavesim_url.trim()} onClick={()=>void slavesimAction('open_slavesim')}><ArrowRight size={15}/>打开管理页</button><button className="button" data-testid="slavesim-check" disabled={!environment.slavesim_url.trim()} onClick={()=>void slavesimAction('check_slavesim')}><Activity size={15}/>检查连接</button><span>使用当前填写的地址，在默认浏览器中打开</span></div>
           </details>
-          <details className="form-section collapsible-section" id="environment-master104" tabIndex={-1} onToggle={event=>console.info('测试环境分区：',event.currentTarget.id,event.currentTarget.open?'展开':'收起')}><summary className="section-title"><span>05</span><div><h3>104 模拟主站</h3><p>使用已打开的 ProIEC104Client；检查只读取窗口，不自动连接或发送命令</p></div></summary>
+          <details className="form-section collapsible-section" id="environment-master104" tabIndex={-1} onToggle={event=>console.info('测试环境分区：',event.currentTarget.id,event.currentTarget.open?'展开':'收起')}><summary className="section-title"><span>05</span><div><h3>104 模拟主站</h3><p>通过 EdgeDriver 操作本次测试启动的 Msk104Master 独立副本</p></div></summary>
             <label className="cleanup-toggle"><input data-testid="environment-master104-enabled" type="checkbox" checked={environment.master104_enabled} onChange={e=>{setEnvironment({...environment,master104_enabled:e.target.checked});setMaster104Snapshot(null);}}/><span>启用 104 主站<small>仅供需要主站的用例使用，既有用例保持原行为</small></span></label>
             <fieldset disabled={!environment.master104_enabled}>
-              <Field label="主站程序" hint="选择已打开实例对应的 ProIEC104Client.exe；检查无需先保存环境">
+              <Field label="主站程序" hint="选择已安装的 Msk104Master.exe，检查使用当前填写的 EdgeDriver 路径">
                 <PathInput value={environment.master104_path} onChange={v=>{setEnvironment({...environment,master104_path:v});setMaster104Snapshot(null);}} onBrowse={()=>void pick('master104_path')} testId="environment-master104-path"/>
               </Field>
-              <div className="form-split"><Field label="窗口读取方式"><select data-testid="environment-master104-backend" value={environment.master104_backend} onChange={e=>{setEnvironment({...environment,master104_backend:e.target.value as Environment['master104_backend']});setMaster104Snapshot(null);}}><option value="win32">Windows 原生控件（win32）</option><option value="uia">UI Automation（uia）</option></select></Field>
-                <Field label="主站等待时间"><div className="number-input"><input data-testid="environment-master104-timeout" type="number" min="0.1" step="0.1" value={Number.isFinite(environment.master104_timeout)?environment.master104_timeout:''} onChange={e=>setEnvironment({...environment,master104_timeout:Number(e.target.value)})}/><span>秒</span></div></Field></div>
-              <div className="slavesim-actions"><button className="button" data-testid="master104-check" disabled={!ready||disabled||!environment.master104_path.trim()} onClick={()=>void checkMaster104()}>{master104Checking?<LoaderCircle size={15} className="spin"/>:<Activity size={15}/>} {master104Checking?'正在检查…':'检查主站'}</button><span>检查窗口可读取性；协议连接及业务效果由后续用例验证</span></div>
+undefined
+              <div className="slavesim-actions"><button className="button" data-testid="master104-check" disabled={!ready||disabled||!environment.master104_path.trim()||!environment.driver_path.trim()} onClick={()=>void checkMaster104()}>{master104Checking?<LoaderCircle size={15} className="spin"/>:<Activity size={15}/>} {master104Checking?'正在检查…':'检查主站'}</button><span>用临时副本检查界面可读取性。IEC104 连接和命令由业务用例执行</span></div>
             </fieldset>
             {master104Snapshot&&<details className="master104-snapshot" data-testid="master104-snapshot"><summary>本次主站窗口快照</summary><pre>{JSON.stringify(master104Snapshot,null,2)}</pre></details>}
           </details>

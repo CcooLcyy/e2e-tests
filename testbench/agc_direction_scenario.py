@@ -39,7 +39,7 @@ class AgcDirectionProfile:
         if (not isinstance(values["group_name"], str) or not values["group_name"].startswith("e2e-agc-")
                 or not isinstance(values["member_name"], str) or not values["member_name"].strip()):
             raise ValueError("AGC验收须明确e2e-agc-开头的专用组及成员名称")
-        for name, maximum in (("conn_id", 0xffffffff), ("master_port", 65535), ("common_address", 65535),
+        for name, maximum in (("conn_id", 0xffffffff), ("master_port", 65535), ("common_address", 65534),
                               ("command_ioa", 0xffffff), ("increase_ioa", 0xffffff), ("decrease_ioa", 0xffffff)):
             if type(values[name]) is not int or not 1 <= values[name] <= maximum:
                 raise ValueError(f"AGC验收{name}须为范围内的正整数")
@@ -104,24 +104,6 @@ class AgcDirectionScenario:
         self.observations = []
         self.desktop.metadata["AGC固定验收配置"] = profile.to_dict()
 
-    def _verify_master_target(self):
-        snapshot = self.master.snapshot(table_scope="signals")
-        rows = [row for table in snapshot.get("tables", []) for row in table.get("rows", []) if len(row) == 2]
-        for label, expected in (("目的地址", self.profile.master_host), ("目的端口", str(self.profile.master_port))):
-            values = {str(row[1]).strip() for row in rows if str(row[0]).strip() == label}
-            if values != {expected}:
-                raise AssertionError(f"104主站{label}与专用测试环境不一致：预期{expected}，实际{values}")
-
-    def _cross_timestamp_boundary(self, baseline):
-        """只等待跨过原生遥信显示秒，不用重复发送制造新时间。"""
-        stamps = [datetime.fromisoformat(baseline["wall_time"]).timestamp()]
-        stamps.extend(datetime.fromisoformat(point["updated_at"]).timestamp() for point in baseline["points"].values())
-        boundary = math.floor(max(stamps)) + 1
-        while time.time() <= boundary:
-            self.desktop._check_stop()
-            self.master._check_stop()
-            time.sleep(min(0.1, max(0.001, boundary - time.time())))
-
     def _wait_current(self, expected):
         deadline = time.monotonic() + self.profile.timeout_seconds
         last = None
@@ -157,29 +139,28 @@ class AgcDirectionScenario:
                "配置": self.profile.to_dict()}
         try:
             with self.master.step(f"核对104目标并单次下发AGC目标 {target} kW", expected=expected):
-                self._verify_master_target()
+                self.master.verify_target(self.profile.master_host, self.profile.master_port,
+                                          self.profile.common_address)
                 baseline = self.observer.checkpoint()
                 row["基线"] = baseline
                 if fresh_key and baseline["points"][fresh_key]["value"] == expected[fresh_key]:
                     raise AssertionError("业务操作前闭锁已是最终期望，不能证明本次变位")
-                self._cross_timestamp_boundary(baseline)
-                # 更新操作边界仅用于时间判定；原始点值与时间基线不变。
-                baseline["wall_time"] = datetime.now().astimezone().isoformat()
                 row["发送结果"] = self.sender.send_target_kw(target)
-                # 原生对话框准备可能耗时，以实际确定发送的时刻更新业务边界。
-                baseline["wall_time"] = row["发送结果"]["attempted_at"]
+                # 使用主站实际发送时刻划定本轮接收边界。
+                baseline["wall_time"] = row["发送结果"]["sent_at"]
             with self.desktop.step(f"核对AGC当前已发布目标与闭锁 {target} kW", expected=expected):
                 row["upper"] = self.page.wait_snapshot(self.profile.page_profile(), target,
                                                         expected["increase"], expected["decrease"],
                                                         self.profile.timeout_seconds)
             with self.master.step("核对主站闭锁值、品质与本轮变位", expected=expected):
-                if fresh_key:
-                    row["master"] = self.observer.wait_state(expected, baseline, self.profile.timeout_seconds,
-                                                              fresh_keys=(fresh_key,))
+                changed = (fresh_key,) if fresh_key else tuple(
+                    key for key, value in expected.items() if baseline["points"][key]["value"] != value)
+                if changed:
+                    row["master"] = self.observer.wait_state(
+                        expected, baseline, self.profile.timeout_seconds,
+                        fresh_keys=changed, sent_frame_id=row["发送结果"]["sent_frame_id"])
                 else:
-                    changed = tuple(key for key, value in expected.items() if baseline["points"][key]["value"] != value)
-                    row["master"] = (self.observer.wait_state(expected, baseline, self.profile.timeout_seconds,
-                                                               fresh_keys=changed) if changed else self._wait_current(expected))
+                    row["master"] = self._wait_current(expected)
             row["状态"] = "通过"
             LOGGER.info("AGC闭锁双端步骤完成：阶段=%s，目标=%s，期望=%s", stage, target, expected)
             self._record(row)

@@ -1,47 +1,55 @@
-"""第三方 104 主站只读会话及证据；业务操作由后续确认的用例扩展。"""
+"""用 EdgeDriver 驱动本次启动的 Msk104Master，保留主站独立证据。"""
 from contextlib import contextmanager
+import ctypes
 from datetime import datetime
 import json
 import logging
 import os
 from pathlib import Path
+import shutil
+import socket
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
 import time
+from urllib.request import ProxyHandler, build_opener
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.edge.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
 
 from .events import emit
-from .master104_native import run_helper
 
 
 class Master104Session:
-    """仅接管用户已有实例；释放本会话不退出主站。"""
-
-    def __init__(self, artifacts_dir, path, backend="win32", timeout=10, *, runner=None):
-        self.artifacts = Path(artifacts_dir)
-        self.path = str(Path(path).resolve())
-        self.backend, self.timeout = backend, timeout
-        self._runner = runner or run_helper
+    def __init__(self, artifacts_dir, path, driver_path, timeout=10, *, cancel_event=None):
+        self.artifacts = Path(artifacts_dir).resolve()
+        self.path = Path(path).resolve(strict=True)
+        self.driver_path = Path(driver_path).resolve(strict=True)
+        self.timeout = timeout
+        self.cancel_event = cancel_event
+        self.driver = self.service = self.process = None
         self.identity = None
         self.steps, self.screenshots = [], []
-        self.metadata = {"证据来源": "104主站", "主站程序": self.path, "原生后端": backend,
-                         "主站实例管理": "仅接管已有实例，不负责退出"}
+        self.metadata = {"证据来源": "104主站", "主站程序": str(self.path), "主站驱动": str(self.driver_path)}
         self.failure = self.cleanup_failure = None
         self._active_steps = []
-        self._closed = False
-        self._case_finished = False
+        self._closed = self._case_finished = False
         self._case_status = None
-        self._snapshots = 0
 
-    @staticmethod
-    def _check_stop():
+    def _check_stop(self):
         stop = os.environ.get("TESTBENCH_STOP")
-        if stop and Path(stop).exists():
-            raise InterruptedError("测试任务已停止")
+        if (stop and Path(stop).exists()) or (self.cancel_event is not None and self.cancel_event.is_set()):
+            raise InterruptedError("104主站任务已停止")
 
     def __enter__(self):
         try:
-            with self.step("接管指定 104 主站并读取窗口", expected="唯一实例响应，控件内容可读取") as entry:
+            with self.step("启动本次独立 104 主站并接入 EdgeDriver", expected="主站界面可读取且处于测试会话") as entry:
                 entry["诊断步骤"] = True
-                snapshot = self.snapshot()
-                entry["实际"] = f"已读取主站窗口，PID={snapshot['identity']['pid']}；不判定协议连接状态"
+                self._launch()
+                entry["实际"] = f"EdgeDriver 已读取主站界面，PID={self.identity['pid']}"
             return self
         except BaseException:
             self.close()
@@ -52,39 +60,120 @@ class Master104Session:
             self.failure = self.failure or str(exc_value)
         self.close()
 
-    def _request(self, action, **values):
-        if self._closed:
-            raise RuntimeError("主站会话已释放，不能继续采集")
-        request = {"action": action, "path": self.path, "backend": self.backend, **values}
-        if self.identity is not None:
-            request["identity"] = self.identity
-        return self._runner(request, self.timeout)
-
-    def snapshot(self, *, table_scope=None):
-        """保存本次采集原文，不把已有点表解释成本次协议数据。"""
+    def _launch(self):
+        if sys.platform != "win32" or ctypes.windll.shell32.IsUserAnAdmin():
+            raise RuntimeError("104 主站 WebView2 自动化须在 Windows 下以普通权限运行")
+        if self.path.name.casefold() != "msk104master.exe":
+            raise ValueError("请选择 msk104master.exe")
+        if self.driver_path.name.casefold() != "msedgedriver.exe":
+            raise ValueError("请选择与 WebView2 匹配的 msedgedriver.exe")
+        runtime = self.artifacts / "master104-runtime"
+        runtime.mkdir(parents=True)
+        copied = runtime / self.path.name
+        shutil.copy2(self.path, copied)
+        if b"MSK104MASTER_TEST_SESSION" not in copied.read_bytes():
+            raise RuntimeError("主站程序缺少测试模式，请选择新版 msk104master.exe")
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        env = dict(os.environ, MSK104MASTER_TEST_SESSION="1",
+                   WEBVIEW2_USER_DATA_FOLDER=str(runtime / "webview"),
+                   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={port}")
+        with (runtime / "application.log").open("ab") as log:
+            self.process = subprocess.Popen([str(copied)], cwd=runtime, env=env, stdout=log, stderr=subprocess.STDOUT)
+        self.identity = {"pid": self.process.pid, "path": str(copied), "debug_port": port}
+        self.metadata["主站实例"] = self.identity
+        opener = build_opener(ProxyHandler({}))
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            self._check_stop()
+            if self.process.poll() is not None:
+                raise RuntimeError(f"104 主站提前退出，退出码 {self.process.returncode}")
+            try:
+                with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
+                    if json.load(response).get("webSocketDebuggerUrl"):
+                        break
+            except OSError:
+                pass
+            time.sleep(0.1)
+        else:
+            raise TimeoutError("104 主站 WebView2 调试端口未就绪")
         self._check_stop()
-        result = self._request("snapshot", **({"table_scope": table_scope} if table_scope is not None else {}))
-        identity = result.get("identity")
-        if not isinstance(identity, dict) or not all(key in identity for key in ("path", "pid", "hwnd", "created")):
-            raise RuntimeError("主站采集缺少完整实例身份")
-        controls = result.get("controls")
-        if (not result.get("observed_at") or not isinstance(controls, list) or not controls
-                or not any(isinstance(row, dict) and
-                           (row.get("text") or any(row.get("texts") or [])) for row in controls)):
-            raise RuntimeError("主站采集未返回采集时间或有效控件文本")
-        if self.identity is not None and identity != self.identity:
-            raise RuntimeError("主站实例身份已变化，停止使用新实例替代原现场")
-        self.identity = identity
-        self.metadata["主站进程PID"] = identity["pid"]
-        self.metadata["主站窗口句柄"] = identity["hwnd"]
-        self.artifacts.mkdir(parents=True, exist_ok=True)
-        self._snapshots += 1
-        target = self._unique(f"master104-snapshot-{self._snapshots:04d}", ".json")
-        with target.open("x", encoding="utf-8") as stream:
-            json.dump(result, stream, ensure_ascii=False, indent=2)
-        self.metadata.setdefault("主站窗口快照", []).append(target.name)
-        logging.getLogger(__name__).info("已保存主站窗口快照：%s，PID=%s", target.name, identity["pid"])
-        return result
+        options = webdriver.EdgeOptions()
+        options.use_webview = True
+        options.debugger_address = f"127.0.0.1:{port}"
+        self.service = Service(executable_path=str(self.driver_path), service_args=["--log-level=OFF"])
+        self.driver = webdriver.Edge(service=self.service, options=options)
+        self.wait_for(lambda: self.driver.find_element(By.CSS_SELECTOR, '.workspace[data-test-session="true"]'),
+                      "主站未进入自动化测试模式，请选择支持测试会话的新版 msk104master.exe")
+
+    def wait_for(self, condition, message, timeout=None):
+        def check(_driver):
+            self._check_stop()
+            if self.process.poll() is not None:
+                raise RuntimeError("本次 104 主站进程已退出")
+            return condition()
+
+        return WebDriverWait(self.driver, self.timeout if timeout is None else timeout,
+                             poll_frequency=0.1).until(check, message)
+
+    def _button(self, text):
+        return self.driver.find_element(By.XPATH, f"//button[normalize-space(.)='{text}']")
+
+    def _connection_fields(self):
+        return self.driver.find_elements(By.CSS_SELECTOR, "#settings-content form input")
+
+    def _status(self, label):
+        return self.driver.find_element(By.XPATH, f"//dt[normalize-space(.)='{label}']/following-sibling::dd[1]").text
+
+    def state(self):
+        return self.driver.find_element(By.CSS_SELECTOR, ".session-state").get_dom_attribute("data-state")
+
+    def _assert_live_display(self):
+        self._check_stop()
+        if self.state() != "started" or self.driver.find_elements(By.XPATH, "//button[normalize-space(.)='恢复显示']"):
+            raise RuntimeError("104 主站必须处于数据传输已启动且显示未暂停的状态")
+
+    def verify_target(self, host, port, common_address):
+        actual = [element.get_property("value") for element in self._connection_fields()]
+        if actual != [str(host), str(port), str(common_address)]:
+            raise AssertionError(f"104 主站连接目标与专用配置不一致：{actual!r}")
+
+    def connect_and_interrogate(self, host, port, common_address):
+        with self.step("连接专用 104 下位机并完成总召", expected=f"{host}:{port}，CA={common_address}"):
+            if self.state() != "disconnected":
+                raise RuntimeError("本次 104 主站已连接，拒绝更改会话")
+            for field, value in zip(self._connection_fields(), (host, port, common_address), strict=True):
+                self.fill(field, str(value))
+            self.verify_target(host, port, common_address)
+            self._check_stop()
+            self._button("连接").click()
+            self.wait_for(lambda: self.state() == "started", "104 主站未收到 STARTDT 确认")
+            self._check_stop()
+            self._button("总召").click()
+            self.wait_for(lambda: self._status("总召状态") == "总召已终止", "104 主站未确认总召终止")
+            self._assert_live_display()
+
+    @staticmethod
+    def fill(field, value):
+        field.send_keys(Keys.CONTROL, "a")
+        field.send_keys(value)
+
+    def show_signals(self):
+        tab = self.driver.find_element(By.ID, "tab-signals")
+        if tab.get_dom_attribute("aria-selected") != "true":
+            tab.click()
+
+    def read_signals(self):
+        self._assert_live_display()
+        self.show_signals()
+        # 一次读取可见表格，防止 React 刷新时混用不同快照的单元格。
+        rows = self.driver.execute_script("""
+            return Array.from(document.querySelectorAll('#points-signals:not([hidden]) table tbody tr[data-received-at]'),
+                row => ({received: row.dataset.receivedAt, frame_id: row.dataset.receivedFrameId,
+                    cells: Array.from(row.cells, cell => cell.textContent.trim())}));
+        """)
+        return {"identity": self.identity, "observed_at": datetime.now().astimezone().isoformat(), "rows": rows}
 
     @contextmanager
     def step(self, name, expected=None, actual=None):
@@ -160,15 +249,9 @@ class Master104Session:
             shot["actual"] = f"{shot['actual']}\n异常：{entry['错误']}"
         self.screenshots.append(shot)
         try:
-            if self.identity is None:
-                raise RuntimeError("尚未确认主站实例身份，无法拍摄可靠现场")
-            self.artifacts.mkdir(parents=True, exist_ok=True)
-            captured = self._request("capture", output=str(target.resolve()))
-            if not target.is_file() or not target.stat().st_size:
-                raise RuntimeError("主站辅助进程未保存有效截图文件")
+            if self.driver is None or not self.driver.save_screenshot(str(target)):
+                raise RuntimeError("EdgeDriver 未保存主站截图")
             shot["capture_status"] = "saved"
-            if captured.get("capture_window"):
-                shot["capture_window"] = captured["capture_window"]
             logging.getLogger(__name__).info("已保存主站截图：%s", target.name)
         except Exception as error:
             shot["error"] = f"主站截图失败：{type(error).__name__}：{error}"
@@ -188,10 +271,42 @@ class Master104Session:
                                    description=description or "104主站失败现场")
 
     def close(self):
-        """仅释放本地绑定；既有主站进程和通信状态均由用户管理。"""
         if self._closed:
             return
+        self._closed = True
         if not self._case_finished:
             self.finish_case("failed" if self.failure else "passed")
-        self._closed = True
-        logging.getLogger(__name__).info("已释放104主站测试会话，保留用户主站进程")
+        errors = []
+        try:
+            if self.driver is not None:
+                self.driver.quit()
+            elif self.service is not None:
+                self.service.stop()
+        except Exception as error:
+            errors.append(str(error))
+        finally:
+            self.driver = self.service = None
+            if self.process is not None:
+                try:
+                    if self.process.poll() is None:
+                        self.process.terminate()
+                    self.process.wait(timeout=5)
+                except Exception as error:
+                    errors.append(str(error))
+        if errors:
+            self.cleanup_failure = "清理本次 104 主站会话失败：" + "；".join(errors)
+            self.failure = self.failure or self.cleanup_failure
+            logging.getLogger(__name__).error("%s", self.cleanup_failure)
+
+
+def probe_master104(path, driver_path, timeout=10, *, cancel_event=None):
+    """启动临时副本，只检查界面和驱动，随后释放临时进程。"""
+    with TemporaryDirectory(prefix="msk104master-check-") as directory:
+        with Master104Session(directory, path, driver_path, timeout, cancel_event=cancel_event) as session:
+            status = session.state()
+            if status != "disconnected":
+                raise RuntimeError("104 主站检查发现意外的协议连接")
+            result = {"identity": session.identity, "status": status, "driver": "EdgeDriver"}
+        if session.cleanup_failure:
+            raise RuntimeError(session.cleanup_failure)
+    return result

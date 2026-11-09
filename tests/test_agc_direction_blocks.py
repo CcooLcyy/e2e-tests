@@ -62,7 +62,8 @@ def agc_direction(request):
         desktop.check("专用成员下限与固定期望一致", member["lower_kw"], profile.lower_kw)
         desktop.check("专用成员有效上限与固定期望一致", member["upper_kw"], profile.upper_kw)
         master = request.getfixturevalue("master104")
-        observer = Master104PointObserver(master, profile.ioas)
+        master.connect_and_interrogate(profile.master_host, profile.master_port, profile.common_address)
+        observer = Master104PointObserver(master, profile.ioas, profile.common_address)
         sender = Master104CommandSender(master, profile.common_address, profile.command_ioa)
         desktop.metadata["AGC验收阶段"] = "104遥调与双端业务验收"
         yield AgcDirectionScenario(desktop, page, master, observer, sender, profile)
@@ -73,7 +74,7 @@ def agc_direction(request):
     finally:
         if not setup_failed and any(report.failed for report in getattr(request.node, "_bench_reports", [])):
             capture_failure()
-        # 专用组、路由和主站由用户管理；失败后不补发中间值或恢复指令。
+        # 专用组和路由由用户管理；失败后不补发中间值或恢复指令。
 
 
 def test_agc_upper_limit_sets_increase_block(agc_direction):

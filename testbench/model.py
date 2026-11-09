@@ -48,7 +48,6 @@ class Environment:
     slavesim_url: str = "http://192.168.1.219:16000"
     master104_enabled: bool = False
     master104_path: str = ""
-    master104_backend: str = "win32"
     master104_timeout: float = 10
     modbus_manager_address: str = "192.168.1.219:17000"
     modbus_baud_rate: int = 9600
@@ -96,7 +95,7 @@ class Environment:
             raise ValueError("配置基线必须是已有目录")
 
     def validate_master104(self, *, required=False):
-        """主站检查独立于 DSP 和驱动校验，禁用时保留未完成的可选配置。"""
+        """单独校验主站配置，禁用时保留未完成的可选配置。"""
         if not isinstance(self.master104_enabled, bool):
             raise ValueError("104 主站开关必须为布尔值")
         if not self.master104_enabled:
@@ -105,12 +104,10 @@ class Environment:
             return
         if (not isinstance(self.master104_path, str) or not self.master104_path.strip()
                 or any(ord(char) < 32 for char in self.master104_path)):
-            raise ValueError("104 主站必须选择已有的 ProIEC104Client.exe")
+            raise ValueError("104 主站必须选择已有的 Msk104Master.exe")
         path = Path(self.master104_path.strip())
-        if path.name.lower() != "proiec104client.exe" or not path.is_file():
-            raise ValueError("104 主站必须选择已有的 ProIEC104Client.exe")
-        if self.master104_backend not in ("win32", "uia"):
-            raise ValueError("104 主站后端必须是 win32 或 uia")
+        if path.name.casefold() != "msk104master.exe" or not path.is_file():
+            raise ValueError("104 主站必须选择已有的 Msk104Master.exe")
         try:
             if isinstance(self.master104_timeout, bool):
                 raise ValueError("布尔值不是等待时间")
@@ -121,6 +118,16 @@ class Environment:
             raise ValueError("104 主站等待时间必须是有限正数")
         self.master104_path = str(path.resolve())
         self.master104_timeout = timeout
+
+    def validate_master104_driver(self):
+        """检查主站时仅校验共用的 EdgeDriver 路径，无需 DSP 上位机路径。"""
+        if (not isinstance(self.driver_path, str) or not self.driver_path.strip()
+                or any(ord(char) < 32 for char in self.driver_path)):
+            raise ValueError("请先选择匹配 WebView2 的 EdgeDriver exe 文件")
+        path = Path(self.driver_path.strip())
+        if path.name.casefold() != "msedgedriver.exe" or not path.is_file():
+            raise ValueError("请先选择匹配 WebView2 的 EdgeDriver exe 文件")
+        self.driver_path = str(path.resolve())
 
     def validate_for_cases(self, case_ids):
         """开始任务前检查所选用例需要的参数，允许保存未完成的RTU环境草稿。"""

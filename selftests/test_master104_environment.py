@@ -11,25 +11,26 @@ from testbench.model import Environment, load_environment, save_environment
 
 def master_environment(tmp_path, **changes):
     """使用临时占位程序验证配置，不启动程序。"""
-    program = tmp_path / "ProIEC104Client.exe"
+    program = tmp_path / "Msk104Master.exe"
     program.touch(exist_ok=True)
+    driver = tmp_path / "msedgedriver.exe"
+    driver.touch(exist_ok=True)
     data = {"master104_enabled": True, "master104_path": str(program),
-            "master104_backend": "win32", "master104_timeout": 2}
+            "driver_path": str(driver), "master104_timeout": 2}
     data.update(changes)
     return data
 
 
 def install_probe(monkeypatch, probe):
-    """替换完整原生边界，框架自测不需要安装 Windows 驱动。"""
-    monkeypatch.setitem(sys.modules, "testbench.master104_native", SimpleNamespace(probe_master104=probe))
+    """替换主站接入边界，框架自测不需要启动 EdgeDriver。"""
+    monkeypatch.setitem(sys.modules, "testbench.master104", SimpleNamespace(probe_master104=probe))
 
 
 def test_old_environment_keeps_master104_disabled():
-    """旧环境缺少主站字段时不要求程序或原生驱动。"""
+    """旧环境缺少主站字段时不要求程序或驱动。"""
     env = Environment.from_dict({"name": "旧环境"})
     assert env.master104_enabled is False
     assert env.master104_path == ""
-    assert env.master104_backend == "win32"
     assert env.master104_timeout == 10
     env.validate_master104()
     with pytest.raises(ValueError, match="启用"):
@@ -38,11 +39,9 @@ def test_old_environment_keeps_master104_disabled():
 
 def test_master104_configuration_round_trips_without_changing_old_fields(tmp_path):
     """主站配置与既有环境一起保存，禁用时允许保留未完成配置。"""
-    app, driver = tmp_path / "upper.exe", tmp_path / "driver.exe"
+    app = tmp_path / "upper.exe"
     app.touch()
-    driver.touch()
-    env = Environment(app_path=str(app), driver_path=str(driver),
-                      **master_environment(tmp_path, master104_backend="uia", master104_timeout="1.5"))
+    env = Environment(app_path=str(app), **master_environment(tmp_path, master104_timeout="1.5"))
     path = tmp_path / "environment.json"
     save_environment(path, env)
     restored = load_environment(path)
@@ -56,13 +55,14 @@ def test_master104_configuration_round_trips_without_changing_old_fields(tmp_pat
 
 @pytest.mark.parametrize("changes", [
     {"master104_enabled": "true"}, {"master104_path": ""}, {"master104_path": "missing.exe"},
-    {"master104_path": None}, {"master104_backend": "unknown"},
+    {"master104_path": None}, {"driver_path": ""}, {"driver_path": None},
+    {"driver_path": "missing.exe"}, {"driver_path": __file__},
     {"master104_timeout": 0}, {"master104_timeout": -1}, {"master104_timeout": True},
     {"master104_timeout": "bad"}, {"master104_timeout": float("inf")},
     {"master104_timeout": float("nan")},
 ])
 def test_invalid_master104_configuration_never_probes(tmp_path, monkeypatch, changes):
-    """无效配置在原生调用之前明确拒绝，不能误报窗口可读取。"""
+    """无效配置在启动主站或 EdgeDriver 前明确拒绝。"""
     calls = []
     install_probe(monkeypatch, lambda *args, **kwargs: calls.append((args, kwargs)))
     bridge = TestbenchBridge(tmp_path)
@@ -71,12 +71,14 @@ def test_invalid_master104_configuration_never_probes(tmp_path, monkeypatch, cha
     assert calls == []
 
 
-def test_wrong_executable_name_is_rejected_even_when_file_exists(tmp_path):
-    """程序文件存在仍需匹配主站程序名。"""
-    other = tmp_path / "other.exe"
+def test_legacy_master_program_must_be_reselected(tmp_path):
+    """旧配置可读取，但旧程序存在也不可用于主站检查或测试。"""
+    other = tmp_path / "ProIEC104Client.exe"
     other.touch()
-    env = Environment(**master_environment(tmp_path, master104_path=str(other)))
-    with pytest.raises(ValueError, match="ProIEC104Client"):
+    data = master_environment(tmp_path, master104_path=str(other), master104_backend="win32")
+    env = Environment.from_dict(data)
+    assert "master104_backend" not in env.to_dict()
+    with pytest.raises(ValueError, match="Msk104Master"):
         env.validate_master104(required=True)
 
 
@@ -98,9 +100,9 @@ def test_probe_is_nonblocking_and_mutually_exclusive_with_tasks(tmp_path, monkey
     snapshot = {"pid": 123, "title": "104 模拟主站", "observed_at": "2026-11-04T12:00:00Z"}
     data = master_environment(tmp_path)
 
-    def probe(path, backend, timeout, cancel_event=None):
+    def probe(path, driver_path, timeout, cancel_event=None):
         assert path == data["master104_path"]
-        assert backend == "win32" and timeout == 2
+        assert driver_path == data["driver_path"] and timeout == 2
         entered.set()
         if not release.wait(2):
             raise TimeoutError("自测检查未释放")
@@ -129,7 +131,7 @@ def test_probe_is_nonblocking_and_mutually_exclusive_with_tasks(tmp_path, monkey
 
 
 def test_probe_error_is_reported_and_next_check_is_allowed(tmp_path, monkeypatch):
-    """原生读取超时明确失败，不返回旧快照；读取错误后可重新检查。"""
+    """读取超时明确失败，不返回旧快照；读取错误后可重新检查。"""
     def fail(*args, **kwargs):
         raise TimeoutError("104 主站读取超时")
 
@@ -154,7 +156,7 @@ def test_result_poll_does_not_invent_a_probe_result(tmp_path):
 
 
 def test_shutdown_cancels_probe_before_exiting(tmp_path, monkeypatch):
-    """退出等待本次检查回收，不把原生辅助进程留在后台。"""
+    """退出等待本次检查释放主站及驱动资源。"""
     entered = threading.Event()
     finished = threading.Event()
 

@@ -47,7 +47,7 @@ def desktop(request):
 
 @pytest.fixture
 def master104(request):
-    """按需接管用户已打开的104主站，不连接设备、不发送命令、不关闭主站。"""
+    """为本用例启动独立的 104 主站，由业务用例建立协议连接。"""
     from testbench.master104 import Master104Session
     from testbench.model import Environment
 
@@ -61,7 +61,7 @@ def master104(request):
     if not directory:
         pytest.fail("104主站会话需要本例证据目录")
     app = Master104Session(artifacts_dir=Path(directory), path=environment.master104_path,
-                           backend=environment.master104_backend, timeout=environment.master104_timeout)
+                           driver_path=environment.driver_path, timeout=environment.master104_timeout)
     request.node._bench_master104 = app
     app.metadata["用例"] = (getattr(request.node.obj, "__doc__", "") or request.node.name).strip()
     app.metadata["用例ID"] = request.node.nodeid

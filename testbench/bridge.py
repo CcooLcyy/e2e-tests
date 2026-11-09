@@ -52,6 +52,7 @@ class TestbenchBridge:
                 raise ValueError("104 主站环境参数必须是对象")
             env = Environment.from_dict(data)
             env.validate_master104(required=True)
+            env.validate_master104_driver()
             future = Future()
             self._master104_check = future
             cancelled = threading.Event()
@@ -59,19 +60,19 @@ class TestbenchBridge:
 
             def probe():
                 try:
-                    from .master104_native import probe_master104
-                    snapshot = probe_master104(env.master104_path, backend=env.master104_backend,
+                    from .master104 import probe_master104
+                    snapshot = probe_master104(env.master104_path, env.driver_path,
                                                timeout=env.master104_timeout, cancel_event=cancelled)
-                    logging.getLogger(__name__).info("已完成 104 主站窗口只读检查")
+                    logging.getLogger(__name__).info("已完成 Msk104Master 的 EdgeDriver 接入检查")
                     future.set_result({"snapshot": snapshot,
-                        "message": "已读取 104 主站窗口；尚未验证 IEC104 协议连接或业务效果"})
+                        "message": "EdgeDriver 已读取 Msk104Master 界面，尚未验证 IEC104 协议连接或业务效果"})
                 except Exception as error:
                     logging.getLogger(__name__).warning("104 主站窗口检查失败：%s", type(error).__name__)
                     future.set_exception(error)
 
-            # 原生驱动在辅助进程内执行并限制超时，桥接线程继续响应任务状态及结果查询。
+            # 主站检查独立运行，桥接线程继续响应任务状态及结果查询。
             try:
-                threading.Thread(target=probe, daemon=True, name="104主站只读检查").start()
+                threading.Thread(target=probe, daemon=True, name="104主站接入检查").start()
             except Exception:
                 self._master104_check = None
                 self._master104_cancel = None
