@@ -404,10 +404,11 @@ class SlaveSimPage:
         path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         self.desktop.metadata.setdefault("slaveSim页面观察", []).append(path.name)
 
-    def observe(self, bus, station_id, function, address):
+    def observe(self, bus, station_id, function, address, *, verify_manual=True):
         key = self._key(bus, station_id, function, address)
         with self._step(f"读取总线 {bus} / 站号 {station_id} / 地址 {address} 实际反馈") as entry:
-            self._verify_manual(key)
+            if verify_manual:
+                self._verify_manual(key)
             before = self._tick()
             self._wait(lambda _: self._tick() > max(before, 0), "slaveSim 没有新的状态反馈，拒绝使用旧页面值")
             result = self._read(key)

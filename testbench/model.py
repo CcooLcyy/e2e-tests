@@ -1,5 +1,5 @@
 """环境与用例模型。"""
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from copy import deepcopy
 import json
 import logging
@@ -49,14 +49,7 @@ class Environment:
     master104_enabled: bool = False
     master104_path: str = ""
     master104_timeout: float = 10
-    modbus_manager_address: str = "192.168.1.219:17000"
-    modbus_baud_rate: int = 9600
-    modbus_poll_interval_ms: int = 1000
     modbus_acquisition_timeout: float = 300
-    modbus_basic: dict = field(default_factory=dict)
-    modbus_huawei: dict = field(default_factory=dict)
-    agc_rebalance_dedicated: bool = False
-    agc_rebalance_iec104_port: int = 2404
 
     def to_dict(self):
         return asdict(self)
@@ -132,23 +125,9 @@ class Environment:
         self.driver_path = str(path.resolve())
 
     def validate_for_cases(self, case_ids):
-        """开始任务前检查所选用例需要的参数，允许保存未完成的RTU环境草稿。"""
-        from .modbus_environment import AGC_REBALANCE_CASE_ID, validate_selected_modbus_cases
-        case_ids = set(case_ids)
+        """只检查所选用例需要的观察参数。"""
+        from .modbus_environment import validate_selected_modbus_cases
         validate_selected_modbus_cases(self.to_dict(), case_ids)
-        if AGC_REBALANCE_CASE_ID in case_ids:
-            if case_ids != {AGC_REBALANCE_CASE_ID}:
-                raise ValueError("AGC 通信重分配用例需要单独运行，请取消其他用例的勾选")
-            if self.agc_rebalance_dedicated is not True:
-                raise ValueError("请在 测试环境→Modbus RTU 确认下位机与 slaveSim 均为专用测试环境")
-            if self.modbus_poll_interval_ms > 10000:
-                raise ValueError("AGC 通信重分配的 RTU 轮询周期最多为 10000 毫秒，须短于 30 秒通信心跳有效期")
-            if ":" in urlsplit("//" + self.modbus_manager_address).hostname:
-                raise ValueError("AGC 通信重分配的 104 监听使用 IPv4，请填写下位机 IPv4 地址或可解析到 IPv4 的主机名")
-            if type(self.agc_rebalance_iec104_port) is not int or not 1 <= self.agc_rebalance_iec104_port <= 65535:
-                raise ValueError("AGC 通信重分配的 104 监听端口必须为 1 至 65535 的整数")
-            self.validate_master104(required=True)
-            self.validate_master104_driver()
 
 
 @dataclass(frozen=True)
@@ -169,7 +148,6 @@ def save_environment(path, environment):
     temporary.replace(target)
     logging.getLogger(__name__).info("已保存测试环境，截图自动标注：%s", environment.annotation_enabled)
     logging.getLogger(__name__).info("已保存 104 主站环境，启用：%s", environment.master104_enabled)
-    logging.getLogger(__name__).info("已保存统一Modbus RTU环境，完整性在开始所选用例前检查")
 
 
 def load_environment(path):

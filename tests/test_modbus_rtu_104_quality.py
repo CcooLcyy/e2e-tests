@@ -9,7 +9,8 @@ from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 
 from testbench.login_page import PlatformLoginPage, load_login_account
-from testbench.modbus_rtu_page import ModbusRtuPage, xpath_text
+from testbench.modbus_rtu_page import xpath_text
+from testbench.rtu_observation import PreparedRtuPage
 from testbench.rtu_quality_frames import capture_frames, decode_frame
 
 
@@ -29,7 +30,9 @@ def _profile():
         profile = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeError(f"前置条件缺失或配置不可读，请填写 {path}") from exc
-    text_fields = ("manager_address", "rtu_connection", "rtu_tag", "master_host")
+    if isinstance(profile, dict):
+        profile.pop("manager_address", None)
+    text_fields = ("rtu_connection", "rtu_tag", "master_host")
     bounds = {"master_port": (1, 65535), "common_address": (1, 65534),
               "target_ioa": (0, 0xFFFFFF), "reference_ioa": (0, 0xFFFFFF)}
     if not isinstance(profile, dict) or profile.keys() != {*text_fields, *bounds, "phase_timeout_seconds"}:
@@ -52,10 +55,14 @@ def _profile():
 def _open_prepared_point(desktop, profile):
     PlatformLoginPage(desktop).login(load_login_account(ROOT / "local" / "login-account.json"),
                                      remember=False, auto=False)
-    page = ModbusRtuPage(desktop)
+    page = PreparedRtuPage(desktop)
     with desktop.step("打开已预配置的 RTU 点表", expected=profile["rtu_tag"]):
-        page.open_device(profile["manager_address"], required_modules=("ModbusRTU", "IEC104"))
-        page._click(page._connection_locator(profile["rtu_connection"]), "选择专用 RTU 连接")
+        page.open_prepared_links()
+        connection = profile["rtu_connection"]
+        page._click(page._connection_locator(connection), "选择专用 RTU 连接")
+        title = (By.XPATH, "//div[contains(@class,'modbus-connection-card')]"
+                 "//div[contains(@class,'ant-card-head-title')]//span[normalize-space(.)=" + xpath_text(connection) + "]")
+        page._until(lambda _: page._visible(title), "前置条件未满足：未显示预置 RTU 连接")
         page._until(lambda _: profile["rtu_connection"] in page.driver.find_element(
             By.CSS_SELECTOR, ".modbus-connection-card .ant-card-head").text,
             "前置条件缺失，未打开专用 RTU 连接")

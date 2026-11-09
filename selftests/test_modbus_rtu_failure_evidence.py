@@ -41,7 +41,8 @@ def test_timeout_keeps_both_observations_without_resending_business(tmp_path, si
         calls.append("等待上位机")
         raise original
 
-    def observe(*args):
+    def observe(*args, verify_manual):
+        assert not verify_manual
         calls.append("读取模拟器")
         if simulator_failed:
             raise RuntimeError("模拟器连接中断")

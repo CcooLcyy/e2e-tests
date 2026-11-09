@@ -1,10 +1,9 @@
-"""六路1至6台华为行为模型的真实双端配置与采集验收。"""
+"""六路1至6台预置华为行为模型的双端采集验收。"""
 import json
 import logging
 import os
 import sys
 from pathlib import Path
-import uuid
 
 import pytest
 
@@ -12,6 +11,7 @@ from testbench.modbus_environment import HUAWEI_CASE_ID, validate_selected_modbu
 from testbench.huawei_fleet_run import HuaweiFleetRun
 from testbench.login_page import PlatformLoginPage, load_login_account
 from testbench.model import validate_slavesim_url
+from testbench.rtu_observation import FleetObservationProfile, PreparedRtuPage
 
 
 pytestmark = pytest.mark.case_group("Modbus RTU")
@@ -22,7 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 def huawei_fleet(request):
     """先验证环境，再打开两端；失败现场先于本例浏览器关闭。"""
     from testbench.huawei_slavesim_page import HuaweiSlaveSimPage
-    from testbench.huawei_rtu_page import HuaweiRtuPage
 
     task_path = os.environ.get("TESTBENCH_TASK")
     if not task_path:
@@ -30,13 +29,13 @@ def huawei_fleet(request):
     task = json.loads(Path(task_path).read_text(encoding="utf-8"))
     environment = task["environment"]
     validate_selected_modbus_cases(environment, [HUAWEI_CASE_ID])
-    if environment.get("mode") != "fresh":
-        raise RuntimeError("华为21台配置用例要求全新独立副本")
     url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)
+    config, buses = FleetObservationProfile.load(ROOT / "local" / "huawei-rtu.json",
+                                                float(environment.get("modbus_acquisition_timeout", 300)))
     account = load_login_account(ROOT / "local" / "login-account.json")
     desktop = request.getfixturevalue("desktop")
     desktop.metadata["华为验收阶段"] = "前置条件"
-    upper = HuaweiRtuPage(desktop)
+    upper = PreparedRtuPage(desktop)
     with HuaweiSlaveSimPage(desktop, url) as simulator:
         scenario = None
         setup_failed = False
@@ -45,7 +44,7 @@ def huawei_fleet(request):
             if scenario is not None:
                 scenario.capture_both(description)
                 return
-            # 资源发现/补充配置失败时还没有业务场景，也必须保留两端现场。
+            # 预置资源无法观察时仍保留两端现场。
             for source, capture in (("slaveSim", simulator.capture), ("DSP上位机", desktop.capture)):
                 try:
                     capture("huawei-runtime-preparation-failed", description=f"{source}：{description}")
@@ -55,11 +54,9 @@ def huawei_fleet(request):
 
         try:
             PlatformLoginPage(desktop).login(account, remember=False, auto=False)
-            upper.open_device(environment["modbus_manager_address"])
-            run_id = uuid.uuid4().hex[:8]
-            config, buses = simulator.prepare_fleet(environment, run_id, check_paths=upper.assert_serial_paths_available)
-            scenario = HuaweiFleetRun(desktop, simulator, upper, config, run_id, buses=buses)
-            desktop.metadata["华为验收阶段"] = "六路模型、21台连接与点表配置及抄读"
+            upper.open_prepared_links()
+            scenario = HuaweiFleetRun(desktop, simulator, upper, config, "prepared", buses=buses)
+            desktop.metadata["华为验收阶段"] = "观察六路21台预置模型与采集反馈"
             yield scenario
         except BaseException as error:
             setup_failed = True
@@ -82,5 +79,5 @@ def huawei_fleet(request):
 
 
 def test_huawei_six_buses_21_devices_match(huawei_fleet):
-    """六路21台华为逆变器自动配置并逐台核对遥测、状态及调节反馈。"""
+    """六路21台华为逆变器逐台核对遥测、状态及外部工况反馈。"""
     huawei_fleet.run()

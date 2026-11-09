@@ -1,14 +1,13 @@
 """从统一任务环境构造RTU参数，运行前按所选业务用例校验。"""
-import logging
 from urllib.parse import urlsplit
 
 from .huawei_fleet import HuaweiFleetConfig
 from .modbus_rtu_config import RtuEnvironment, decimal_value
 
 
-LOGGER = logging.getLogger(__name__)
+RTU_CONFIG_CASE_ID = "tests/test_modbus_rtu.py::test_rtu_configuration_saved_on_both_pages"
 BASIC_CASE_IDS = frozenset({
-    "tests/test_modbus_rtu.py::test_rtu_configuration_saved_on_both_pages",
+    RTU_CONFIG_CASE_ID,
     "tests/test_modbus_rtu.py::test_rtu_initial_acquisition_matches_simulator",
     "tests/test_modbus_rtu.py::test_rtu_source_change_updates_value_and_time",
     "tests/test_modbus_rtu.py::test_rtu_scale_and_offset_match_fixed_expectations",
@@ -16,6 +15,7 @@ BASIC_CASE_IDS = frozenset({
 })
 HUAWEI_CASE_ID = "tests/test_huawei_fleet.py::test_huawei_six_buses_21_devices_match"
 AGC_REBALANCE_CASE_ID = "tests/test_agc_rebalance.py::test_agc_redistributes_when_rtu_member_loses_communication"
+RTU_OBSERVATION_CASE_IDS = (BASIC_CASE_IDS - {RTU_CONFIG_CASE_ID}) | {HUAWEI_CASE_ID}
 
 
 def _shared(environment):
@@ -70,15 +70,9 @@ def huawei_config_from_environment(environment, runtime=None):
 
 
 def validate_selected_modbus_cases(environment, case_ids):
-    """任务启动前仅校验访问入口；具体模拟资源在用例执行时读取。"""
-    selected = set(case_ids)
-    basic_selected = bool(selected & BASIC_CASE_IDS)
-    huawei_selected = HUAWEI_CASE_ID in selected
-    rebalance_selected = AGC_REBALANCE_CASE_ID in selected
-    if not basic_selected and not huawei_selected and not rebalance_selected:
+    """任务启动前仅校验外部观察入口及等待时间。"""
+    if not RTU_OBSERVATION_CASE_IDS.intersection(case_ids):
         return
-    if environment.get("mode") != "fresh":
-        raise ValueError("所选RTU用例要求全新独立副本，请在 测试环境→运行与隔离 中切换")
     # 延迟导入避免环境模型与构造器之间形成循环依赖。
     from .model import validate_slavesim_url
     try:
@@ -86,8 +80,8 @@ def validate_selected_modbus_cases(environment, case_ids):
     except ValueError as error:
         raise ValueError(f"请检查 测试环境→slaveSim 模拟器：{error}") from None
     try:
-        _shared(environment)
-    except (ValueError, TypeError) as error:
-        raise ValueError(f"请检查 测试环境→Modbus RTU：{error}") from None
-    LOGGER.info("RTU访问入口检查通过，模拟器资源将在用例执行时读取：基础采集=%s，华为六路=%s，AGC重分配=%s",
-                basic_selected, huawei_selected, rebalance_selected)
+        timeout = decimal_value(environment.get("modbus_acquisition_timeout", 300))
+        if not 5 <= timeout <= 300:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise ValueError("请检查 测试环境→Modbus RTU：采集等待时限必须为5至300秒") from None

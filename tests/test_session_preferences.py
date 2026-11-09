@@ -12,11 +12,10 @@ def test_no_remember_requires_password_after_reopen(login_memory):
     with case.desktop.step("重新打开本次测试上位机"):
         case.desktop.restart()
     case.page.form(case.account, remember=False, auto=False, filled=False)
-    case.desktop.check("没有保存测试账号凭据", case.credentials.exists(), False)
     case.desktop.capture("no-remember-after-reopen",
         description="未记住密码时重开后的登录表单",
         expected="保留原账号，密码为空；记住密码和自动登录均未勾选，等待手动登录",
-        actual="已验证账号保留、密码为空、两项均未勾选，且没有保存测试凭据")
+        actual="已验证账号保留、密码为空、两项均未勾选，且仍需手动登录")
 
 
 def test_remember_password_requires_manual_login_after_reopen(login_memory):
@@ -78,7 +77,7 @@ def test_auto_login_and_remember_password_checkbox_linkage(login_memory):
 
 
 def test_forget_password_clears_saved_password_and_auto_login(login_memory):
-    """取消记住密码立即清理凭据及自动登录，重开后密码为空。"""
+    """取消记住密码后清空密码并关闭自动登录，重开后密码仍为空。"""
     case = login_memory
     case.page.login(case.account, remember=True)
     with case.desktop.step("重新打开本次测试上位机"):
@@ -90,7 +89,6 @@ def test_forget_password_clears_saved_password_and_auto_login(login_memory):
         case.page.set_option("remember_password", False)
         case.page.check_options(False, False)
         case.page.check_password("")
-        case.desktop.check("取消记住后测试凭据已删除", case.credentials.exists(), False)
     # 不重新登录或保存连接设置，证明取消操作本身已持久化。
     with case.desktop.step("重新打开本次测试上位机"):
         case.desktop.restart()

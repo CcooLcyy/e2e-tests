@@ -87,7 +87,7 @@ def login_memory(request):
         guard = WindowsCredentialGuard(page.endpoint(), account.username)
         guard.__enter__()
     try:
-        yield SimpleNamespace(desktop=app, page=page, account=account, credentials=guard)
+        yield SimpleNamespace(desktop=app, page=page, account=account)
     finally:
         # 先停止可能仍在保存密码的请求，再删凭据；清理不能被取消标记跳过。
         cleanup_login_credentials(app, guard)

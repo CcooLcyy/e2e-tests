@@ -130,22 +130,21 @@ def test_late_matching_observation_cannot_pass_deadline(tmp_path, monkeypatch):
     assert any("超过30秒" in error for error in result["工况错误"])
 
 
-def test_setup_path_conflict_stops_before_simulator_configuration(tmp_path):
-    """已有连接占用目标串口时，不能先创建模型或修改模拟器配置。"""
+def test_topology_only_declares_prepared_connection_identities(tmp_path):
+    """21台预置连接只登记观察身份，不调用任何下位机或模拟器写入。"""
     scenario, *_ = sample_run(tmp_path)
-    def refuse(_):
-        raise AssertionError("串口已占用")
-    scenario.upper = SimpleNamespace(assert_serial_paths_available=refuse)
-    scenario.simulator = SimpleNamespace(create_fleet=lambda _: pytest.fail("串口冲突后仍修改模拟器"))
-    with pytest.raises(AssertionError, match="串口已占用"):
-        scenario.configure()
+    seen = []
+    scenario.upper = SimpleNamespace(expect_connection=lambda *args: seen.append(args))
+    scenario.simulator = object()
+    scenario.select_prepared_topology()
+    assert len(seen) == 21 and len(scenario.connections) == 21
+    assert seen[0] == ("e2e-huawei-unit-485-1-s1", "/dev/rtu0", 1)
 
 
 def test_one_failed_device_stage_is_retained_while_other_devices_finish(tmp_path):
     """单台失败不放宽断言，完成其他独立观测后总结果仍失败且不能写全部抄通。"""
     scenario, *_ = sample_run(tmp_path)
-    scenario.configure = lambda: None
-    scenario.apply_stage = lambda *args: None
+    scenario.select_prepared_topology = lambda: None
     scenario.capture_both = lambda *args: []
     def sample(stage, bus, device):
         return {"工况": stage, "路号": bus["index"], "站号": device["station_id"], "点位": [],
@@ -161,8 +160,7 @@ def test_one_failed_device_stage_is_retained_while_other_devices_finish(tmp_path
 def test_missing_screenshot_prevents_green_device_stage(tmp_path):
     """数据全匹配但双端取证缺失时，该工况与整台结果仍失败。"""
     scenario, *_ = sample_run(tmp_path)
-    scenario.configure = lambda: None
-    scenario.apply_stage = lambda *args: None
+    scenario.select_prepared_topology = lambda: None
     def sample(stage, bus, device):
         return {"工况": stage, "路号": bus["index"], "站号": device["station_id"],
                 "点位": [{"通过": True} for _ in READ_POINTS], "通过": True, "工况错误": []}

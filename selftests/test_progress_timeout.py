@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from testbench import controller as module
-from testbench.modbus_environment import BASIC_CASE_IDS, HUAWEI_CASE_ID
+from testbench.modbus_environment import HUAWEI_CASE_ID, RTU_CONFIG_CASE_ID, RTU_OBSERVATION_CASE_IDS
 
 
 CASE_ID = "tests/test_example.py::test_example"
@@ -59,7 +59,8 @@ def test_unknown_case_or_nonprogress_event_cannot_extend_deadline(tmp_path, monk
 
 
 @pytest.mark.parametrize("case_id,expected", [
-    (HUAWEI_CASE_ID, 3120), (sorted(BASIC_CASE_IDS)[0], 3120), (CASE_ID, 140),
+    (HUAWEI_CASE_ID, 3120), (sorted(RTU_OBSERVATION_CASE_IDS - {HUAWEI_CASE_ID})[0], 3120),
+    (RTU_CONFIG_CASE_ID, 140), (CASE_ID, 140),
 ])
 def test_rtu_wait_is_included_in_task_protection_only_when_selected(tmp_path, monkeypatch, case_id, expected):
     """RTU五分钟采集不被短UI等待截断，非RTU任务不受未使用的采集参数影响。"""

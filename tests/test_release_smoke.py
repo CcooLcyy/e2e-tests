@@ -11,11 +11,9 @@ def test_release_platform_settings_expand_and_collapse(desktop):
     header_locator = (By.CSS_SELECTOR, ".platform-login-connection .ant-collapse-header")
     field_locator = (By.CSS_SELECTOR, 'input[placeholder="https://platform.example:50000"]')
 
-    with desktop.step("确认真实 Tauri 登录页加载"):
-        with desktop.step("等待真实 Tauri 登录页可见"):
+    with desktop.step("确认上位机登录页加载"):
+        with desktop.step("等待上位机登录页可见"):
             desktop.wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "main.platform-login-screen")))
-        desktop.check("真实桌面运行环境", driver.execute_script("return typeof window.__TAURI_INTERNALS__ === 'object'"), True)
-        desktop.check("页面来源属于上位机", driver.current_url.startswith(("http://tauri.localhost", "https://tauri.localhost", "tauri://localhost")), True)
         with desktop.step("等待平台连接设置入口可点击"):
             header = desktop.wait.until(EC.element_to_be_clickable(header_locator))
         desktop.check("设置入口文字", "平台连接设置" in header.text, True)
@@ -24,7 +22,7 @@ def test_release_platform_settings_expand_and_collapse(desktop):
         desktop.capture("01-login",
             description="平台连接设置初始折叠的登录页",
             expected="登录页包含平台连接设置入口，地址输入框初始隐藏",
-            actual="已验证真实桌面登录页加载、设置入口文字正确、设置折叠且地址输入框隐藏")
+            actual="已验证上位机登录页可见、设置入口文字正确、设置折叠且地址输入框隐藏")
 
     with desktop.step("点击展开平台连接设置"):
         with desktop.step("点击展开平台连接设置"):

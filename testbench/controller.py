@@ -13,7 +13,7 @@ import time
 import uuid
 from .catalog import discover_cases
 from .reporting import write_task_report
-from .modbus_environment import BASIC_CASE_IDS, HUAWEI_CASE_ID
+from .modbus_environment import RTU_OBSERVATION_CASE_IDS
 
 
 class TaskController:
@@ -76,7 +76,7 @@ class TaskController:
         operation_timeout = max(float(environment.timeout),
                                 float(environment.master104_timeout) if environment.master104_enabled else 0,
                                 float(environment.modbus_acquisition_timeout)
-                                if any(case in BASIC_CASE_IDS or case == HUAWEI_CASE_ID for case in case_ids) else 0)
+                                if RTU_OBSERVATION_CASE_IDS.intersection(case_ids) else 0)
         self._timeout = operation_timeout * max(len(case_ids), 1) * 10 + 120
         logging.getLogger(__name__).info("界面单次等待%s秒，采集等待%s秒，无进展保护%s秒",
                                          environment.timeout, environment.modbus_acquisition_timeout, self._timeout)

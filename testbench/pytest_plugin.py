@@ -12,6 +12,23 @@ from .reporting import STATUS_LABELS, write_case_report
 from .session_evidence import collect_sessions, merge_session_evidence
 
 
+def fail_e2e_prerequisite(request, *, required, missing, checks):
+    """报告缺少的外部能力，并明确标记未执行的验收步骤。"""
+    steps = [{"步骤": "检查端到端测试前置条件", "状态": "失败", "预期": required, "实际": missing}]
+    steps.extend({"步骤": name, "状态": "未执行", "预期": expected, "实际": "前置条件未满足"}
+                 for name, expected in checks)
+    for number, step in enumerate(steps, 1):
+        step["序号"] = number
+    directory = getattr(request.node, "_bench_artifacts", "")
+    if directory:
+        try:
+            write_case_report(directory, {"用例ID": request.node.nodeid, "用例": request.node.obj.__doc__,
+                                          "结果": "失败", "步骤": steps})
+        except OSError:
+            logging.getLogger(__name__).exception("保存前置条件报告失败，保留原始失败原因")
+    pytest.fail(f"前置条件未满足，目标行为未验证。{missing}", pytrace=False)
+
+
 def pytest_configure(config):
     if not any(value.startswith("case_group(") for value in config.getini("markers")):
         config.addinivalue_line("markers", "case_group(name): 声明用例所属的一级功能分组")

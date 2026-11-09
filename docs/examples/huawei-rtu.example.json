@@ -1,15 +1,10 @@
 {
-  "dedicated_simulator": true,
-  "manager_address": "192.0.2.1:50051",
-  "serial_devices": [
-    "/srv/serial-sim/tty0",
-    "/srv/serial-sim/tty1",
-    "/srv/serial-sim/tty2",
-    "/srv/serial-sim/tty3",
-    "/srv/serial-sim/tty4",
-    "/srv/serial-sim/tty5"
-  ],
-  "acquisition_timeout": 300,
-  "poll_interval_ms": 1000,
-  "baud_rate": 9600
+  "buses": [
+    {"name": "e2e-huawei-485-1", "serial_device": "/srv/serial-sim/tty0"},
+    {"name": "e2e-huawei-485-2", "serial_device": "/srv/serial-sim/tty1"},
+    {"name": "e2e-huawei-485-3", "serial_device": "/srv/serial-sim/tty2"},
+    {"name": "e2e-huawei-485-4", "serial_device": "/srv/serial-sim/tty3"},
+    {"name": "e2e-huawei-485-5", "serial_device": "/srv/serial-sim/tty4"},
+    {"name": "e2e-huawei-485-6", "serial_device": "/srv/serial-sim/tty5"}
+  ]
 }

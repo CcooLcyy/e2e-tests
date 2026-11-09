@@ -170,6 +170,9 @@ class ModbusRtuPage:
         if actual != self.owned[self.current]["conn_id"]:
             raise RuntimeError("RTU连接编号已变化，拒绝操作其他连接")
 
+    def _selected_conn_id(self):
+        return self.owned[self.current]["conn_id"]
+
     def select(self, name):
         if name not in self.owned:
             raise RuntimeError("拒绝选择非本例创建的连接")
@@ -291,7 +294,7 @@ class ModbusRtuPage:
         values = {label: cell.text.strip() for label, cell in zip(headers, cells)}
         observation = {"tag": tag, "value": values["实时值"], "quality": values["质量"], "timestamp": values["时间"],
                 "address": values["地址"], "function": values["功能码"], "connection": self.current,
-                "conn_id": self.owned[self.current]["conn_id"]}
+                "conn_id": self._selected_conn_id()}
         self.desktop.metadata.setdefault("RTU最后观察", {})[f"{self.current}/{tag}"] = observation
         return observation
 

@@ -5,7 +5,7 @@ import json
 import logging
 import time
 
-from .huawei_fleet import (CONTROL_POINTS, READ_POINTS, STATUS_VALUES, STATUS_WORD_VALUES, UNIMPLEMENTED_CONTROLS,
+from .huawei_fleet import (READ_POINTS, STATUS_VALUES, STATUS_WORD_VALUES, UNIMPLEMENTED_CONTROLS,
                            build_fleet, compare_point, point_expected)
 
 
@@ -22,54 +22,21 @@ class HuaweiFleetRun:
         self.addresses = sorted({point.address for point in READ_POINTS} | {30075})
         desktop.metadata["华为六路拓扑"] = self.buses
         desktop.metadata["华为遥控缺口"] = list(UNIMPLEMENTED_CONTROLS)
-        desktop.metadata["华为验收范围"] = "模拟器场景/控制变化后的DSP抄读匹配；DSP下发调节及104遥控未验证"
-        desktop.metadata["华为保留配置"] = "结束时保留本次模拟器总线及DSP连接；重跑时自动删除全部模拟总线，DSP已有连接占用仍需处理"
+        desktop.metadata["华为验收范围"] = "预置机群外部工况变化后的DSP抄读匹配；DSP下发调节及104遥控未验证"
 
     @staticmethod
     def _identity(bus, device):
         return f"{bus['index']}/{device['station_id']}"
 
-    def configure(self):
-        self.upper.assert_serial_paths_available(self.config.serial_devices)
-        self.simulator.create_fleet(self.buses)
+    def select_prepared_topology(self):
         for bus in self.buses:
             for device in bus["devices"]:
                 name = f"{bus['name']}-s{device['station_id']}"
-                with self.desktop.step(f"配置第{bus['index']}路站号{device['station_id']}华为连接及21点"):
-                    self.upper.create_connection(name, bus["serial_device"], self.config.baud_rate,
-                                                 8, 1, "N", device["station_id"], self.config.poll_interval_ms)
-                    for record in self.desktop.metadata.get("本例RTU连接", []):
-                        if record["name"] == name:
-                            record["清理状态"] = "按机群验收方案保留，供用户检查"
-                    tags = {}
-                    for point in READ_POINTS + CONTROL_POINTS:
-                        tag = f"{name}-{point.key}"
-                        self.upper.add_huawei_point(point, tag)
-                        if point.function == 3:
-                            tags[point.key] = tag
-                    self.upper.assert_saved_configuration()
-                    self.upper.start()
-                    self.connections[self._identity(bus, device)] = {"name": name, "tags": tags}
-                    self.desktop.metadata["华为已配置设备数"] = len(self.connections)
+                self.upper.expect_connection(name, bus["serial_device"], device["station_id"])
+                self.connections[self._identity(bus, device)] = {
+                    "name": name, "tags": {point.key: f"{name}-{point.key}" for point in READ_POINTS}}
         if len(self.connections) != 21:
-            raise AssertionError("未完整配置21台华为连接，不能开始全机群抄读验收")
-
-    def apply_stage(self, stage, bus, device):
-        name, station = bus["name"], device["station_id"]
-        if stage == "有功调节":
-            self.simulator.apply_control(name, station, "percent", 10 + device["ordinal"] / 10)
-        elif stage == "无功调节":
-            self.simulator.apply_control(name, station, "pf", 0.9)
-        elif stage == "负无功调节":
-            self.simulator.apply_control(name, station, "ratio", -0.2)
-        elif stage == "待机":
-            self.simulator.apply_scenario(name, station, dc_available_kw=0, disturbance_enabled=False)
-        elif stage == "限电停运":
-            self.simulator.apply_scenario(name, station, dc_available_kw=device["dc_available_kw"], disturbance_enabled=False)
-            self.simulator.apply_control(name, station, "percent", 0)
-        elif stage == "恢复发电":
-            self.simulator.apply_control(name, station, "ratio", 0)
-            self.simulator.apply_control(name, station, "percent", 100)
+            raise AssertionError("前置条件未满足：须预置完整的21台华为连接")
 
     def _physics_errors(self, stage, device, snapshot):
         """固定场景与目标独立约束，避免两端同时落在错误工况仍通过。"""
@@ -158,7 +125,7 @@ class HuaweiFleetRun:
                 for row in rows:
                     self.previous[(identity, row["点标识"])] = row
                 return last
-            # 只等待同次操作收敛/刷新，不重发控制、配置或场景操作。
+            # 等待预先安排的外部工况与两端反馈收敛。
             time.sleep(0.2)
 
     def _save_attempts(self, identity, stage, attempts):
@@ -180,7 +147,7 @@ class HuaweiFleetRun:
         return shots
 
     def run(self):
-        self.configure()
+        self.select_prepared_topology()
         for stage in STAGES:
             for bus in self.buses:
                 for device in bus["devices"]:
@@ -188,7 +155,6 @@ class HuaweiFleetRun:
                     last = None
                     try:
                         with self.desktop.step(title, expected="18个采集点全部匹配，质量正常，工况符合固定目标"):
-                            self.apply_stage(stage, bus, device)
                             last = self.sample(stage, bus, device)
                             prior_evidence_errors = len(self.evidence_errors)
                             last["截图"] = self.capture_both(title)
@@ -240,7 +206,7 @@ class HuaweiFleetRun:
                 devices.append({"路号": bus["index"], "站号": device["station_id"], "完成工况": len(records), "全部匹配": passed})
             channels.append({"路号": bus["index"], "设备数": len(bus["devices"]), "通过设备": passed_devices})
         passed_devices = sum(int(item["全部匹配"]) for item in devices)
-        self.desktop.metadata["华为验收汇总"] = {"已配置设备": len(self.connections), "计划设备": 21,
+        self.desktop.metadata["华为验收汇总"] = {"声明观察设备": len(self.connections), "计划设备": 21,
                                                  "已完成工况": completed, "计划工况": total, "失败工况": len(failed),
                                                  "通过设备": passed_devices, "逐路": channels, "逐台": devices,
                                                  "全部抄通": len(self.connections) == 21 and completed == total and passed_devices == 21}
@@ -249,7 +215,7 @@ class HuaweiFleetRun:
         (self.desktop.artifacts / "huawei-fleet-results.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         lines = ["# 华为六路21台抄读匹配结果", "", f"设备工况完成：{completed}/{total}，失败：{len(failed)}。",
-                 "", "范围：模拟器发起场景/调节后的DSP抄读匹配。DSP下发调节及104遥控未验证。",
+                 "", "范围：预置机群外部工况变化后的DSP抄读匹配。DSP下发调节及104遥控未验证。",
                  "40200/40201启停遥控：模型未实现，未发送命令，不计为通过。", "",
                  "| 路号 | 设备数 | 全部工况匹配设备数 |", "| --- | --- | --- |"]
         lines.extend(f"| {item['路号']} | {item['设备数']} | {item['通过设备']} |" for item in channels)

@@ -161,7 +161,7 @@ class HuaweiRtuPage(ModbusRtuPage):
                            "display_value": columns["实时值"], "quality": columns["质量"],
                            "timestamp": columns["时间"], "address": columns["地址"],
                            "function": columns["功能码"], "observed_at": observed_at,
-                           "connection": self.current, "conn_id": self.owned[self.current]["conn_id"]}
+                           "connection": self.current, "conn_id": self._selected_conn_id()}
         return values
 
     def observe_device(self, tags):
@@ -178,7 +178,7 @@ class HuaweiRtuPage(ModbusRtuPage):
             if missing:
                 raise AssertionError("华为运行表缺少请求点：" + "、".join(missing))
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-            path = self.desktop.artifacts / f"huawei-upper-{self.owned[self.current]['conn_id']}-{stamp}.json"
+            path = self.desktop.artifacts / f"huawei-upper-{self._selected_conn_id()}-{stamp}.json"
             path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             self.desktop.metadata.setdefault("华为上位机页面观察", []).append(path.name)
             LOGGER.info("已读取华为上位机运行点：连接=%s，点数=%s", self.current, len(result))
