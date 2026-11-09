@@ -371,9 +371,6 @@ pub fn run() {
         .manage(PendingUpdate::default())
         .setup(|app| {
             let installed = app.config().bundle.active;
-            if installed && update::configured(app.handle()) {
-                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
-            }
             let (root, data_root, python) = if installed {
                 let root = app.path().resource_dir()?.join("runtime");
                 let data_root = app.path().app_local_data_dir()?;

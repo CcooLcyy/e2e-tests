@@ -2,9 +2,7 @@
 
 import argparse
 from base64 import b64decode
-from contextlib import closing
 import hashlib
-import http.client
 import json
 import os
 from pathlib import Path
@@ -13,7 +11,6 @@ from shutil import copyfile
 import sys
 import time
 import tomllib
-from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -29,37 +26,21 @@ class ReleaseError(Exception):
     pass
 
 
-def https_url(value):
-    parsed = urlsplit(value)
-    if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
-            or parsed.query or parsed.fragment or "\\" in value or any(c.isspace() for c in value)):
-        raise ReleaseError("Expected an HTTPS URL without credentials, query, or fragment")
-    return parsed
-
-
-def manifest_url():
-    value = os.environ.get("TESTBENCH_UPDATER_MANIFEST_URL", "")
-    parsed = https_url(value)
-    if not parsed.path.endswith(f"/{PRODUCT}/{CHANNEL}/latest.json"):
-        raise ReleaseError("Updater URL must point to the Testbench Stable manifest")
-    return parsed
-
-
 def config_path():
     return Path(os.environ["RUNNER_TEMP"]) / "testbench-tauri-release.json"
 
 
 def configure():
     package_version()
-    manifest = manifest_url()
+    endpoint = grpc_endpoint()
     key = os.environ.get("TESTBENCH_UPDATER_PUBLIC_KEY", "").strip()
     if not key:
         raise ReleaseError("Missing Testbench updater public key")
     config = json.loads((ROOT / "src-tauri/tauri.release.conf.json").read_text(encoding="utf-8"))
-    config.setdefault("plugins", {})["updater"] = {
-        "pubkey": key,
-        "endpoints": [manifest.geturl()],
-    }
+    plugins = config.setdefault("plugins", {})
+    # Tauri CLI needs this key to generate the NSIS updater signature.
+    plugins["updater"] = {"pubkey": key}
+    plugins["testbenchUpdate"] = {"endpoint": endpoint, "pubkey": key}
     config_path().write_text(json.dumps(config), encoding="utf-8")
 
 
@@ -121,19 +102,24 @@ def stage():
     copyfile(installer.with_suffix(".exe.sig"), archive.with_suffix(".exe.sig"))
     metadata = identity(archive, version)
     config = json.loads(config_path().read_text(encoding="utf-8"))
-    public_key = config["plugins"]["updater"]["pubkey"]
+    updater = config["plugins"]["testbenchUpdate"]
+    public_key = updater["pubkey"]
     if minisign_key_id(public_key, 42) != minisign_key_id(metadata["signature"], 74):
         raise ReleaseError("Updater signature uses a different key than the configured public key")
-    (RELEASE / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    lines = b64decode(metadata["signature"], validate=True).decode("utf-8").splitlines()
+    comment = rf"trusted comment: timestamp:[0-9]+\tfile:{re.escape(installer.name)}\tversion:{re.escape(version)}"
+    if len(lines) != 4 or not re.fullmatch(comment, lines[2]):
+        raise ReleaseError("Updater signature must bind the original NSIS filename and app version")
+    recorded = dict(metadata, endpoint=updater["endpoint"])
+    (RELEASE / "metadata.json").write_text(json.dumps(recorded, indent=2) + "\n", encoding="utf-8")
 
 
 def grpc_endpoint():
     value = os.environ.get("PLATFORM_GRPC_ENDPOINT", "")
-    endpoint = value.removeprefix("http://")
-    match = re.fullmatch(r"(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[A-Fa-f0-9:]+\]):([1-9][0-9]{0,4})", endpoint)
+    match = re.fullmatch(r"http://(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[A-Fa-f0-9:]+\]):([1-9][0-9]{0,4})", value)
     if not match or int(match[1]) > 65535:
-        raise ReleaseError("Platform plaintext gRPC endpoint must be host:port or http://host:port")
-    return endpoint
+        raise ReleaseError("Platform plaintext gRPC endpoint must use http://host:port")
+    return value
 
 
 def require_current_main():
@@ -151,13 +137,13 @@ def require_current_main():
 def transfer(archive, expected, endpoint, token):
     import grpc
     import software_pb2 as messages
-    from software_pb2_grpc import SoftwarePublishServiceStub
+    from software_pb2_grpc import SoftwareCatalogServiceStub, SoftwarePublishServiceStub
 
     auth = (("authorization", f"Bearer {token}"),)
     expected = messages.PackageMetadata(**expected)
     retryable = {grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.CANCELLED}
 
-    with grpc.insecure_channel(endpoint, options=(("grpc.enable_http_proxy", 0),)) as channel:
+    with grpc.insecure_channel(endpoint.removeprefix("http://"), options=(("grpc.enable_http_proxy", 0),)) as channel:
         publisher = SoftwarePublishServiceStub(channel)
         created = publisher.CreateUpload(messages.CreateUploadRequest(metadata=expected), metadata=auth, timeout=30).upload
         upload_id = created.id
@@ -199,22 +185,34 @@ def transfer(archive, expected, endpoint, token):
         ).package
         if released.id != package.id or released.metadata != expected or CHANNEL not in released.channels:
             raise ReleaseError("Platform did not confirm publication to Stable")
-        return package.id
+        print(f"Platform Stable publication confirmed by RPC for {PRODUCT} {expected.version}, package {package.id}", flush=True)
+        confirm_catalog(SoftwareCatalogServiceStub(channel), expected, package.id)
 
 
-def confirm_manifest(manifest, metadata, package_id):
-    with closing(http.client.HTTPSConnection(manifest.hostname, manifest.port, timeout=30)) as connection:
-        connection.request("GET", manifest.path, headers={"Cache-Control": "no-cache"})
-        response = connection.getresponse()
-        if response.status != 200:
-            raise ReleaseError(f"Stable publication RPC succeeded, but manifest returned HTTP {response.status}")
-        result = json.loads(response.read(256 * 1024))
-    asset = result.get("platforms", {}).get(PLATFORM, {})
-    download = https_url(asset.get("url", ""))
-    if (result.get("version") != metadata["version"] or result.get("notes") != metadata["notes"]
-            or asset.get("signature") != metadata["signature"]
-            or not download.path.endswith(f"/software/packages/{package_id}/{metadata['file_name']}")):
-        raise ReleaseError("Stable publication RPC succeeded, but manifest differs from the installer identity")
+def confirm_catalog(catalog, expected, package_id):
+    import software_pb2 as messages
+
+    packages = catalog.ListPackages(messages.ListPackagesRequest(
+        product=PRODUCT, platform=PLATFORM, channel=CHANNEL,
+    ), timeout=30).packages
+    if (len(packages) != 1 or packages[0].id != package_id or packages[0].metadata != expected
+            or CHANNEL not in packages[0].channels):
+        raise ReleaseError("Stable catalog entry differs from the published installer identity")
+
+    stream = catalog.DownloadPackage(messages.DownloadPackageRequest(package_id=package_id), timeout=480)
+    digest = hashlib.sha256()
+    received = 0
+    eof = False
+    for chunk in stream:
+        if (eof or chunk.offset != received or chunk.total_size != expected.size
+                or chunk.sha256 != expected.sha256 or not chunk.data
+                or received + len(chunk.data) > expected.size):
+            raise ReleaseError("Stable installer download has an invalid chunk identity")
+        digest.update(chunk.data)
+        received += len(chunk.data)
+        eof = chunk.eof
+    if not eof or received != expected.size or digest.hexdigest() != expected.sha256:
+        raise ReleaseError("Stable installer download differs from the published installer bytes")
 
 
 def publish():
@@ -223,27 +221,25 @@ def publish():
     if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch" or os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise ReleaseError("Stable publishing requires a manual dispatch on main")
     endpoint = grpc_endpoint()
-    manifest = manifest_url()
     token = os.environ.get("TESTBENCH_PUBLISHER_TOKEN", "")
     if not token or any(not 33 <= ord(char) <= 126 for char in token):
         raise ReleaseError("Missing or invalid Testbench upload token")
     version = package_version()
     archive = release_archive(version)
     metadata = identity(archive, version)
-    if metadata != json.loads((RELEASE / "metadata.json").read_text(encoding="utf-8")):
-        raise ReleaseError("Installer artifact differs from the recorded build identity")
+    recorded = json.loads((RELEASE / "metadata.json").read_text(encoding="utf-8"))
+    if dict(metadata, endpoint=endpoint) != recorded:
+        raise ReleaseError("Installer artifact or gRPC endpoint differs from the recorded build identity")
     notes = os.environ.get("TESTBENCH_RELEASE_NOTES", "")
     if len(notes.encode("utf-8")) > 65536:
         raise ReleaseError("Release notes exceed 65536 UTF-8 bytes")
     metadata["notes"] = notes
     require_current_main()
     try:
-        package_id = transfer(archive, metadata, endpoint, token)
+        transfer(archive, metadata, endpoint, token)
     except grpc.RpcError as error:
         raise ReleaseError(f"Platform gRPC returned {error.code().name}") from None
-    print(f"Platform Stable publication confirmed by RPC for {PRODUCT} {version}, package {package_id}", flush=True)
-    confirm_manifest(manifest, metadata, package_id)
-    print("Verified the public HTTPS updater manifest")
+    print("Verified the public gRPC Stable catalog entry and installer SHA256")
 
 
 def main():

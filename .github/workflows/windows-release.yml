@@ -83,8 +83,8 @@ jobs:
           ./scripts/stage-windows-runtime.ps1
       - name: Configure the updater
         env:
+          PLATFORM_GRPC_ENDPOINT: ${{ vars.PLATFORM_GRPC_ENDPOINT }}
           TESTBENCH_UPDATER_PUBLIC_KEY: ${{ vars.TESTBENCH_UPDATER_PUBLIC_KEY }}
-          TESTBENCH_UPDATER_MANIFEST_URL: ${{ vars.TESTBENCH_UPDATER_MANIFEST_URL }}
         run: python scripts/windows_release.py configure
       - name: Build and sign NSIS installer
         env:
@@ -145,6 +145,5 @@ jobs:
           PLATFORM_GRPC_ENDPOINT: ${{ vars.PLATFORM_GRPC_ENDPOINT }}
           TESTBENCH_PUBLISHER_TOKEN: ${{ secrets.TESTBENCH_PUBLISHER_TOKEN }}
           TESTBENCH_RELEASE_NOTES: ${{ inputs.release_notes }}
-          TESTBENCH_UPDATER_MANIFEST_URL: ${{ vars.TESTBENCH_UPDATER_MANIFEST_URL }}
           PYTHONPATH: ${{ runner.temp }}
         run: python scripts/windows_release.py publish
