@@ -52,6 +52,14 @@
       "cases": [
         "tests/test_agc_rebalance.py::test_agc_redistributes_when_rtu_member_loses_communication"
       ]
+    },
+    {
+      "name": "AVC 周期控制",
+      "cases": [
+        "tests/test_avc_control_periods.py::test_avc_voltage_deviation_recalculates_without_new_input",
+        "tests/test_avc_control_periods.py::test_avc_burst_respects_command_interval_and_uses_latest_target",
+        "tests/test_avc_control_periods.py::test_avc_stopped_group_applies_new_periods_after_restart"
+      ]
     }
   ]
 }
