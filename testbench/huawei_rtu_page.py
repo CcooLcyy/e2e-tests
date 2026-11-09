@@ -28,9 +28,9 @@ def normalize_point(spec):
     function, dtype = value["function"], value.get("data_type")
     if type(function) is not int or function not in FUNCTION_LABELS:
         raise ValueError("华为点表仅支持0x03读取及0x06/0x10控制配置")
-    if dtype not in ("UINT16", "INT16", "INT32", "BOOL"):
+    if dtype not in ("UINT16", "INT16", "UINT32", "INT32", "BOOL"):
         raise ValueError("华为点表数据类型不受支持")
-    count = 2 if dtype == "INT32" else 1
+    count = 2 if dtype in ("UINT32", "INT32") else 1
     if type(value.get("reg_count")) is not int or value["reg_count"] != count:
         raise ValueError("华为点位寄存器数与数据类型不一致")
     address = value.get("address")
@@ -133,8 +133,8 @@ class HuaweiRtuPage(ModbusRtuPage):
         LOGGER.info("华为连接及点表重新读取核对完成：%s，点数=%s", name, len(self.owned[name]["points"]))
 
     def _close_check_dialog(self):
-        self._click(self._button("取消", "//div[contains(@class,'ant-modal-content')]"), "关闭华为配置核对窗口")
-        self._until(lambda _: not self._visible((By.CSS_SELECTOR, ".ant-modal-content")), "核对窗口未关闭")
+        self._click(self._button("取消", self.DIALOG_XPATH), "关闭华为配置核对窗口")
+        self._until(lambda _: not self._visible(self.DIALOG), "核对窗口未关闭")
 
     def _read_visible_rows(self):
         # PointTable当前pagination=false，按同一DOM任务读取全部行；不访问React或接口缓存。

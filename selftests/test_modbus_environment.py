@@ -2,7 +2,7 @@
 import pytest
 
 from testbench.controller import TaskController
-from testbench.modbus_environment import (BASIC_CASE_IDS, HUAWEI_CASE_ID, basic_config_from_environment,
+from testbench.modbus_environment import (AGC_REBALANCE_CASE_ID, BASIC_CASE_IDS, HUAWEI_CASE_ID, basic_config_from_environment,
                                          huawei_config_from_environment)
 from testbench.model import CaseInfo, Environment, load_environment, save_environment
 
@@ -109,6 +109,28 @@ def test_rtu_preflight_does_not_require_static_simulator_resources(tmp_path):
     environment.modbus_basic = {"dedicated_test_resources": False, "stations": "过期值"}
     environment.modbus_huawei = {"dedicated_simulator": False, "serial_devices": ["过期路径"]}
     environment.validate_for_cases([*BASIC_CASE_IDS, HUAWEI_CASE_ID])
+
+
+def test_rebalance_requires_dedicated_environment_and_an_exclusive_task(tmp_path):
+    environment = populated_environment(tmp_path)
+    with pytest.raises(ValueError, match="单独运行"):
+        environment.validate_for_cases([AGC_REBALANCE_CASE_ID, HUAWEI_CASE_ID])
+    with pytest.raises(ValueError, match="专用"):
+        environment.validate_for_cases([AGC_REBALANCE_CASE_ID])
+    environment.agc_rebalance_dedicated = True
+    with pytest.raises(ValueError, match="启用 104"):
+        environment.validate_for_cases([AGC_REBALANCE_CASE_ID])
+    master = tmp_path / "Msk104Master.exe"
+    driver = tmp_path / "msedgedriver.exe"
+    master.touch()
+    driver.touch()
+    environment.master104_enabled = True
+    environment.master104_path = str(master)
+    environment.driver_path = str(driver)
+    environment.validate_for_cases([AGC_REBALANCE_CASE_ID])
+    environment.agc_rebalance_iec104_port = 0
+    with pytest.raises(ValueError, match="监听端口"):
+        environment.validate_for_cases([AGC_REBALANCE_CASE_ID])
 
 
 @pytest.mark.parametrize("change,label", [

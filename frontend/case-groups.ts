@@ -1,6 +1,6 @@
 import type { CaseRecord } from './state.ts';
 
-export interface GroupCase { id: string; name: string; description: string; group?: string }
+export interface GroupCase { id: string; name: string; description: string; group?: string; opt_in?: boolean }
 export interface GroupSummary { name: string; ids: string[]; total: number; selected: number; passed: number; failed: number }
 export interface CaseGroupSection<T extends GroupCase> extends GroupSummary { cases: T[]; open: boolean }
 
@@ -59,7 +59,7 @@ export function reconcileSelection(
   previousCases: readonly GroupCase[], refreshedCases: readonly GroupCase[], selected: ReadonlySet<string>,
 ): Set<string> {
   const previousIds = new Set(previousCases.map(item => item.id));
-  return new Set(refreshedCases.filter(item => selected.has(item.id) || !previousIds.has(item.id)).map(item => item.id));
+  return new Set(refreshedCases.filter(item => selected.has(item.id) || (!item.opt_in && !previousIds.has(item.id))).map(item => item.id));
 }
 
 /** 搜索只缩减组内展示项，完整分组的选择范围与结果统计不随折叠改变。 */

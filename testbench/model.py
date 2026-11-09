@@ -55,6 +55,8 @@ class Environment:
     modbus_acquisition_timeout: float = 300
     modbus_basic: dict = field(default_factory=dict)
     modbus_huawei: dict = field(default_factory=dict)
+    agc_rebalance_dedicated: bool = False
+    agc_rebalance_iec104_port: int = 2404
 
     def to_dict(self):
         return asdict(self)
@@ -131,8 +133,22 @@ class Environment:
 
     def validate_for_cases(self, case_ids):
         """开始任务前检查所选用例需要的参数，允许保存未完成的RTU环境草稿。"""
-        from .modbus_environment import validate_selected_modbus_cases
+        from .modbus_environment import AGC_REBALANCE_CASE_ID, validate_selected_modbus_cases
+        case_ids = set(case_ids)
         validate_selected_modbus_cases(self.to_dict(), case_ids)
+        if AGC_REBALANCE_CASE_ID in case_ids:
+            if case_ids != {AGC_REBALANCE_CASE_ID}:
+                raise ValueError("AGC 通信重分配用例需要单独运行，请取消其他用例的勾选")
+            if self.agc_rebalance_dedicated is not True:
+                raise ValueError("请在 测试环境→Modbus RTU 确认下位机与 slaveSim 均为专用测试环境")
+            if self.modbus_poll_interval_ms > 10000:
+                raise ValueError("AGC 通信重分配的 RTU 轮询周期最多为 10000 毫秒，须短于 30 秒通信心跳有效期")
+            if ":" in urlsplit("//" + self.modbus_manager_address).hostname:
+                raise ValueError("AGC 通信重分配的 104 监听使用 IPv4，请填写下位机 IPv4 地址或可解析到 IPv4 的主机名")
+            if type(self.agc_rebalance_iec104_port) is not int or not 1 <= self.agc_rebalance_iec104_port <= 65535:
+                raise ValueError("AGC 通信重分配的 104 监听端口必须为 1 至 65535 的整数")
+            self.validate_master104(required=True)
+            self.validate_master104_driver()
 
 
 @dataclass(frozen=True)
@@ -141,6 +157,7 @@ class CaseInfo:
     name: str
     description: str = ""
     group: str = "未分组"
+    opt_in: bool = False
 
 
 def save_environment(path, environment):

@@ -92,7 +92,7 @@ export default function App() {
   async function bootstrap() {
     if (!desktop) return;
     setLoading(true); setError('');
-    try { const data = await call<Bootstrap>('bootstrap'); setEnvironment(withModbusDefaults({...emptyEnvironment,...data.environment}));setCases(data.cases);setHistory(data.history);setRecords(initialRecords(data.cases.map(c=>c.id)));setSelected(new Set(data.cases.map(c=>c.id)));setFocused(data.cases[0]?.id || '');setReady(true); }
+    try { const data = await call<Bootstrap>('bootstrap'); setEnvironment(withModbusDefaults({...emptyEnvironment,...data.environment}));setCases(data.cases);setHistory(data.history);setRecords(initialRecords(data.cases.map(c=>c.id)));setSelected(reconcileSelection([],data.cases,new Set()));setFocused(data.cases[0]?.id || '');setReady(true); }
     catch(e) {setError(String(e));} finally {setLoading(false);}
   }
   useEffect(()=>{void bootstrap();},[]);

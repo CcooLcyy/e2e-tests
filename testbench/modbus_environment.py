@@ -15,6 +15,7 @@ BASIC_CASE_IDS = frozenset({
     "tests/test_modbus_rtu.py::test_rtu_two_stations_do_not_cross_values",
 })
 HUAWEI_CASE_ID = "tests/test_huawei_fleet.py::test_huawei_six_buses_21_devices_match"
+AGC_REBALANCE_CASE_ID = "tests/test_agc_rebalance.py::test_agc_redistributes_when_rtu_member_loses_communication"
 
 
 def _shared(environment):
@@ -73,7 +74,8 @@ def validate_selected_modbus_cases(environment, case_ids):
     selected = set(case_ids)
     basic_selected = bool(selected & BASIC_CASE_IDS)
     huawei_selected = HUAWEI_CASE_ID in selected
-    if not basic_selected and not huawei_selected:
+    rebalance_selected = AGC_REBALANCE_CASE_ID in selected
+    if not basic_selected and not huawei_selected and not rebalance_selected:
         return
     if environment.get("mode") != "fresh":
         raise ValueError("所选RTU用例要求全新独立副本，请在 测试环境→运行与隔离 中切换")
@@ -87,5 +89,5 @@ def validate_selected_modbus_cases(environment, case_ids):
         _shared(environment)
     except (ValueError, TypeError) as error:
         raise ValueError(f"请检查 测试环境→Modbus RTU：{error}") from None
-    LOGGER.info("RTU访问入口检查通过，模拟器资源将在用例执行时读取：基础采集=%s，华为六路=%s",
-                basic_selected, huawei_selected)
+    LOGGER.info("RTU访问入口检查通过，模拟器资源将在用例执行时读取：基础采集=%s，华为六路=%s，AGC重分配=%s",
+                basic_selected, huawei_selected, rebalance_selected)

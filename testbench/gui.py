@@ -323,7 +323,9 @@ class TestbenchApp:
         previous = set(self.case_ids)
         self.cases = {case.id: case for case in cases}
         self.case_ids = list(self.cases)
-        self.selected = (self.selected & set(self.case_ids)) | (set(self.case_ids) - previous)
+        self.selected = (self.selected & set(self.case_ids)) | {
+            case.id for case in cases if not case.opt_in and case.id not in previous
+        }
         for item in self.case_tree.get_children():
             self.case_tree.delete(item)
         for case_id in self.case_ids:

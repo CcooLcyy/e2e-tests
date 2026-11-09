@@ -15,6 +15,7 @@ from .session_evidence import collect_sessions, merge_session_evidence
 def pytest_configure(config):
     if not any(value.startswith("case_group(") for value in config.getini("markers")):
         config.addinivalue_line("markers", "case_group(name): 声明用例所属的一级功能分组")
+    config.addinivalue_line("markers", "opt_in: 此用例需要在界面中单独勾选")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -51,7 +52,8 @@ def pytest_collection_finish(session):
             if "[" in item.name:
                 name += " " + item.name[item.name.index("["):]
             items.append({"id": item.nodeid, "name": name, "description": description,
-                          "group": getattr(item, "_bench_group", "未分组")})
+                          "group": getattr(item, "_bench_group", "未分组"),
+                          "opt_in": item.get_closest_marker("opt_in") is not None})
         Path(output).write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
 
 

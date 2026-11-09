@@ -99,6 +99,13 @@ test('刷新保留已有选择和未选状态，删除消失项并选中新用�
   assert.deepEqual([...reconcileSelection(cases, [], selected)], []);
 });
 
+test('需单独勾选的用例初次加载及刷新时均保留明确选择', () => {
+  const exclusive = { ...cases[0], id: 'exclusive', opt_in: true };
+  assert.deepEqual([...reconcileSelection([], [exclusive, cases[0]], new Set())], ['login']);
+  assert.deepEqual([...reconcileSelection([cases[0]], [exclusive, cases[0]], new Set(['login']))], ['login']);
+  assert.deepEqual([...reconcileSelection([exclusive, cases[0]], [exclusive, cases[0]], new Set(['exclusive']))], ['exclusive']);
+});
+
 test('分组标题默认全部收起，执行顺序与分组展示顺序一致', () => {
   const sections = groupedSections(cases, new Set(['wrong', 'layout', 'login']), {}, new Set());
   assert.deepEqual(sections.map(group => [group.name, group.open]), [

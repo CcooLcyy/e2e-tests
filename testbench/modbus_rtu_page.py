@@ -21,6 +21,9 @@ def xpath_text(value):
 class ModbusRtuPage:
     """只使用 Selenium 可见控件，不调用被测系统内部 API。"""
 
+    DIALOG = (By.CSS_SELECTOR, '.ant-modal[role="dialog"]')
+    DIALOG_XPATH = "//div[@role='dialog' and contains(concat(' ',normalize-space(@class),' '),' ant-modal ')]"
+
     def __init__(self, desktop):
         self.desktop = desktop
         self.owned = {}
@@ -69,7 +72,7 @@ class ModbusRtuPage:
             self._click(config_tab, "切换 RTU 配置页签")
         self._until(lambda _: self._visible((By.CSS_SELECTOR, ".protocol-connection-list-card")), "RTU连接列表未显示")
 
-    def open_device(self, manager_address):
+    def open_device(self, manager_address, *, required_modules=("ModbusRTU",)):
         self._menu("模块运维")
         self._click((By.XPATH, "//*[@aria-label='连接方式']//label[normalize-space(.)='现场直连']"), "选择现场直连")
         switch = self._button("切换至现场直连")
@@ -79,15 +82,19 @@ class ModbusRtuPage:
             field = self._until(lambda _: self._visible((By.CSS_SELECTOR, 'input[aria-label="ModuleManager 地址"]')))
             self._replace(field, manager_address)
         self._click(self._button("连接", "//div[contains(@class,'module-ops-connection-controls')]"), "连接目标下位机")
-        with self.desktop.step("确认目标下位机 RTU 模块已运行", expected="ModbusRTU 模块处于运行中"):
+        with self.desktop.step("确认目标下位机所需模块已运行", expected="、".join(required_modules)):
             def ready(_):
-                row = self._visible((By.XPATH, "//div[contains(@class,'module-ops-list-card')]//tr[@data-row-key='ModbusRTU']"))
-                if row is None or "运行中" not in row.text:
-                    return False
-                # 连接失败时界面可能保留旧表格，但停止按钮会禁用；仅读取按钮状态，不点击。
-                actions = row.find_elements(By.XPATH, ".//button[normalize-space(.)='停止']")
-                return any(action.is_enabled() for action in actions)
-            self._until(ready, "未确认目标下位机连接成功且 ModbusRTU 模块运行，请人工准备环境")
+                for module in required_modules:
+                    row = self._visible((By.XPATH, "//div[contains(@class,'module-ops-list-card')]//tr[@data-row-key="
+                                         + xpath_text(module) + "]"))
+                    if row is None or "运行中" not in row.text:
+                        return False
+                    # 连接失败时界面可能保留旧表格，但停止按钮会禁用。
+                    actions = row.find_elements(By.XPATH, ".//button[normalize-space(.)='停止']")
+                    if not any(action.is_enabled() for action in actions):
+                        return False
+                return True
+            self._until(ready, "未确认目标下位机已连接并运行所有所需模块，请检查测试环境")
         self._rtu()
 
     def assert_serial_paths_available(self, paths):
@@ -127,7 +134,7 @@ class ModbusRtuPage:
         element.send_keys(str(value), Keys.TAB)
 
     def _dialog(self):
-        return self._until(lambda _: self._visible((By.CSS_SELECTOR, ".ant-modal-content")), "配置窗口未打开")
+        return self._until(lambda _: self._visible(self.DIALOG), "配置窗口未打开")
 
     def _field(self, name):
         return self._dialog().find_element(By.CSS_SELECTOR, f'[id="{name}"]')
@@ -146,8 +153,8 @@ class ModbusRtuPage:
             self._until(lambda _: self._visible(option), f"未找到选项：{label}").click()
 
     def _submit(self, text):
-        self._click(self._button(text, "//div[contains(@class,'ant-modal-content')]"), f"提交{text}")
-        self._until(lambda _: not self._visible((By.CSS_SELECTOR, ".ant-modal-content")), f"{text}未成功，配置窗口仍然打开")
+        self._click(self._button(text, self.DIALOG_XPATH), f"提交{text}")
+        self._until(lambda _: not self._visible(self.DIALOG), f"{text}未成功，配置窗口仍然打开")
 
     def _connection_locator(self, name):
         return (By.XPATH, "//div[contains(@class,'protocol-connection-item-main')][.//strong[normalize-space(.)=" + xpath_text(name) + "]]")
@@ -246,7 +253,7 @@ class ModbusRtuPage:
             self._assert_input(field, value)
         for field, value in self.owned[name]["options"].items():
             self._assert_select(field, value)
-        self._click(self._button("取消", "//div[contains(@class,'ant-modal-content')]"), "关闭配置核对窗口")
+        self._click(self._button("取消", self.DIALOG_XPATH), "关闭配置核对窗口")
         for tag, expected in self.owned[name]["points"].items():
             self._click((By.CSS_SELECTOR, f'button[aria-label="编辑点位 {tag}"]'), f"重新读取点位 {tag}")
             for field in ("tag", "address", "scale", "offset"):
@@ -256,7 +263,7 @@ class ModbusRtuPage:
                 self._assert_select(field, expected[field])
             self._assert_select("reg_count", "1 个寄存器")
             self._assert_select("byte_order", "AB")
-            self._click(self._button("取消", "//div[contains(@class,'ant-modal-content')]"), "关闭点位核对窗口")
+            self._click(self._button("取消", self.DIALOG_XPATH), "关闭点位核对窗口")
 
     def start(self):
         self._assert_identity()
@@ -328,9 +335,9 @@ class ModbusRtuPage:
                 try:
                     with self.desktop.step(f"清理本例 RTU 连接 {name}", cancellable=False):
                         # 失败现场已经由步骤截图保留，随后只关闭未提交的配置窗口。
-                        modal = self._visible((By.CSS_SELECTOR, ".ant-modal-content"))
+                        modal = self._visible(self.DIALOG)
                         if modal:
-                            self._click(self._button("取消", "//div[contains(@class,'ant-modal-content')]"), "取消未提交的配置窗口")
+                            self._click(self._button("取消", self.DIALOG_XPATH), "取消未提交的配置窗口")
                         self._rtu()
                         self.select(name)
                         self.stop()
