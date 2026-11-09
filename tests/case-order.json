@@ -34,7 +34,8 @@
         "tests/test_modbus_rtu.py::test_rtu_source_change_updates_value_and_time",
         "tests/test_modbus_rtu.py::test_rtu_scale_and_offset_match_fixed_expectations",
         "tests/test_modbus_rtu.py::test_rtu_two_stations_do_not_cross_values",
-        "tests/test_huawei_fleet.py::test_huawei_six_buses_21_devices_match"
+        "tests/test_huawei_fleet.py::test_huawei_six_buses_21_devices_match",
+        "tests/test_modbus_rtu_104_quality.py::test_rtu_quality_reaches_iec104_with_unchanged_value"
       ]
     },
     {
