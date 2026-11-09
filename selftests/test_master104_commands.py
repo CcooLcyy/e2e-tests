@@ -22,15 +22,22 @@ def test_target_requires_finite_exact_float32_and_valid_addresses():
             Master104CommandSender(None, ca, ioa)
 
 
-def fake_session(directory, *, ca="1", result_changes=None):
+def fake_session(directory, *, ca="1", result_changes=None, confirmed_first=False):
     calls = []
-    result = {"operation-id": "1", "state": "confirmed"}
+    waits = []
+    result = {"operation-id": "1", "state": "terminated"}
 
     def click_send():
         calls.append("send")
-        result.update({"operation-id": "2", "state": "confirmed", "ioa": "28673",
+        sent_at = time.time_ns() // 1_000_000
+        result.update({"operation-id": "2", "state": "confirmed" if confirmed_first else "terminated", "ioa": "28673",
                        "common-address": "1", "value": "100.0",
-                       "sent-at": str(time.time_ns() // 1_000_000), "sent-frame-id": "10"})
+                       "sent-at": str(sent_at), "sent-frame-id": "10",
+                       "confirmed-at": str(sent_at + 1), "confirmed-frame-id": "12",
+                       "terminated-at": str(sent_at + 2), "terminated-frame-id": "15",
+                       "sent-raw": "68 12 00 00 00 00 32 01 06 00 01 00 01 70 00 00 00 C8 42 00",
+                       "confirmed-raw": "68 12 00 00 02 00 32 01 07 00 01 00 01 70 00 00 00 C8 42 00",
+                       "terminated-raw": "68 12 02 00 02 00 32 01 0A 00 01 00 01 70 00 00 00 C8 42 00"})
         result.update(result_changes or {})
 
     fields = {
@@ -46,12 +53,18 @@ def fake_session(directory, *, ca="1", result_changes=None):
         return fields[selector]
 
     def wait_for(condition, message, timeout):
-        if result := condition():
-            return result
+        waits.append(timeout)
+        if observed := condition():
+            return observed
+        if confirmed_first and calls[-1] == "send":
+            result["state"] = "terminated"
+            if observed := condition():
+                return observed
         raise TimeoutError(message)
 
     session = SimpleNamespace(
         identity={"pid": 10, "path": "msk104master.exe"}, artifacts=directory, metadata={},
+        timeout=10, waits=waits,
         _check_stop=lambda: None, _assert_live_display=lambda: None,
         step=lambda *a, **k: nullcontext({}),
         _connection_fields=lambda: [None, None, SimpleNamespace(get_property=lambda _: ca)],
@@ -62,13 +75,16 @@ def fake_session(directory, *, ca="1", result_changes=None):
     return session, calls
 
 
-def test_only_new_matching_positive_confirmation_counts(tmp_path):
-    session, calls = fake_session(tmp_path)
+def test_only_new_matching_positive_confirmation_and_termination_count(tmp_path):
+    session, calls = fake_session(tmp_path, confirmed_first=True)
     result = Master104CommandSender(session, 1, 0x7001).send_target_kw(Decimal("100"))
     assert calls == ["tab", ("IOA", "28673"), ("value", "100"), "send"]
     assert result["identity"] == session.identity
-    assert result["operation_id"] == "2" and result["state"] == "confirmed"
+    assert result["operation_id"] == "2" and result["state"] == "terminated"
     assert result["sent_frame_id"] == 10 and result["sent_at"]
+    assert [result["frames"][kind]["frame_id"] for kind in ("sent", "confirmed", "terminated")] == [10, 12, 15]
+    assert all(result["frames"][kind]["raw"] for kind in ("sent", "confirmed", "terminated"))
+    assert session.waits[-1] >= 30
     path, = tmp_path.glob("master104-command-*.json")
     assert json.loads(path.read_text(encoding="utf-8"))["result"] == result
 
@@ -76,13 +92,21 @@ def test_only_new_matching_positive_confirmation_counts(tmp_path):
 @pytest.mark.parametrize(("changes", "error", "message"), [
     ({"operation-id": "1"}, TimeoutError, "本次遥调"),
     ({"state": "sent"}, TimeoutError, "本次遥调"),
-    ({"state": "rejected"}, RuntimeError, "肯定确认"),
+    ({"state": "confirmed"}, TimeoutError, "肯定终止"),
+    ({"state": "rejected"}, RuntimeError, "拒绝"),
+    ({"state": "failed"}, RuntimeError, "失败"),
+    ({"state": "timeout"}, RuntimeError, "超时"),
     ({"ioa": "8"}, RuntimeError, "目标参数"),
     ({"common-address": "2"}, RuntimeError, "目标参数"),
     ({"value": "101"}, RuntimeError, "目标参数"),
     ({"sent-at": "1"}, RuntimeError, "有效发送证据"),
+    ({"confirmed-raw": ""}, RuntimeError, "原始报文"),
+    ({"confirmed-frame-id": "10"}, RuntimeError, "帧序号"),
+    ({"terminated-at": "1"}, RuntimeError, "报文时间"),
+    ({"terminated-raw": "68 12 02 00 02 00 32 01 4A 00 01 00 01 70 00 00 00 C8 42 00"}, RuntimeError, "原始报文"),
+    ({"terminated-raw": "68 12 02 00 02 00 32 01 0A 00 01 00 02 70 00 00 00 C8 42 00"}, RuntimeError, "原始报文"),
 ])
-def test_confirmation_failure_keeps_evidence_and_does_not_retry(tmp_path, changes, error, message):
+def test_transaction_failure_keeps_evidence_and_does_not_retry(tmp_path, changes, error, message):
     session, calls = fake_session(tmp_path, result_changes=changes)
     with pytest.raises(error, match=message):
         Master104CommandSender(session, 1, 0x7001).send_target_kw(Decimal("100"))

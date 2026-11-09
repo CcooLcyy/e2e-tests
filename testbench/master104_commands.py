@@ -10,6 +10,15 @@ from selenium.webdriver.common.by import By
 
 
 LOGGER = logging.getLogger(__name__)
+# 主站确认和终止各等待 15 秒，再留出界面刷新时间。
+COMPLETION_TIMEOUT_SECONDS = 32
+FRAME_CAUSES = (("sent", 6), ("confirmed", 7), ("terminated", 10))
+FAILED_STATES = {
+    "rejected": "被对端拒绝",
+    "failed": "发送失败或会话中断",
+    "timeout": "等待确认或终止超时",
+    "disconnected": "会话中断",
+}
 
 
 def normalize_target(value):
@@ -26,6 +35,35 @@ def normalize_target(value):
     return format(number, "f")
 
 
+def _read_frames(operation, payload, attempted_ms):
+    frames = {}
+    previous_frame_id = 0
+    previous_time = attempted_ms
+    for kind, cause in FRAME_CAUSES:
+        raw = operation[f"{kind}-raw"]
+        try:
+            frame = bytes.fromhex(raw or "")
+        except ValueError:
+            raise RuntimeError(f"本次遥调 COT={cause} 的原始报文不是有效十六进制") from None
+        if (len(frame) != 20 or frame[:2] != b"\x68\x12" or frame[2] & 1
+                or frame[6:9] != bytes((50, 1, cause)) or frame[10:] != payload):
+            raise RuntimeError(f"本次遥调 COT={cause} 的原始报文缺失或与肯定直接执行的目标参数不一致")
+        try:
+            frame_id = int(operation[f"{kind}-frame-id"])
+            at_ms = int(operation[f"{kind}-at"])
+        except (TypeError, ValueError):
+            raise RuntimeError(f"本次遥调 COT={cause} 缺少有效帧序号或报文时间") from None
+        if frame_id <= previous_frame_id:
+            raise RuntimeError("本次遥调发送、确认和终止帧序号未依次递增")
+        if at_ms < previous_time:
+            if kind == "sent":
+                raise RuntimeError("主站缺少本次遥调的有效发送证据，报文早于点击")
+            raise RuntimeError("本次遥调发送、确认和终止的报文时间倒序")
+        frames[kind] = {"frame_id": frame_id, "at_ms": at_ms, "raw": raw, "cause": cause}
+        previous_frame_id, previous_time = frame_id, at_ms
+    return frames
+
+
 class Master104CommandSender:
     """只支持直接执行；不自动尝试SBO、不在任何异常后重发。"""
     def __init__(self, session, common_address, command_ioa):
@@ -37,6 +75,8 @@ class Master104CommandSender:
     def send_target_kw(self, target, timeout=None):
         value = normalize_target(target)
         session = self.session
+        encoded_value = struct.pack("<f", float(value))
+        payload = self.common_address.to_bytes(2, "little") + self.command_ioa.to_bytes(3, "little") + encoded_value + b"\x00"
         request = {"identity": session.identity, "common_address": self.common_address,
                    "command_ioa": self.command_ioa, "target_kw": value}
         record = {"requested_at": datetime.now().astimezone().isoformat(), "request": request,
@@ -54,8 +94,9 @@ class Master104CommandSender:
 
                 def read_result():
                     panel = driver.find_element(By.ID, "setpoint-result")
-                    return {name: panel.get_dom_attribute(f"data-{name}") for name in
-                            ("operation-id", "state", "ioa", "common-address", "value", "sent-at", "sent-frame-id")}
+                    names = ["operation-id", "state", "ioa", "common-address", "value"]
+                    names.extend(f"{kind}-{field}" for kind, _ in FRAME_CAUSES for field in ("at", "frame-id", "raw"))
+                    return {name: panel.get_dom_attribute(f"data-{name}") for name in names}
 
                 def enabled_button():
                     button = driver.find_element(By.ID, "send-setpoint")
@@ -66,36 +107,42 @@ class Master104CommandSender:
                 session.fill(driver.find_element(By.ID, "setpoint-value"), value)
                 previous = read_result()["operation-id"]
                 session._check_stop()
-                attempted_at = datetime.now().astimezone().isoformat()
+                attempted = datetime.now().astimezone()
+                attempted_at = attempted.isoformat()
+                attempted_ms = int(attempted.timestamp() * 1000)
                 record["attempted_at"] = attempted_at
                 button.click()
 
-                def confirmed():
-                    session._assert_live_display()
+                def terminated():
                     operation = read_result()
                     operation_id, state = operation["operation-id"], operation["state"]
                     if not operation_id or operation_id == previous:
+                        session._assert_live_display()
                         return False
                     record["observed_operation"] = operation
+                    if state in FAILED_STATES:
+                        raise RuntimeError(f"104 遥调{FAILED_STATES[state]}（{state}）")
+                    session._assert_live_display()
+                    try:
+                        observed_value = struct.pack("<f", float(operation["value"]))
+                    except (TypeError, ValueError, OverflowError, struct.error):
+                        raise RuntimeError("主站本次遥调结果缺少有效目标参数") from None
                     if (operation["ioa"] != str(self.command_ioa)
                             or operation["common-address"] != str(self.common_address)
-                            or struct.pack("<f", float(operation["value"])) != struct.pack("<f", float(value))):
+                            or observed_value != encoded_value):
                         raise RuntimeError("主站本次遥调结果与目标参数不一致")
-                    if state in ("rejected", "failed", "timeout"):
-                        raise RuntimeError(f"104 遥调未获得肯定确认：{state}")
-                    if state in ("confirmed", "terminated"):
-                        sent_at = int(operation["sent-at"])
-                        sent_frame_id = int(operation["sent-frame-id"])
-                        if sent_at < int(datetime.fromisoformat(attempted_at).timestamp() * 1000) or sent_frame_id <= 0:
-                            raise RuntimeError("主站缺少本次遥调的有效发送证据")
-                        return {**request, "operation_id": operation_id, "state": state, "attempted_at": attempted_at,
-                                "sent_at": datetime.fromtimestamp(sent_at / 1000).astimezone().isoformat(),
-                                "sent_frame_id": sent_frame_id}
-                    return False
+                    if state != "terminated":
+                        return False
+                    frames = _read_frames(operation, payload, attempted_ms)
+                    sent = frames["sent"]
+                    return {**request, "operation_id": operation_id, "state": state, "attempted_at": attempted_at,
+                            "sent_at": datetime.fromtimestamp(sent["at_ms"] / 1000).astimezone().isoformat(),
+                            "sent_frame_id": sent["frame_id"], "frames": frames}
 
-                result = session.wait_for(confirmed, "104 主站未收到本次遥调的肯定确认", timeout)
+                completion_timeout = max(session.timeout, COMPLETION_TIMEOUT_SECONDS) if timeout is None else timeout
+                result = session.wait_for(terminated, "104 主站未收到本次遥调的肯定确认及肯定终止", completion_timeout)
                 record["result"] = result
-                LOGGER.info("已收到主站本次遥调的肯定确认：CA=%s，IOA=%s，目标=%s；仍需核对AGC设点和新遥信",
+                LOGGER.info("已核对主站本次遥调的发送、肯定确认和肯定终止：CA=%s，IOA=%s，目标=%s",
                             self.common_address, self.command_ioa, value)
                 return result
         except BaseException as error:
