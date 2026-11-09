@@ -1,5 +1,6 @@
 """验证真实主站界面快照到 AGC 遥信证据的解释规则。"""
 from datetime import datetime
+from decimal import Decimal
 from itertools import count
 import time
 from types import SimpleNamespace
@@ -99,3 +100,44 @@ def test_checkpoint_rejects_impossible_receive_evidence(offset, frame, message):
     point = observer(snapshot(signal(1, now + offset, frame), signal(2, now, 2)))
     with pytest.raises(RuntimeError, match=message):
         point.checkpoint()
+
+
+@pytest.mark.parametrize(("frame", "offset", "kw", "error", "message"), [
+    (8, 0, "20", None, ""),
+    (3, -10, "20", TimeoutError, "本轮新实测功率"),
+    (8, -1, "20", TimeoutError, "本轮新实测功率"),
+    (8, 0, "100", AssertionError, "实测功率已到上限"),
+])
+def test_lag_requires_a_fresh_below_limit_measurement_with_the_new_signal(monkeypatch, frame, offset, kw, error, message):
+    now = time.time_ns() // 1_000_000
+    companion = signal(2, now - 20, 1)
+    signals = iter([snapshot(signal(1, now - 10, 2), companion),
+                    snapshot(signal(1, now, 7, value="合"), companion)])
+    measurements = iter([snapshot(signal(3, now - 10, 3, value="20", type_id=13)),
+                         snapshot(signal(3, now + offset, frame, value=kw, type_id=13))])
+    session = SimpleNamespace(read_signals=lambda: next(signals), read_measurements=lambda: next(measurements))
+    point = Master104PointObserver(session, {"increase": 1, "decrease": 2}, 1, measured_ioa=3)
+    baseline = point.checkpoint(include_measurement=True)
+    baseline["wall_time"] = datetime.fromtimestamp(now / 1000).astimezone().isoformat()
+    ticks = count(0, 1)
+    monkeypatch.setattr("testbench.master104_signals.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("testbench.master104_signals.time.sleep", lambda _: None)
+    args = ({"increase": True, "decrease": False}, baseline, 3.5)
+    kwargs = {"fresh_keys": ("increase",), "sent_frame_id": 6, "measurement_below": Decimal("100")}
+    if error:
+        with pytest.raises(error, match=message):
+            point.wait_state(*args, **kwargs)
+    else:
+        result = point.wait_state(*args, **kwargs)
+        assert result["measurement"]["value_kw"] == "20"
+        assert result["points"]["increase"]["frame_id"] == 7
+
+
+@pytest.mark.parametrize(("quality", "type_id", "value"), [("0x01", 13, "20"), ("0x00", 11, "20"), ("0x00", 36, "NaN")])
+def test_lag_rejects_invalid_measured_power(quality, type_id, value):
+    now = time.time_ns() // 1_000_000
+    session = SimpleNamespace(read_measurements=lambda: snapshot(signal(3, now, 1, value=value,
+                                                                        type_id=type_id, quality=quality)))
+    point = Master104PointObserver(session, {"increase": 1, "decrease": 2}, 1, measured_ioa=3)
+    with pytest.raises(RuntimeError, match="实测功率"):
+        point.checkpoint(include_measurement=True)

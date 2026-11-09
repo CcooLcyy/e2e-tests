@@ -145,17 +145,19 @@ def test_unusable_master_display_fails_before_reading_points(tmp_path, monkeypat
             app.read_signals()
 
 
-def test_signals_read_only_visible_signal_rows_with_frame_metadata(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("read_method", "point_type"), [("read_signals", "signals"), ("read_measurements", "measurements")])
+def test_reads_only_visible_point_rows_with_frame_metadata(tmp_path, monkeypatch, read_method, point_type):
     app = evidence_session(tmp_path, monkeypatch)
     with app:
         monkeypatch.setattr(app, "state", lambda: "started")
         app.driver.find_elements = lambda *args: []
         app.driver.find_element = lambda *args: SimpleNamespace(get_dom_attribute=lambda _: "true")
 
-        def read_dom(script):
-            assert "#points-signals:not([hidden])" in script
+        def read_dom(script, panel):
+            assert panel == point_type
+            assert "!panel.hidden" in script
             assert "receivedFrameId" in script
             return [{"received": "3", "frame_id": "4", "cells": ["1", "2", "1", "合", "0x01", "—", "12:00:00"]}]
 
         app.driver.execute_script = read_dom
-        assert app.read_signals()["rows"][0]["frame_id"] == "4"
+        assert getattr(app, read_method)()["rows"][0]["frame_id"] == "4"

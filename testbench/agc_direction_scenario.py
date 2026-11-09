@@ -1,6 +1,5 @@
-"""AGC方向闭锁的固定期望与真实双端业务编排。"""
+"""通过104对外接口验证AGC方向闭锁。"""
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import ipaddress
 import json
@@ -8,7 +7,6 @@ import logging
 import math
 from pathlib import Path
 import time
-from urllib.parse import urlsplit
 
 
 LOGGER = logging.getLogger(__name__)
@@ -16,10 +14,6 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class AgcDirectionProfile:
-    group_name: str
-    member_name: str
-    conn_id: int
-    manager_address: str
     master_host: str
     master_port: int
     common_address: int
@@ -30,29 +24,32 @@ class AgcDirectionProfile:
     middle_kw: Decimal
     upper_kw: Decimal
     timeout_seconds: float
+    measured_ioa: int | None = None
 
     @classmethod
     def from_dict(cls, data):
-        if not isinstance(data, dict) or set(data) != set(cls.__dataclass_fields__):
+        # 旧版专项配置可继续用于闭锁遥信用例，原白盒字段不参与任何连接或判定。
+        legacy_fields = {"group_name", "member_name", "conn_id", "manager_address"}
+        optional_fields = legacy_fields | {"measured_ioa"}
+        if (not isinstance(data, dict) or set(data) - optional_fields !=
+                set(cls.__dataclass_fields__) - {"measured_ioa"}):
             raise ValueError("AGC验收配置字段不完整或含未知字段，请按示例填写")
-        values = dict(data)
-        if (not isinstance(values["group_name"], str) or not values["group_name"].startswith("e2e-agc-")
-                or not isinstance(values["member_name"], str) or not values["member_name"].strip()):
-            raise ValueError("AGC验收须明确e2e-agc-开头的专用组及成员名称")
-        for name, maximum in (("conn_id", 0xffffffff), ("master_port", 65535), ("common_address", 65534),
-                              ("command_ioa", 0xffffff), ("increase_ioa", 0xffffff), ("decrease_ioa", 0xffffff)):
+        values = {name: value for name, value in data.items() if name not in legacy_fields}
+        point_names = ["command_ioa", "increase_ioa", "decrease_ioa"]
+        if values.get("measured_ioa") is not None:
+            point_names.append("measured_ioa")
+        for name, maximum in (("master_port", 65535), ("common_address", 65534),
+                              *((name, 0xffffff) for name in point_names)):
             if type(values[name]) is not int or not 1 <= values[name] <= maximum:
                 raise ValueError(f"AGC验收{name}须为范围内的正整数")
-        if len({values[name] for name in ("command_ioa", "increase_ioa", "decrease_ioa")}) != 3:
-            raise ValueError("AGC遥调与两个遥信IOA必须不同")
+        if len({values[name] for name in point_names}) != len(point_names):
+            raise ValueError("AGC遥调、遥信及实测功率的IOA必须不同")
         try:
-            values["master_host"] = str(ipaddress.ip_address(values["master_host"]))
-            address = urlsplit("//" + values["manager_address"])
-            if (not address.hostname or not address.port or address.username or address.password or address.path
-                    or address.query or address.fragment or address.hostname != values["master_host"]):
+            if not isinstance(values["master_host"], str):
                 raise ValueError()
-        except (ValueError, TypeError, AttributeError):
-            raise ValueError("ModuleManager地址须为同一测试下位机的IP:端口，不能混入路径或凭据") from None
+            values["master_host"] = str(ipaddress.ip_address(values["master_host"]))
+        except ValueError:
+            raise ValueError("AGC验收须填写专用104下位机IP") from None
         for name in ("lower_kw", "middle_kw", "upper_kw"):
             try:
                 if isinstance(values[name], (bool, float)):
@@ -87,9 +84,6 @@ class AgcDirectionProfile:
     def ioas(self):
         return {"increase": self.increase_ioa, "decrease": self.decrease_ioa}
 
-    def page_profile(self):
-        return {key: getattr(self, key) for key in ("group_name", "member_name", "conn_id", "lower_kw", "upper_kw")}
-
     def to_dict(self):
         return {key: str(value) if isinstance(value, Decimal) else value for key, value in asdict(self).items()}
 
@@ -98,11 +92,10 @@ class AgcDirectionProfile:
 
 
 class AgcDirectionScenario:
-    def __init__(self, desktop, page, master, observer, sender, profile):
-        self.desktop, self.page, self.master = desktop, page, master
+    def __init__(self, master, observer, sender, profile):
+        self.master = master
         self.observer, self.sender, self.profile = observer, sender, profile
         self.observations = []
-        self.desktop.metadata["AGC固定验收配置"] = profile.to_dict()
 
     def _wait_current(self, expected):
         deadline = time.monotonic() + self.profile.timeout_seconds
@@ -116,24 +109,20 @@ class AgcDirectionScenario:
 
     def _record(self, row):
         self.observations.append(row)
-        self.desktop.metadata["AGC双端观察"] = self.observations
-        self._save()
-
-    def _save(self):
-        self.desktop.artifacts.mkdir(parents=True, exist_ok=True)
-        (self.desktop.artifacts / "agc-direction-observations.json").write_text(
+        self.master.metadata["AGC主站观察"] = self.observations
+        (self.master.artifacts / "agc-direction-observations.json").write_text(
             json.dumps(self.observations, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
-    def _preserve_failure(self, error, row=None):
+    def _preserve_failure(self, error, row):
         try:
-            self._record(row) if row is not None else self._save()
+            self._record(row)
         except Exception as evidence_error:
             message = f"AGC失败取证保存异常：{evidence_error}"
-            self.desktop.metadata.setdefault("AGC取证错误", []).append(message)
+            self.master.metadata.setdefault("AGC取证错误", []).append(message)
             error.add_note(message)
             LOGGER.exception("AGC失败观察记录保存异常，保留原始错误")
 
-    def _apply(self, target, *, fresh_key=None, stage):
+    def _apply(self, target, *, fresh_key=None, stage, require_lag=False):
         expected = self.profile.expected(target)
         row = {"阶段": stage, "固定目标kW": str(target), "固定闭锁期望": expected,
                "配置": self.profile.to_dict()}
@@ -141,28 +130,30 @@ class AgcDirectionScenario:
             with self.master.step(f"核对104目标并单次下发AGC目标 {target} kW", expected=expected):
                 self.master.verify_target(self.profile.master_host, self.profile.master_port,
                                           self.profile.common_address)
-                baseline = self.observer.checkpoint()
+                baseline = self.observer.checkpoint(include_measurement=require_lag)
                 row["基线"] = baseline
                 if fresh_key and baseline["points"][fresh_key]["value"] == expected[fresh_key]:
                     raise AssertionError("业务操作前闭锁已是最终期望，不能证明本次变位")
+                if require_lag:
+                    measured_kw = Decimal(baseline["measurement"]["value_kw"])
+                    if not self.profile.lower_kw < measured_kw < self.profile.upper_kw:
+                        raise AssertionError(f"发送上限目标前实测功率须严格位于区间内，实际 {measured_kw} kW")
                 row["发送结果"] = self.sender.send_target_kw(target)
                 # 使用主站实际发送时刻划定本轮接收边界。
                 baseline["wall_time"] = row["发送结果"]["sent_at"]
-            with self.desktop.step(f"核对AGC当前已发布目标与闭锁 {target} kW", expected=expected):
-                row["upper"] = self.page.wait_snapshot(self.profile.page_profile(), target,
-                                                        expected["increase"], expected["decrease"],
-                                                        self.profile.timeout_seconds)
-            with self.master.step("核对主站闭锁值、品质与本轮变位", expected=expected):
+            title = "核对本轮闭锁变位及实测未到上限" if require_lag else "核对主站闭锁值、品质与本轮变位"
+            with self.master.step(title, expected=expected):
                 changed = (fresh_key,) if fresh_key else tuple(
                     key for key, value in expected.items() if baseline["points"][key]["value"] != value)
                 if changed:
                     row["master"] = self.observer.wait_state(
                         expected, baseline, self.profile.timeout_seconds,
-                        fresh_keys=changed, sent_frame_id=row["发送结果"]["sent_frame_id"])
+                        fresh_keys=changed, sent_frame_id=row["发送结果"]["sent_frame_id"],
+                        measurement_below=self.profile.upper_kw if require_lag else None)
                 else:
                     row["master"] = self._wait_current(expected)
             row["状态"] = "通过"
-            LOGGER.info("AGC闭锁双端步骤完成：阶段=%s，目标=%s，期望=%s", stage, target, expected)
+            LOGGER.info("AGC闭锁主站步骤完成：阶段=%s，目标=%s，期望=%s", stage, target, expected)
             self._record(row)
             return row
         except BaseException as error:
@@ -174,57 +165,8 @@ class AgcDirectionScenario:
     def run_case(self, prepare, target, changed_key, *, require_lag=False):
         if changed_key not in self.profile.ioas:
             raise ValueError("AGC验收必须明确增闭锁或减闭锁变位点")
-        prepared = self._apply(prepare, stage="独立准备")
         if require_lag:
-            try:
-                measured = prepared["upper"]["member"]["measurement"]
-                self.desktop.check("实测滞后场景前置：实测严格位于调节区间内部",
-                                   self.profile.lower_kw < measured < self.profile.upper_kw, True)
-            except BaseException as error:
-                self._preserve_failure(error, {"阶段": "实测滞后前置条件", "状态": "失败", "错误": str(error),
-                                                "最后观察": prepared["upper"]})
-                raise
-        result = self._apply(target, fresh_key=changed_key, stage="业务验收")
-        # 主站变位完成后再读同一AGC总览，不能用很早以前的实测值证明滞后。
-        if require_lag:
-            try:
-                expected = self.profile.expected(target)
-                with self.desktop.step("确认增闭锁已置位时实测仍未达到上限"):
-                    deadline = time.monotonic() + self.profile.timeout_seconds
-                    before_measurement = self._measurement_time(prepared["upper"]["member"]["measurement_time"])
-                    boundary = datetime.fromisoformat(result["发送结果"]["attempted_at"]).replace(microsecond=0)
-                    fresh_measurement = False
-                    while time.monotonic() < deadline:
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            break
-                        final = self.page.wait_snapshot(self.profile.page_profile(), target,
-                                                        expected["increase"], expected["decrease"], remaining)
-                        result["滞后最终观察"] = final
-                        measured_at = self._measurement_time(final["member"]["measurement_time"])
-                        if measured_at > datetime.now().astimezone() + timedelta(seconds=1):
-                            raise AssertionError("实测时间超出本机时钟容差，不能证明实时滞后")
-                        if measured_at > before_measurement and measured_at >= boundary:
-                            self.desktop.check("实测未到上限仍增闭锁", final["member"]["measurement"] < self.profile.upper_kw, True)
-                            fresh_measurement = True
-                            break
-                        self.desktop._check_stop()
-                        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
-                    if not fresh_measurement:
-                        raise TimeoutError("未取得本轮发送后的新实测，不能用旧GOOD缓存证明滞后")
-            except BaseException as error:
-                result["状态"], result["错误"] = "失败", f"{type(error).__name__}：{error}"
-                self._preserve_failure(error)
-                raise
-            self._save()
-        return result
-
-    @staticmethod
-    def _measurement_time(text):
-        normalized = str(text).strip().replace("/", "-").replace("年", "-").replace("月", "-").replace("日", " ")
-        for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
-            try:
-                return datetime.strptime(normalized, pattern).astimezone()
-            except ValueError:
-                pass
-        raise AssertionError(f"实测时间不可解析：{text!r}")
+            with self.master.step("核对总召后实测功率点可用"):
+                self.observer.checkpoint(include_measurement=True)
+        self._apply(prepare, stage="独立准备")
+        return self._apply(target, fresh_key=changed_key, stage="业务验收", require_lag=require_lag)

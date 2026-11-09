@@ -160,19 +160,29 @@ class Master104Session:
         field.send_keys(value)
 
     def show_signals(self):
-        tab = self.driver.find_element(By.ID, "tab-signals")
+        self._show_points("signals")
+
+    def _show_points(self, point_type):
+        tab = self.driver.find_element(By.ID, f"tab-{point_type}")
         if tab.get_dom_attribute("aria-selected") != "true":
             tab.click()
 
     def read_signals(self):
+        return self._read_points("signals")
+
+    def read_measurements(self):
+        return self._read_points("measurements")
+
+    def _read_points(self, point_type):
         self._assert_live_display()
-        self.show_signals()
+        self._show_points(point_type)
         # 一次读取可见表格，防止 React 刷新时混用不同快照的单元格。
         rows = self.driver.execute_script("""
-            return Array.from(document.querySelectorAll('#points-signals:not([hidden]) table tbody tr[data-received-at]'),
+            const panel = document.getElementById('points-' + arguments[0]);
+            return Array.from(panel && !panel.hidden ? panel.querySelectorAll('table tbody tr[data-received-at]') : [],
                 row => ({received: row.dataset.receivedAt, frame_id: row.dataset.receivedFrameId,
                     cells: Array.from(row.cells, cell => cell.textContent.trim())}));
-        """)
+        """, point_type)
         return {"identity": self.identity, "observed_at": datetime.now().astimezone().isoformat(), "rows": rows}
 
     @contextmanager
