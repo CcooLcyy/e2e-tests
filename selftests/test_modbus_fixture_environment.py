@@ -19,7 +19,7 @@ def test_fixture_requires_prepared_observation_profile(tmp_path, monkeypatch, fi
     spec = importlib.util.spec_from_file_location("fixture_environment_contract", source)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.ROOT = tmp_path
+    monkeypatch.setenv("TESTBENCH_DATA_ROOT", str(tmp_path))
     module.load_login_account = lambda _: SimpleNamespace(username="test", password="test")
     environment = {"slavesim_url": "http://192.0.2.1:16000", "modbus_acquisition_timeout": 30}
     task = tmp_path / "task.json"
