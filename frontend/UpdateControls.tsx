@@ -7,7 +7,7 @@ type UpdateChannel = 'stable' | 'ci';
 type UpdateInfo = { version: string; installed: boolean; enabled: boolean; channel: UpdateChannel };
 type Candidate = { version: string; notes: string | null };
 const channelLabels = { stable: 'Stable', ci: 'CI' };
-const updateCheckInterval = 60 * 60 * 1000;
+const updateCheckInterval = 60 * 1000;
 
 export function UpdateControls({ locked, onMaintenance, onImport }: {
   locked: boolean;
