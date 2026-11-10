@@ -400,6 +400,7 @@ pub fn run() {
             update::update_info,
             update::set_update_channel,
             update::check_update,
+            update::download_update,
             update::install_update
         ])
         .on_window_event(|window, event| {

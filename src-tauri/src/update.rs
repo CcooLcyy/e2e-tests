@@ -8,18 +8,37 @@ use minisign_verify::{PublicKey, Signature};
 use semver::Version;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{cmp::Ordering, fs, io::Write, path::PathBuf, time::Duration};
+use std::{
+    cmp::Ordering,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tauri::{async_runtime::Mutex, AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tempfile::{Builder, NamedTempFile, TempPath};
-use tokio::{fs::File, io::AsyncWriteExt, time::timeout};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncWriteExt},
+    time::timeout,
+};
 use tonic::transport::Endpoint;
 
 const MAX_INSTALLER_SIZE: u64 = 512 * 1024 * 1024;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
-pub(crate) struct PendingUpdate(Mutex<Option<Candidate>>);
+pub(crate) struct PendingUpdate {
+    available: Mutex<Option<AvailableUpdate>>,
+    download: Mutex<()>,
+}
+
+struct AvailableUpdate {
+    candidate: Candidate,
+    installer: Option<Arc<TempPath>>,
+}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum UpdateChannel {
@@ -74,7 +93,7 @@ impl UpdateChannel {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct Candidate {
     channel: UpdateChannel,
     id: String,
@@ -170,7 +189,10 @@ pub(crate) fn set_update_channel(app: AppHandle, channel: String) -> Result<(), 
     let channel = UpdateChannel::parse(&channel)?;
     update_config(&app).ok_or("当前版本未配置平台更新")?;
     let state = app.state::<PendingUpdate>();
-    let mut pending = state.0.try_lock().map_err(|_| "更新操作正在进行")?;
+    let mut pending = state
+        .available
+        .try_lock()
+        .map_err(|_| "更新操作正在进行")?;
     let path = channel_path(&app)?;
     let dir = path.parent().ok_or("无法定位更新通道配置目录")?;
     let save = || -> std::io::Result<()> {
@@ -189,8 +211,10 @@ pub(crate) fn set_update_channel(app: AppHandle, channel: String) -> Result<(), 
 pub(crate) async fn check_update(app: AppHandle) -> Result<Option<Value>, String> {
     let (endpoint, _) = update_config(&app).ok_or("当前版本未配置平台更新")?;
     let state = app.state::<PendingUpdate>();
-    let mut pending = state.0.try_lock().map_err(|_| "更新操作正在进行")?;
-    *pending = None;
+    let mut pending = state
+        .available
+        .try_lock()
+        .map_err(|_| "更新操作正在进行")?;
     let channel = selected_channel(&app);
     let mut catalog = Catalog::connect(endpoint).await?;
     let mut packages = catalog.list(channel.as_str()).await?;
@@ -204,29 +228,70 @@ pub(crate) async fn check_update(app: AppHandle) -> Result<Option<Value>, String
         .map(|package| Candidate::from_package(package, channel))
         .transpose()?
         .filter(|candidate| candidate.version.cmp_precedence(current) == Ordering::Greater);
-    let info = update.as_ref().map(|update| {
+    if pending.as_ref().map(|update| &update.candidate) != update.as_ref() {
+        *pending = update.map(|candidate| AvailableUpdate {
+            candidate,
+            installer: None,
+        });
+    }
+    Ok(pending.as_ref().map(|update| {
         json!({
-            "version": update.metadata.version,
-            "notes": update.metadata.notes,
+            "id": update.candidate.id,
+            "version": update.candidate.metadata.version,
+            "notes": update.candidate.metadata.notes,
+            "ready": update.installer.is_some(),
         })
-    });
-    *pending = update;
-    Ok(info)
+    }))
 }
 
 #[tauri::command]
-pub(crate) async fn install_update(app: AppHandle, version: String) -> Result<bool, String> {
+pub(crate) async fn download_update(app: AppHandle, id: String) -> Result<bool, String> {
     let (endpoint, key) = update_config(&app).ok_or("当前版本未配置平台更新")?;
     let state = app.state::<PendingUpdate>();
-    let pending = state.0.try_lock().map_err(|_| "更新操作正在进行")?;
-    let channel = selected_channel(&app);
-    let candidate = pending
-        .as_ref()
-        .filter(|candidate| candidate.channel == channel && candidate.metadata.version == version)
-        .ok_or("更新候选版本已变化，请重新检查更新")?;
+    let _download = state.download.lock().await;
+    let candidate = {
+        let pending = state.available.lock().await;
+        let Some(update) = pending.as_ref().filter(|update| update.candidate.id == id) else {
+            return Ok(false);
+        };
+        if update.installer.is_some() {
+            return Ok(true);
+        }
+        update.candidate.clone()
+    };
     let key = decode_base64(key)
         .and_then(|key| PublicKey::decode(&key).ok())
         .ok_or("平台更新公钥格式不合法")?;
+    let mut catalog = Catalog::connect(endpoint).await?;
+    let installer = timeout(DOWNLOAD_TIMEOUT, download(&mut catalog, &candidate, &key))
+        .await
+        .map_err(|_| "平台更新下载超过总时限")??;
+    let mut pending = state.available.lock().await;
+    let Some(update) = pending
+        .as_mut()
+        .filter(|update| update.candidate == candidate)
+    else {
+        return Ok(false);
+    };
+    update.installer = Some(Arc::new(installer));
+    Ok(true)
+}
+
+#[tauri::command]
+pub(crate) async fn install_update(app: AppHandle, id: String) -> Result<bool, String> {
+    let (endpoint, _) = update_config(&app).ok_or("当前版本未配置平台更新")?;
+    let state = app.state::<PendingUpdate>();
+    let mut pending = state
+        .available
+        .try_lock()
+        .map_err(|_| "更新操作正在进行")?;
+    let channel = selected_channel(&app);
+    let update = pending
+        .as_mut()
+        .filter(|update| update.candidate.channel == channel && update.candidate.id == id)
+        .ok_or("更新候选版本已变化，请重新检查更新")?;
+    let installer = update.installer.clone().ok_or("更新包尚未下载完成")?;
+    let version = update.candidate.metadata.version.clone();
     let dialog_app = app.clone();
     let channel_label = channel.label();
     let confirmed = tauri::async_runtime::spawn_blocking(move || {
@@ -237,7 +302,7 @@ pub(crate) async fn install_update(app: AppHandle, version: String) -> Result<bo
             ))
             .title("确认安装更新")
             .buttons(MessageDialogButtons::OkCancelCustom(
-                "下载并安装".into(),
+                "退出并安装".into(),
                 "取消".into(),
             ))
             .blocking_show()
@@ -249,23 +314,51 @@ pub(crate) async fn install_update(app: AppHandle, version: String) -> Result<bo
     }
 
     let mut catalog = Catalog::connect(endpoint).await?;
-    let latest = Candidate::from_package(catalog.get(candidate.id.clone()).await?, channel)?;
-    if latest != *candidate {
+    let latest = Candidate::from_package(catalog.get(id).await?, channel)?;
+    if latest != update.candidate {
         return Err("平台软件包身份已变化，请重新检查更新".into());
     }
-    let installer = timeout(DOWNLOAD_TIMEOUT, download(&mut catalog, &latest, &key))
-        .await
-        .map_err(|_| "平台更新下载超过总时限")??;
+    if let Err(error) = verify_cached_installer(installer.as_ref().as_ref(), &latest.metadata).await {
+        update.installer = None;
+        return Err(error);
+    }
     // 安装前让内核确认测试已空闲并正常退出，启动失败时由原流程恢复接收请求。
     let install_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         install_app
             .state::<ShellState>()
-            .with_update_shutdown(|| launch_installer(installer))
+            .with_update_shutdown(|| launch_installer(installer.as_ref().as_ref()))
     })
     .await
     .map_err(|e| format!("安装更新失败：{e}"))??;
     Ok(true)
+}
+
+async fn verify_cached_installer(path: &Path, metadata: &PackageMetadata) -> Result<(), String> {
+    let mut file = File::open(path)
+        .await
+        .map_err(|e| format!("读取已下载的更新包失败：{e}"))?
+        .take(metadata.size + 1);
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; MAX_CHUNK];
+    let mut size = 0;
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|e| format!("读取已下载的更新包失败：{e}"))?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        digest.update(&buffer[..read]);
+    }
+    if size != metadata.size
+        || !format!("{:x}", digest.finalize()).eq_ignore_ascii_case(&metadata.sha256)
+    {
+        return Err("已下载的更新包完整性校验失败，等待重新下载".into());
+    }
+    Ok(())
 }
 
 fn decode_base64(value: &str) -> Option<String> {
@@ -356,22 +449,17 @@ fn verify_signed_identity(signature: &Signature, version: &str) -> Result<(), St
 }
 
 #[cfg(windows)]
-fn launch_installer(installer: TempPath) -> Result<(), String> {
-    let installer = installer
-        .keep()
-        .map_err(|e| format!("保留待执行安装包失败：{e}"))?;
-    let child = std::process::Command::new(&installer)
+fn launch_installer(installer: &Path) -> Result<(), String> {
+    std::process::Command::new(installer)
         .args(["/P", "/R", "/UPDATE"])
-        .spawn();
-    if let Err(error) = child {
-        let _ = std::fs::remove_file(&installer);
-        return Err(format!("启动更新安装程序失败：{error}"));
-    }
+        .spawn()
+        .map_err(|error| format!("启动更新安装程序失败：{error}"))?;
+    // 直接退出以释放安装目录，保留已经启动的临时安装包。
     std::process::exit(0);
 }
 
 #[cfg(not(windows))]
-fn launch_installer(_installer: TempPath) -> Result<(), String> {
+fn launch_installer(_installer: &Path) -> Result<(), String> {
     Err("平台更新仅支持 Windows x64 安装版".into())
 }
 

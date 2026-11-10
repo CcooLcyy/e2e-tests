@@ -164,6 +164,7 @@
 .settings-dialog .field { margin: 16px 0 0; }
 .settings-dialog .field > span { display: block; margin-bottom: 7px; }
 .settings-dialog p { margin-top: 10px; overflow-wrap: anywhere; }
+.settings-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 
 .case-flow { margin: 0; padding-inline-start: 24px; }
 .case-flow li { padding: 8px 0 12px 4px; border-bottom: 1px solid #edf1f6; line-height: 1.7; }
