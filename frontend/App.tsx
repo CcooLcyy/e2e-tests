@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, Clock3, FileText, FolderOpen, History as HistoryIcon, Layers3, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
 import { call, choose, desktop, openArtifact } from './api';
 import type { Bootstrap, CaseInfo, Detail, Environment, History, Master104Check, Poll } from './api';
-import { applyEvents, counts, initialRecords, labels } from './state';
+import { applyEvents, counts, initialRecords, labels, planProgress } from './state';
 import type { BenchEvent, CaseRecord } from './state';
 import { BusinessCaseDetails } from './BusinessCaseDetails';
 import { CaseFlow } from './CaseFlow';
@@ -72,6 +72,7 @@ export default function App() {
   const checkingMaster104 = useRef(false);
   const master104Polling = useRef(false);
   const flowScroll = useRef<HTMLDivElement>(null);
+  const logScroll = useRef<HTMLDivElement>(null);
   const disabled = active || busy || maintenance;
   const slavesimCheckResult = slavesimCheck?.url===environment.slavesim_url.trim()?slavesimCheck:null;
 
@@ -113,7 +114,8 @@ export default function App() {
         if(result.run_dir) setRunDir(result.run_dir);
         if(result.events.length) {
           setRecords(old=>applyEvents(old,result.events));
-          setLogs(old=>[...old,...result.events.filter(event=>event.type!=='plan_step')].slice(-1000));
+          const diagnosticEvents = result.events.filter(event => event.type !== 'plan_step');
+          if (diagnosticEvents.length) setLogs(old => [...old, ...diagnosticEvents].slice(-1000));
           for(const event of result.events) {
             if(event.type==='case_started' && event.case_id) setFocused(event.case_id);
             if(event.type==='task_finished') {setTaskStatus(event.status || 'failed');setStopping(false);void refreshHistory().catch(e=>setError(String(e)));}
@@ -226,6 +228,9 @@ export default function App() {
     if(taskIds.length)console.info('本次任务通过率：',passRate,'通过：',stats.passed,'失败：',stats.failed);
   },[passRate,stats.passed,stats.failed,taskIds]);
   const currentCase=cases.find(c=>c.id===focused);
+  const stepProgress = currentCase?.executable_flow && currentCase.flow?.length
+    ? planProgress(currentCase.flow, record?.plan_steps)
+    : undefined;
   const followStepId = record?.latest_plan_step_id;
   useLayoutEffect(() => {
     if (page !== 'execution' || tab !== 'flow' || !followStepId) return;
@@ -237,6 +242,11 @@ export default function App() {
     if (step.top >= viewport.top && step.bottom <= viewport.bottom) return;
     panel.scrollTop += step.top - viewport.top - Math.max(0, (panel.clientHeight - step.height) / 2);
   }, [page, tab, focused, followStepId]);
+  useLayoutEffect(() => {
+    if (page !== 'execution' || tab !== 'logs') return;
+    const panel = logScroll.current;
+    if (panel) panel.scrollTop = panel.scrollHeight;
+  }, [page, tab, logs]);
   const flowFinished=!!record && (record.status!=='pending' && record.status!=='running'
     || taskIds.includes(focused) && taskStatus!=='pending' && taskStatus!=='running');
   const visible=visibleCases(cases,'',search);
@@ -314,7 +324,11 @@ export default function App() {
               {tab==='flow'?<div className="detail-scroll" key={focused} ref={flowScroll}>
                 <CaseFlow testCase={currentCase} steps={record?.plan_steps}
                   caseStatus={record?.status} finished={flowFinished} followStepId={followStepId}/>
-              </div>:tab==='steps'?<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/><span><Clock3 size={13}/>{duration(record.duration)}</span></div>}<BusinessCaseDetails key={focused} detail={detail} status={record?.status} onOpen={path=>void open(path)}/></div>:<div className="log-scroll">{logs.length?logs.map((event,index)=><div className="log-line" key={index}><time>{event.time?.slice(11,19)||'--:--:--'}</time><span>{event.message||event.name||(event.type==='case_started'?'开始执行用例':event.type==='task_finished'?'任务执行结束':event.type==='case_finished'?`用例${labels[event.status||'']||'结束'}`:'准备测试任务')}{event.type==='step'&&` · ${labels[event.status||'']||''}`}</span></div>):<div className="empty"><Terminal size={26}/><span>执行日志将在任务开始后显示</span></div>}</div>}
+              </div>:tab==='steps'?<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/><span><Clock3 size={13}/>{duration(record.duration)}</span></div>}<BusinessCaseDetails key={focused} detail={detail} status={record?.status} onOpen={path=>void open(path)}/></div>:<div className="log-scroll" ref={logScroll}>{logs.length?logs.map((event,index)=><div className="log-line" key={index}><time>{event.time?.slice(11,19)||'--:--:--'}</time><span>{event.message||event.name||(event.type==='case_started'?'开始执行用例':event.type==='task_finished'?'任务执行结束':event.type==='case_finished'?`用例${labels[event.status||'']||'结束'}`:'准备测试任务')}{event.type==='step'&&` · ${labels[event.status||'']||''}`}</span></div>):<div className="empty"><Terminal size={26}/><span>执行日志将在任务开始后显示</span></div>}</div>}
+              {stepProgress && <div className="detail-progress">
+                <div><span>当前用例进度</span><span>已处理 {stepProgress.processed} / {stepProgress.total} 步</span></div>
+                <progress aria-label="当前用例进度" value={stepProgress.processed} max={stepProgress.total}/>
+              </div>}
             </section>
           </div>
           <footer className="page-footer"><span><ShieldCheck size={14}/>测试在本地执行，日志与截图仅保存在本机</span><button className="text-button" disabled={!runDir} onClick={()=>void open(runDir)}><FolderOpen size={14}/>打开本次报告目录</button></footer>

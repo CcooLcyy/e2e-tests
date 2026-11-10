@@ -177,5 +177,8 @@
 .flow-step-heading .status { flex-shrink: 0; }
 .flow-step-group { margin: 0 0 8px; color: #355c9a; font-size: 12px; }
 .flow-record-note { color: #53647d; margin-bottom: 8px; font-size: 11px; }
+.detail-progress { margin-top: auto; flex-shrink: 0; padding: 12px 20px 16px; border-top: 1px solid #edf1f6; }
+.detail-progress > div { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; color: #5b6c86; font-size: 11px; }
+.detail-progress progress { display: block; width: 100%; height: 5px; accent-color: #6192ee; }
 .history-flow { padding: 0 18px; }
 .history-flow h3 { margin-bottom: 8px; font-size: 12px; }

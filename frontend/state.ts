@@ -34,4 +34,13 @@ export function counts(records: Record<string, CaseRecord>, ids: string[]) {
   return { total: ids.length, done: rows.filter(r => !['pending', 'running'].includes(r.status)).length,
     passed: rows.filter(r => r.status === 'passed').length, failed: rows.filter(r => r.status === 'failed').length };
 }
+
+export function planProgress(flow: readonly {id?: string}[], steps?: Record<string, string>) {
+  const processed = flow.filter(({id}) => {
+    const status = id ? steps?.[id] : undefined;
+    return status === 'passed' || status === 'failed' || status === 'skipped';
+  }).length;
+  return { processed, total: flow.length };
+}
+
 export const labels: Record<string, string> = {pending:'未执行', running:'运行中', passed:'通过', failed:'失败', skipped:'已跳过', cancelled:'已停止'};

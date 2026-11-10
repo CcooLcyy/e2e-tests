@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyEvents, initialRecords, counts } from './state.ts';
+import { applyEvents, initialRecords, counts, planProgress } from './state.ts';
 
 test('双端同名同编号步骤按来源分别完成', () => {
   const state = applyEvents(initialRecords(['a']), [
@@ -93,4 +93,13 @@ test('跟随各用例最后一条计划步骤事件，同批完成的步骤仍�
   assert.equal(state.a.latest_plan_step_id, 'next');
   assert.equal(state.a.plan_steps?.next, 'passed');
   assert.equal(state.b.latest_plan_step_id, 'first');
+});
+
+test('用例进度按已处理的计划步骤计数，停止或尚未执行不补满进度', () => {
+  const flow = ['pass', 'fail', 'conditional', 'running', 'stopped', 'waiting'].map(id => ({id}));
+  assert.deepEqual(planProgress(flow), { processed: 0, total: 6 });
+  assert.deepEqual(planProgress(flow, {
+    pass: 'passed', fail: 'failed', conditional: 'skipped', running: 'running',
+    stopped: 'cancelled', outside: 'passed',
+  }), { processed: 3, total: 6 });
 });
