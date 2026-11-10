@@ -51,7 +51,7 @@ def _capture_validation(context):
     desktop_check("password.error", "密码必填提示", "显示「请输入密码」",
                   lambda c: "请输入密码" in c.messages, True, targets=PASSWORD_ERROR),
     Step("validation.capture", "保存必填提示截图", "记录两项必填提示", _capture_validation),
-    desktop_check("login.visible", "登录页可见", "仍停留在登录页",
+    desktop_check("login.remains_visible", "登录页可见", "仍停留在登录页",
                   lambda c: c.desktop.driver.find_element(*PAGE.SCREEN).is_displayed(), True,
                   targets=PAGE.target(PAGE.SCREEN, "检查仍停留在登录页")),
     DESKTOP_FINISH,
