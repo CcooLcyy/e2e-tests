@@ -47,9 +47,7 @@ try {
     }
     foreach ($relativePath in @(
         'desktop_demo.py', 'windows_privileges.py', 'pytest.ini', 'requirements.txt',
-        'tests/case-order.json', 'docs/examples/agc-direction-block.json',
-        'docs/examples/huawei-rtu.example.json',
-        'docs/examples/modbus-rtu-independent.example.json'
+        'tests/case-order.json', 'docs/examples/agc-direction-block.json'
     )) {
         $destination = Join-Path $suiteRoot $relativePath
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null

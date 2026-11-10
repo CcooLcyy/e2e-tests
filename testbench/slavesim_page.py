@@ -5,9 +5,10 @@ from decimal import Decimal, InvalidOperation
 import json
 import logging
 from pathlib import Path
+from uuid import uuid4
 
 from selenium import webdriver
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.service import Service
@@ -39,6 +40,7 @@ class SlaveSimPage:
         self.driver = None
         self._originals = {}
         self._verified = set()
+        self._temporary_basic_bus = None
         self._restoring = False
         self._snapshots = 0
 
@@ -281,16 +283,20 @@ class SlaveSimPage:
                 "内容": label, "运行影响": runtime_impact or "保存整份配置会重建所有模型并重置临时手动值及指令；原有配置定义保留"})
         return self._read_configuration(label + "保存后实际配置")
 
-    def prepare_basic(self, environment, *, check_paths=None):
-        """执行时选择真实资源，不足时通过页面新增总线及两站手动测试点。"""
-        from .modbus_environment import basic_config_from_environment
+    def prepare_basic(self, environment, *, station_count=2, check_paths=None):
+        """读取现有资源，或通过页面创建本次测试使用的总线及手动点。"""
+        from .modbus_rtu_config import RtuRuntime, RtuStation
         from .slavesim_runtime import basic_candidate, assert_existing_preserved
         before = self._read_configuration("基础采集准备前")
-        selected = basic_candidate(before)
+        selected = basic_candidate(before, station_count)
         if selected is None:
-            with self._step("按当前模拟器页面新增基础采集总线与两站手动点"):
-                name, new_link = self._add_default_bus()
-                for station in range(1, 3):
+            if any(bus["slaves"] for bus in before):
+                raise RuntimeError("没有可复用的手动测试点。新增总线需全量应用配置，会重置既有设备运行状态")
+            with self._step("按当前模拟器页面新增基础采集总线与手动点"):
+                default_name, new_link = self._add_default_bus()
+                name = f"e2e-rtu-{uuid4().hex[:12]}"
+                self._replace(self._field(self._config_bus(default_name), "总线名称"), name)
+                for station in range(1, station_count + 1):
                     card = self._config_bus(name)
                     self._open(card)
                     Select(card.find_element(By.CSS_SELECTOR, "select[name='device-type']")).select_by_value("__custom_modbus__")
@@ -307,18 +313,18 @@ class SlaveSimPage:
                     Select(self._field(reg, "数值来源")).select_by_value("manual")
                 if check_paths is not None:
                     check_paths((new_link,))
-            actual = self._save_configuration("新增基础采集总线及两站手动寄存器")
+            self._temporary_basic_bus = (name, new_link)
+            actual = self._save_configuration("新增基础采集总线及手动寄存器")
             assert_existing_preserved(before, actual)
-            selected = basic_candidate([bus for bus in actual if bus["name"] == name])
+            selected = basic_candidate([bus for bus in actual if bus["name"] == name], station_count)
             if selected is None:
-                raise AssertionError("新增资源保存后未形成两站manual UINT16 AB读写测试点")
+                raise AssertionError("新增资源保存后未形成预期的 manual UINT16 AB 读写测试点")
         bus, stations = selected
         if check_paths is not None:
             check_paths((bus["link"],))
-        runtime = {"device_name": environment.get("name") or environment["modbus_manager_address"],
-                   "bus": bus["name"], "serial_device": bus["link"], "stations": stations,
-                   "data_bits": 8, "stop_bits": 1, "parity": "无校验"}
-        config = basic_config_from_environment(environment, runtime)
+        runtime = {"bus": bus["name"], "serial_device": bus["link"], "stations": stations}
+        config = RtuRuntime(bus["name"], bus["link"], tuple(RtuStation(**station) for station in stations),
+                            float(environment.get("modbus_acquisition_timeout", 300)))
         self.desktop.metadata["RTU运行时资源"] = runtime
         self.desktop.metadata["RTU串口参数来源"] = "slaveSim采用PTY，无UART参数；DSP使用9600/8N1，路径是否可访问由真实连接及采集结果判定"
         self.driver.find_element(By.ID, "show-runtime").click()
@@ -327,6 +333,32 @@ class SlaveSimPage:
             if observed["link_path"] != config.serial_device:
                 raise AssertionError("slaveSim运行路径与实际保存配置不一致，未猜测宿主机路径")
         return config
+
+    def _cleanup_basic_bus(self):
+        from .slavesim_runtime import assert_existing_preserved
+
+        name, link = self._temporary_basic_bus
+        current = self._read_configuration("基础采集清理前")
+        target = next((bus for bus in current if bus["name"] == name), None)
+        if target is None:
+            self._temporary_basic_bus = None
+            return
+        if target["link"] != link or any(bus["slaves"] for bus in current if bus is not target):
+            raise RuntimeError(f"拒绝全量重载：本例总线 {name} 的身份已变化，或已出现其他运行设备")
+        with self._step(f"删除本次创建的总线 {name}"):
+            self._config_bus(name).find_element(By.XPATH, "./summary//button[normalize-space(.)='删除总线']").click()
+        remaining = self._save_configuration("清理本次基础采集总线")
+        assert_existing_preserved([bus for bus in current if bus is not target], remaining)
+        if any(bus["name"] == name for bus in remaining):
+            raise AssertionError(f"本次创建的总线 {name} 未删除")
+        self._temporary_basic_bus = None
+
+    def retain_basic_bus(self):
+        """DSP 连接清理结果不明确时保留其模拟端，避免拆掉仍可能使用的串口。"""
+        if self._temporary_basic_bus is not None:
+            name, path = self._temporary_basic_bus
+            self.desktop.metadata["待人工清理的RTU模拟资源"] = {"总线": name, "串口": path}
+            self._temporary_basic_bus = None
 
     def _verify_manual(self, key):
         """只读配置页，确认原值恢复不会破坏动态来源或行为模型。"""
@@ -419,37 +451,6 @@ class SlaveSimPage:
             entry["实际"] = json.dumps(result, ensure_ascii=False)
             return result
 
-    def wait_value(self, bus, station_id, function, address, expected, *, timeout):
-        """等待外部准备的工况出现，只读取新的页面刷新。"""
-        key = self._key(bus, station_id, function, address)
-        with self._step(f"等待站号 {station_id} 寄存器 {address} 的外部工况", expected=expected) as entry:
-            last_tick = max(self._tick(), 0)
-            last = None
-
-            def matches(_):
-                nonlocal last_tick, last
-                tick = self._tick()
-                if tick <= last_tick:
-                    return False
-                last = self._read(key)
-                last_tick = tick
-                return last if last["value"] == expected else False
-
-            try:
-                self._wait(matches, "未看到目标工况", timeout=timeout)
-            except TimeoutException:
-                actual = last["value"] if last else "无新鲜页面反馈"
-                entry["实际"] = str(actual)
-                if last is not None:
-                    try:
-                        self._snapshot(last)
-                    except OSError:
-                        LOG.exception("保存外部工况最后观察失败，保留等待工况错误")
-                raise AssertionError(f"外部工况未就绪：{timeout:g} 秒内未观察到 {expected}，最后值为 {actual}") from None
-            self._snapshot(last)
-            entry["实际"] = json.dumps(last, ensure_ascii=False)
-            return last
-
     def set_value(self, bus, station_id, function, address, value):
         key = self._key(bus, station_id, function, address)
         if type(value) is not int or not 0 <= value <= 65535:
@@ -494,6 +495,11 @@ class SlaveSimPage:
                             record["恢复状态"] = "已恢复原数值"
                 except Exception as error:
                     failures.append(f"{key}：{error}")
+            if self._temporary_basic_bus is not None:
+                try:
+                    self._cleanup_basic_bus()
+                except Exception as error:
+                    failures.append(str(error))
             if failures:
                 raise RuntimeError("；".join(failures))
         finally:

@@ -1,10 +1,11 @@
-"""用专用预置 RTU 场景验收 IEC104 对外品质。"""
+"""自行建立专用 RTU 场景并验收 IEC104 对外品质。"""
 from decimal import Decimal
 import json
 import math
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from selenium.common.exceptions import TimeoutException
@@ -12,14 +13,15 @@ from selenium.webdriver.common.by import By
 
 from testbench.case_plan import (
     DESKTOP_FINISH, DESKTOP_START, MASTER104_FINISH, MASTER104_START,
-    Step, case_plan, run_steps, track_fixture_step,
+    Step, case_plan, run_steps, track_fixture_context, track_fixture_step,
 )
 from testbench.login_page import PlatformLoginPage, load_login_account
 from testbench.login_plan import login_steps
-from testbench.modbus_rtu_config import validate_manager_address
 from testbench.modbus_rtu_page import ModbusRtuPage, xpath_text
-from testbench.model import Environment
+from testbench.model import Environment, validate_slavesim_url
 from testbench.rtu_quality_frames import capture_frames, decode_frame
+from testbench.rtu_quality_iec104 import RtuQualityIec104
+from testbench.rtu_quality_simulator import RtuQualitySimulator
 from testbench.workspace import local_config
 
 
@@ -32,38 +34,14 @@ PHASES = (
 )
 
 
-def _profile():
-    path = local_config("modbus-rtu-104-quality.json")
-    try:
-        profile = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise RuntimeError(f"前置条件缺失或配置不可读，请填写 {path}") from exc
-    text_fields = ("manager_address", "rtu_connection", "rtu_tag", "master_host")
-    bounds = {"master_port": (1, 65535), "common_address": (1, 65534),
-              "target_ioa": (0, 0xFFFFFF), "reference_ioa": (0, 0xFFFFFF)}
-    if not isinstance(profile, dict) or profile.keys() != {*text_fields, *bounds, "phase_timeout_seconds"}:
-        raise ValueError("专项配置字段不符，请参照 Modbus RTU 到 104 品质验收文档")
-    for name in text_fields:
-        if not isinstance(profile[name], str) or not profile[name].strip():
-            raise ValueError(f"专项配置 {name} 须为非空字符串")
-        profile[name] = profile[name].strip()
-    validate_manager_address(profile["manager_address"])
-    for name, (minimum, maximum) in bounds.items():
-        if type(profile[name]) is not int or not minimum <= profile[name] <= maximum:
-            raise ValueError(f"专项配置 {name} 须在 {minimum}～{maximum} 之间")
-    if profile["target_ioa"] == profile["reference_ioa"]:
-        raise ValueError("目标点与参照点的 IOA 必须不同")
-    timeout = profile["phase_timeout_seconds"]
-    if type(timeout) not in (int, float) or not 0 < timeout <= 300 or not math.isfinite(timeout):
-        raise ValueError("每阶段等待时间须为 0～300 秒内的正数")
-    return profile
+TARGET_STAGES = ((0, 100), (None, 0), (1, 100), (0, 100))
 
 
 def _load_account(context):
     context.account = load_login_account(local_config("login-account.json"))
 
 
-def _check_master_environment():
+def _check_environment():
     task_path = os.environ.get("TESTBENCH_TASK")
     if not task_path:
         raise RuntimeError("前置条件未满足：请从测试上位机运行并启用专用 104 主站")
@@ -71,18 +49,16 @@ def _check_master_environment():
     environment = Environment.from_dict(task["environment"])
     environment.validate_master104(required=True)
     environment.validate_master104_driver()
+    simulator_url = validate_slavesim_url(environment.slavesim_url, required=True)
+    timeout = environment.modbus_acquisition_timeout
+    if type(timeout) not in (int, float) or not 5 <= timeout <= 300:
+        raise ValueError("采集阶段等待时限必须为5至300秒")
+    return simulator_url, timeout
 
 
-def _select_connection(context):
-    page = context.rtu
-    connection = context.profile["rtu_connection"]
-    page._click(page._connection_locator(connection), "选择专用 RTU 连接")
-    title = (By.XPATH, "//div[contains(@class,'modbus-connection-card')]"
-             "//div[contains(@class,'ant-card-head-title')]//span[normalize-space(.)=" + xpath_text(connection) + "]")
-    page._until(lambda _: page._visible(title), "前置条件未满足：未显示预置 RTU 连接")
-    page._until(lambda _: "运行中" in page.driver.find_element(
-        By.CSS_SELECTOR, ".modbus-connection-card .ant-card-head").text,
-        "前置条件未满足：专用 RTU 连接须预置并保持轮询运行")
+def _open_protocol(context):
+    context.profile["master_host"] = context.iec104.visible_host()
+    context.rtu.open_current_links()
 
 
 def _target_row(context):
@@ -91,8 +67,46 @@ def _target_row(context):
     return context.rtu._visible(locator)
 
 
-def _wait_for_target(context):
-    context.rtu._until(lambda _: _target_row(context), "前置条件未满足：专用 RTU 点表未显示目标点")
+def _prepare_simulator(context):
+    context.paths = context.simulator.prepare(context.rtu.assert_serial_paths_available)
+    context.desktop.metadata["本例品质模拟串口"] = context.paths
+
+
+def _prepare_rtu(context, role):
+    page = context.rtu
+    connection, tag = f"{context.name}-{role}", f"{context.name}-{role}-rtu"
+    page.create_connection(connection, context.paths[role], 9600, 8, 1, "N", 1, 1000)
+    page.add_point(tag, deadband=1)
+    page.assert_saved_configuration()
+    context.rtu_points[role] = (connection, tag)
+    if role == "target":
+        context.profile["rtu_tag"] = tag
+
+
+def _create_iec104(context):
+    context.profile["master_port"] = context.iec104.create()
+
+
+def _import_iec104(context, role):
+    connection, tag = context.rtu_points[role]
+    context.profile[f"{role}_ioa"] = context.iec104.import_point(connection, tag, f"{context.name}-{role}-104")
+
+
+def _verify_routes(context):
+    assert context.profile["target_ioa"] != context.profile["reference_ioa"], "IEC104 目标与参照 IOA 必须不同"
+    context.iec104.check_routes()
+
+
+def _start_rtu(context):
+    page = context.rtu
+    page.open_current_links()
+    reference, reference_tag = context.rtu_points["reference"]
+    page.select(reference)
+    page.start()
+    page.wait_value(reference_tag, 100, 0, context.profile["phase_timeout_seconds"])
+    page.select(context.rtu_points["target"][0])
+    page.start()
+    context.simulator_stage = context.simulator.wait_target_exchange(None, context.profile["phase_timeout_seconds"])
 
 
 def _measurement(master, ca, ioa):
@@ -122,7 +136,7 @@ def _observation_step(index, label, quality):
                 row = master.wait_for(match, f"未看到 {label} 的新遥测", timeout=profile["phase_timeout_seconds"])
             except TimeoutException:
                 evidence = {"阶段": label, "期望品质": f"0x{quality:02X}", "最后主站点表": last,
-                            "上个已通过报文编号": context.frame_id, "应答源状态": "本例没有独立观测"}
+                            "上个已通过报文编号": context.frame_id, "应答源状态": context.simulator_stage}
                 try:
                     upper = _target_row(context)
                     evidence["上位机目标行"] = upper.text if upper is not None else None
@@ -131,7 +145,7 @@ def _observation_step(index, label, quality):
                 step["实际"] = evidence
                 master.metadata["RTU品质未观察到的阶段"] = evidence
                 raise AssertionError(f"等待{label}阶段超时，104 未观察到品质 0x{quality:02X} 的新遥测；"
-                                     f"最后点表行：{last!r}。请结合外部应答源记录区分工况未到和上送异常") from None
+                                     f"最后点表行：{last!r}。结合本例 slaveSim 工况记录区分工况未到和上送异常") from None
             step["实际"] = row
             context.observations.append(row)
             assert int(row["cells"][2]) == 36, f"目标点须为带时标短浮点遥测：{row!r}"
@@ -228,61 +242,140 @@ def _verify_frames(context):
         step["实际"] = sequence
 
 
-PROFILE = Step("quality.profile", "检查 RTU 到 IEC104 品质专项配置", "专用下位机、预置 RTU 点位和 104 观察参数有效")
-MASTER_READY = Step("quality.master.ready", "检查独立 104 主站的运行配置", "已启用专用主站，主站程序及驱动可用")
+ENVIRONMENT = Step("quality.environment", "检查 slaveSim 和独立 104 主站入口", "模拟器入口、主站程序及驱动可用")
+SIM_START = Step("quality.sim.start", "打开本例 slaveSim 会话", "显示模拟器运行页及配置入口")
+SIM_FINISH = Step("quality.sim.finish", "关闭本例 slaveSim 浏览器", "独立浏览器会话已关闭")
+UPPER_CLEANUP = Step("quality.upper.cleanup", "清理本例 IEC104 与 RTU 链路", "专用连接、点表及关联路由已删除")
+SIM_CLEANUP = Step("quality.sim.cleanup", "清理本例两路模拟总线", "既有模拟器配置保留")
 LOGIN = (
     Step("quality.login.account", "读取测试账号", "专用平台账号配置有效", _load_account),
     *login_steps("quality.login"),
 )
-PREPARED_POINT = (
-    Step("quality.rtu.links", "通过上位机连接专用下位机并打开 RTU 配置", "RTU 模块运行中，连接列表可用",
-         lambda context: context.rtu.open_device(context.profile["manager_address"])),
-    Step("quality.rtu.select", "选择专用 RTU 连接", "详情显示配置指定的连接且轮询运行中", _select_connection),
-    Step("quality.rtu.runtime", "打开 RTU 运行视图", "点表显示实时值列", lambda context: context.rtu._runtime_view()),
-    Step("quality.rtu.target", "核对预置目标点", "运行点表显示配置指定的 Tag", _wait_for_target),
+OPEN_PROTOCOL = Step("quality.rtu.links", "读取上位机当前直连主机并打开 RTU 配置",
+                     "取得 IEC104 协议主机且可读 RTU 连接列表", _open_protocol)
+PREPARE_SCENARIO = (
+    Step("quality.sim.prepare", "新建正常参照与静默目标模拟总线",
+         "实际串口路径可用于本例，参照站应答 100，目标站初始无应答", _prepare_simulator),
+    Step("quality.rtu.reference", "创建并核对本例参照 RTU 点",
+         "参照 RTU 连接与点表使用本例模拟串口、站号 1、保持寄存器 0 和正死区",
+         lambda context: _prepare_rtu(context, "reference")),
+    Step("quality.rtu.target", "创建并核对本例目标 RTU 点",
+         "目标 RTU 连接与点表使用另一模拟串口、站号 1、保持寄存器 0 和正死区",
+         lambda context: _prepare_rtu(context, "target")),
+    Step("quality.iec104.create", "建立本例带时标 IEC104 被控站", "页面显示本例独立链路及监听端口", _create_iec104),
+    Step("quality.iec104.reference", "导入参照 RTU 点为 IEC104 短浮点遥测", "参照点的 IOA 在点表显示",
+         lambda context: _import_iec104(context, "reference")),
+    Step("quality.iec104.target", "导入目标 RTU 点为 IEC104 短浮点遥测", "目标点的 IOA 在点表显示",
+         lambda context: _import_iec104(context, "target")),
+    Step("quality.iec104.routes", "在数据总线核对本例遥测路由", "参照与目标均按 RTU 到 IEC104 的方向路由", _verify_routes),
+    Step("quality.iec104.start", "启动本例 IEC104 被控站", "本例链路进入运行中",
+         lambda context: context.iec104.start()),
+    Step("quality.rtu.poll", "启动本例参照及目标 RTU 轮询",
+         "参照点采集正常且为 100，目标仍处于静默阶段", _start_rtu),
 )
 INITIAL_SESSION = (
-    Step("quality.master.target", "填写并核对专用 104 连接参数", "主机、端口和公共地址与专项配置一致",
-         _prepare_master_target),
-    Step("quality.master.connect", "连接专用 104 下位机", "收到 STARTDT 确认",
+    Step("quality.master.target", "填写并核对本例 104 主站连接参数",
+         "使用上位机当前主机及本例 IEC104 链路实际端口和公共地址", _prepare_master_target),
+    Step("quality.master.connect", "连接本例 104 被控站", "收到 STARTDT 确认",
          lambda context: context.master.connect()),
     Step("quality.gi", "在当前会话发起总召", "总召确认终止，主站实时显示正常",
          lambda context: context.master.interrogate()),
-)
-OBSERVATIONS = (
     Step("quality.gi.table", "检查总召结束时的初始点表", "参照点正常，目标点缺席", _check_initial_table),
-    *(_observation_step(index, label, quality) for index, (label, quality) in enumerate(PHASES, start=1)),
+)
+
+
+def _drive_target(index, label, address, value, expected):
+    def drive(context):
+        context.simulator.set_target(address, value, label)
+        context.simulator_stage = context.simulator.wait_target_exchange(address, context.profile["phase_timeout_seconds"])
+    return Step(f"quality.sim.phase.{index}", f"设置目标站工况：{label}", expected, drive)
+
+
+SIMULATOR_EXPECTED = ("目标站在地址 0 正常应答 100", "目标站不存在，读取无应答",
+                      "目标站存在但未配置地址 0，读取应答异常码 0x02", "目标站恢复在地址 0 应答同值 100")
+OBSERVATIONS = tuple(
+    step
+    for index, ((label, quality), (address, value), expected) in enumerate(
+        zip(PHASES, TARGET_STAGES, SIMULATOR_EXPECTED, strict=True), start=1)
+    for step in (_drive_target(index, label, address, value, expected), _observation_step(index, label, quality))
 )
 VERIFY_FRAMES = Step("quality.frames", "核对原始总召及自发遥测报文",
                      "总召省略目标，品质依次为 00、40、C0、00，故障沿用样本时标且恢复后刷新", _verify_frames)
 
 
-@case_plan(PROFILE, MASTER_READY, DESKTOP_START, *LOGIN, *PREPARED_POINT, MASTER104_START, *INITIAL_SESSION, *OBSERVATIONS, VERIFY_FRAMES,
-           MASTER104_FINISH, DESKTOP_FINISH)
+def _cleanup_upper(context):
+    page = context.rtu
+    errors = []
+    if context.iec104.port is not None:
+        page._cleaning = True
+        try:
+            context.iec104.cleanup()
+        except Exception as error:
+            errors.append(f"IEC104 链路：{error}")
+        finally:
+            page._cleaning = False
+    if page.creation_started:
+        try:
+            page.cleanup()
+        except Exception as error:
+            errors.append(f"RTU 连接：{error}")
+    if errors:
+        raise RuntimeError("；".join(errors))
+
+
+def _capture_failure(context):
+    for label, capture in (("上位机", context.desktop.capture), ("slaveSim", context.simulator.capture)):
+        try:
+            capture("rtu-104-quality-failure-before-cleanup", description=f"{label}清理前现场")
+        except Exception as error:
+            context.desktop.metadata[f"{label}品质验收取证错误"] = str(error)
+    if hasattr(context, "master"):
+        try:
+            _save_frames(context.master)
+        except Exception as error:
+            context.master.metadata["RTU品质失败现场取证错误"] = str(error)
+
+
+def _cleanup(context, request, failure):
+    step = UPPER_CLEANUP
+    try:
+        with track_fixture_step(request, step):
+            _cleanup_upper(context)
+        step = SIM_CLEANUP
+        with track_fixture_step(request, step):
+            context.simulator.cleanup()
+    except Exception as error:
+        context.desktop.metadata["RTU品质清理错误"] = f"{step.action}：{error}"
+        context.desktop.metadata["待核对的品质模拟资源"] = context.simulator.paths
+        if failure is None:
+            raise
+
+
+@case_plan(ENVIRONMENT, DESKTOP_START, *LOGIN, OPEN_PROTOCOL, SIM_START, *PREPARE_SCENARIO,
+           MASTER104_START, *INITIAL_SESSION, *OBSERVATIONS, VERIFY_FRAMES,
+           UPPER_CLEANUP, SIM_CLEANUP, SIM_FINISH, MASTER104_FINISH, DESKTOP_FINISH)
 def test_rtu_quality_reaches_iec104_with_unchanged_value(request):
     """总召省略未采到的点，值保持 100 时仍依次收到正常、NT、IV+NT 与恢复。"""
-    with track_fixture_step(request, PROFILE):
-        profile = _profile()
-    with track_fixture_step(request, MASTER_READY):
-        _check_master_environment()
+    with track_fixture_step(request, ENVIRONMENT):
+        simulator_url, timeout = _check_environment()
     desktop = request.getfixturevalue("fresh_desktop")
-    context = SimpleNamespace(profile=profile, desktop=desktop, page=PlatformLoginPage(desktop))
-    run_steps(request, LOGIN, context)
-    context.rtu = ModbusRtuPage(desktop)
-    with desktop.step("打开已预配置的 RTU 点表", expected=profile["rtu_tag"]):
-        run_steps(request, PREPARED_POINT, context)
-    master = request.getfixturevalue("master104")
-    context.master = master
-    master.metadata["RTU品质验收配置"] = profile
-    try:
-        with master.step("连接专用 104 下位机并完成总召",
-                         expected=f"{profile['master_host']}:{profile['master_port']}，CA={profile['common_address']}"):
-            run_steps(request, INITIAL_SESSION, context)
-        run_steps(request, OBSERVATIONS, context)
-    except Exception:
+    name = f"e2e-quality-{uuid4().hex[:8]}"
+    rtu = ModbusRtuPage(desktop)
+    context = SimpleNamespace(name=name, profile={"common_address": 1, "phase_timeout_seconds": timeout},
+                              desktop=desktop, page=PlatformLoginPage(desktop), rtu=rtu,
+                              iec104=RtuQualityIec104(rtu, name), rtu_points={})
+    run_steps(request, (*LOGIN, OPEN_PROTOCOL), context)
+    with track_fixture_context(request, SIM_START, SIM_FINISH, RtuQualitySimulator(desktop, simulator_url, name)) as simulator:
+        context.simulator = simulator
+        failure = None
         try:
-            _save_frames(master)
-        except Exception as exc:
-            master.metadata["RTU品质失败现场取证错误"] = str(exc)
-        raise
-    run_steps(request, (VERIFY_FRAMES,), context)
+            run_steps(request, PREPARE_SCENARIO, context)
+            context.master = request.getfixturevalue("master104")
+            context.master.metadata["RTU品质验收配置"] = context.profile
+            run_steps(request, (*INITIAL_SESSION, *OBSERVATIONS, VERIFY_FRAMES), context)
+        except BaseException as error:
+            failure = error
+            _capture_failure(context)
+            raise
+        finally:
+            _cleanup(context, request, failure)

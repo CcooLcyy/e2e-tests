@@ -1,4 +1,4 @@
-"""预置 RTU 观察入口失败时，两端证据在观察会话关闭前采集。"""
+"""RTU 正常业务入口失败时，两端证据在观察会话关闭前采集。"""
 import importlib.util
 import json
 from pathlib import Path
@@ -26,6 +26,8 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
                               capture=lambda *a, **kw: calls.append("DSP现场"))
 
     class Simulator:
+        owned_fleet = None
+
         def __init__(self, desktop, url):
             assert url == environment["slavesim_url"]
 
@@ -44,20 +46,16 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
         def __init__(self, desktop):
             pass
 
-        def open_device(self, address):
-            assert address == "192.0.2.1:50051"
+        def open_current_links(self):
             calls.append("打开业务点表")
             raise RuntimeError("RTU 业务页面未打开")
 
     monkeypatch.setattr("testbench.slavesim_page.SlaveSimPage", Simulator)
     monkeypatch.setattr("testbench.huawei_slavesim_page.HuaweiSlaveSimPage", Simulator)
-    config = SimpleNamespace(manager_address="192.0.2.1:50051")
     if fixture == "independent_rtu":
         monkeypatch.setattr(module, "ModbusRtuPage", Upper)
-        monkeypatch.setattr(module, "RtuEnvironment", SimpleNamespace(load=lambda *args, **kwargs: config))
     else:
         monkeypatch.setattr(module, "HuaweiRtuPage", Upper)
-        monkeypatch.setattr(module, "load_dedicated_fleet", lambda *args: (config, []))
     monkeypatch.setattr(module, "run_steps", lambda *_: calls.append("登录"))
     monkeypatch.setattr(module, "load_login_account", lambda _: object())
     request = SimpleNamespace(node=SimpleNamespace(_bench_reports=[]),
@@ -75,7 +73,7 @@ def test_huawei_scenario_uses_prepared_actual_bus_names(tmp_path):
     from testbench.huawei_fleet import HuaweiFleetConfig, build_fleet
     from testbench.huawei_fleet_run import HuaweiFleetRun
 
-    config = HuaweiFleetConfig("192.0.2.1:50051", tuple(f"/srv/serial-sim/tty{i}" for i in range(6)))
+    config = HuaweiFleetConfig(tuple(f"/srv/serial-sim/tty{i}" for i in range(6)))
     buses = build_fleet(config, "original")
     for index, bus in enumerate(buses):
         bus["name"] = f"现场485-{index}"

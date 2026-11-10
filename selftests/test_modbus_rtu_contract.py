@@ -1,74 +1,15 @@
 """RTU 配置和双端验收边界；不连接浏览器、平台或下位机。"""
 import pytest
 
-from testbench.modbus_rtu_config import RtuEnvironment, assert_dual_observation
+from testbench.modbus_rtu_config import RtuRuntime, RtuStation, assert_dual_observation
 
 
-def environment():
-    return {"dedicated_test_resources": True, "device_name": "测试设备", "manager_address": "192.0.2.1:50051", "bus": "专用总线",
-            "serial_device": "/dev/rtu-test", "stations": [
-                {"station_id": 1, "address": 0}, {"station_id": 2, "address": 65535}]}
-
-
-def test_rtu_acquisition_wait_defaults_to_five_minutes_and_accepts_custom_values():
-    """基础RTU构造及配置默认五分钟，300秒可用，显式20秒保留。"""
-    config = RtuEnvironment.from_dict(environment())
-    assert config.acquisition_timeout == 300
-    assert RtuEnvironment(config.device_name, config.manager_address, config.bus,
-                          config.serial_device, config.stations).acquisition_timeout == 300
-    for timeout in (20, 300):
-        assert RtuEnvironment.from_dict({**environment(), "acquisition_timeout": timeout}).acquisition_timeout == timeout
-    with pytest.raises(ValueError, match="采集时限"):
-        RtuEnvironment.from_dict({**environment(), "acquisition_timeout": 301})
-
-
-def test_station_address_bounds_and_distinct_stations():
-    """零基首末地址可用，不同站号允许同址，重复站号必须拒绝。"""
-    assert RtuEnvironment.from_dict(environment()).stations[1].address == 65535
-    value = environment()
-    value["stations"][1]["station_id"] = 1
-    with pytest.raises(ValueError, match="不同站号"):
-        RtuEnvironment.from_dict(value)
-
-
-@pytest.mark.parametrize("path", ["/srv/serial-sim/tty0", "/dev/pts/12"])
-def test_runtime_pty_absolute_paths_are_preserved(path):
-    """实际模拟器共享路径不必位于/dev，但必须原样传递给DSP连接。"""
-    assert RtuEnvironment.from_dict({**environment(), "serial_device": path}).serial_device == path
-
-
-@pytest.mark.parametrize("path", ["/", "relative/tty0", "/srv/../tty0", "/srv//tty0", "/srv/tty 0", "/srv/tty0/"])
-def test_noncanonical_serial_paths_are_rejected(path):
-    """拒绝歧义路径，不能自行归一化后指向其他串口。"""
-    with pytest.raises(ValueError, match="绝对"):
-        RtuEnvironment.from_dict({**environment(), "serial_device": path})
-
-
-@pytest.mark.parametrize("field,invalid", [
-    ("station_id", 0), ("station_id", 248), ("station_id", True),
-    ("address", -1), ("address", 65536), ("address", 1.5),
-])
-def test_invalid_station_or_address_is_rejected(field, invalid):
-    """广播站号、越界地址和非整数不得用于实际页面操作。"""
-    value = environment()
-    value["stations"][0][field] = invalid
-    with pytest.raises(ValueError):
-        RtuEnvironment.from_dict(value)
-
-
-@pytest.mark.parametrize("key,value", [
-    ("dedicated_test_resources", False), ("dedicated_test_resources", "true"),
-    ("serial_device", "COM1"), ("device_name", ""), ("poll_interval_ms", True),
-    ("manager_address", "http://host:50051/path"), ("manager_address", "host"),
-    ("acquisition_timeout", "NaN"), ("acquisition_timeout", 0),
-    ("acquisition_timeout", float("inf")), ("unexpected", 1),
-])
-def test_invalid_environment_refuses_before_touching_resources(key, value):
-    """缺少专用资源声明或参数非法时必须拒绝，不使用环境默认值继续操作。"""
-    options = environment()
-    options[key] = value
-    with pytest.raises(ValueError):
-        RtuEnvironment.from_dict(options)
+def test_rtu_runtime_keeps_observed_station_and_pty():
+    runtime = RtuRuntime("实际总线", "/srv/serial-sim/tty9", (RtuStation(23, 99),), 30)
+    assert runtime.serial_device == "/srv/serial-sim/tty9"
+    assert runtime.stations == (RtuStation(23, 99),)
+    assert (runtime.baud_rate, runtime.data_bits, runtime.parity, runtime.stop_bits) == (9600, 8, "N", 1)
+    assert runtime.acquisition_timeout == 30
 
 
 def test_engineering_expectation_comes_from_fixed_raw_input():

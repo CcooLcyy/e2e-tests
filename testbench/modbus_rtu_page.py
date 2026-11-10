@@ -79,30 +79,13 @@ class ModbusRtuPage:
             self._click(config_tab, "切换 RTU 配置页签")
         self._until(lambda _: self._visible((By.CSS_SELECTOR, ".protocol-connection-list-card")), "RTU连接列表未显示")
 
-    def open_device(self, manager_address, *, required_modules=("ModbusRTU",)):
-        self._menu("模块运维")
-        self._click((By.XPATH, "//*[@aria-label='连接方式']//label[normalize-space(.)='现场直连']"), "选择现场直连")
-        switch = self._button("切换至现场直连")
-        if self._visible(switch):
-            self._click(switch, "切换运行连接至现场直连")
-        with self.desktop.step("填写目标下位机 ModuleManager 地址", expected=manager_address):
-            field = self._until(lambda _: self._visible((By.CSS_SELECTOR, 'input[aria-label="ModuleManager 地址"]')))
-            self._replace(field, manager_address)
-        self._click(self._button("连接", "//div[contains(@class,'module-ops-connection-controls')]"), "连接目标下位机")
-        with self.desktop.step("确认目标下位机所需模块已运行", expected="、".join(required_modules)):
-            def ready(_):
-                for module in required_modules:
-                    row = self._visible((By.XPATH, "//div[contains(@class,'module-ops-list-card')]//tr[@data-row-key="
-                                         + xpath_text(module) + "]"))
-                    if row is None or "运行中" not in row.text:
-                        return False
-                    # 连接失败时界面可能保留旧表格，但停止按钮会禁用。
-                    actions = row.find_elements(By.XPATH, ".//button[normalize-space(.)='停止']")
-                    if not any(action.is_enabled() for action in actions):
-                        return False
-                return True
-            self._until(ready, "未确认目标下位机已连接并运行所有所需模块，请检查测试环境")
-        self._rtu()
+    def open_current_links(self):
+        """进入 DSP 上位机当前业务上下文，不建立下位机管理连接。"""
+        with self.desktop.step("通过上位机当前业务入口打开 RTU 配置"):
+            offline = (By.XPATH, "//header//*[contains(@class,'ant-tag') and normalize-space(.)='离线工作区']")
+            if self._visible(offline):
+                raise RuntimeError("当前上位机处于离线工作区，无法执行在线 RTU 业务验收")
+            self._rtu()
 
     def assert_serial_paths_available(self, paths):
         """创建连接前，只读检查目标串口是否被现有配置占用。"""
@@ -229,7 +212,7 @@ class ModbusRtuPage:
         logging.getLogger(__name__).info("已创建本例 RTU 连接：%s，编号=%s", name, conn_id)
         return {"name": name, "conn_id": conn_id}
 
-    def add_point(self, tag, function=3, address=0, data_type="UINT16", scale=1, offset=0):
+    def add_point(self, tag, function=3, address=0, data_type="UINT16", scale=1, offset=0, *, deadband=0):
         self._assert_identity()
         if function not in (3, 4) or data_type != "UINT16":
             raise ValueError("首批RTU采集用例仅支持0x03/0x04 UINT16")
@@ -242,13 +225,14 @@ class ModbusRtuPage:
         self._select_option("reg_count", "1 个寄存器")
         self._fill("scale", scale, "缩放系数")
         self._fill("offset", offset, "偏移量")
-        self._fill("deadband", 0, "死区")
+        self._fill("deadband", deadband, "死区")
         self._select_option("byte_order", "AB")
         self._submit("添加点位")
         edit = (By.CSS_SELECTOR, f'button[aria-label="编辑点位 {tag}"]')
         self._until(lambda _: self._visible(edit), f"保存后点表未显示采集点 {tag}")
         self.owned[self.current]["points"][tag] = {"tag": tag, "function": function_label, "address": address,
-                                                     "data_type": data_type, "scale": scale, "offset": offset}
+                                                     "data_type": data_type, "scale": scale, "offset": offset,
+                                                     "deadband": deadband}
 
     def _assert_input(self, field, expected):
         actual = self._field(field).get_attribute("value")
@@ -265,8 +249,8 @@ class ModbusRtuPage:
 
     def assert_saved_configuration(self):
         name = self.current
-        self._menu("模块运维")
-        self._rtu()
+        self._menu("数据总线")
+        self.open_current_links()
         self.select(name)
         self._click(self._button("编辑配置", "//div[contains(@class,'modbus-connection-card')]"), "重新读取连接配置")
         for field, value in self.owned[name]["fields"].items():
@@ -276,9 +260,8 @@ class ModbusRtuPage:
         self._click(self._button("取消", self.DIALOG_XPATH), "关闭配置核对窗口")
         for tag, expected in self.owned[name]["points"].items():
             self._click((By.CSS_SELECTOR, f'button[aria-label="编辑点位 {tag}"]'), f"重新读取点位 {tag}")
-            for field in ("tag", "address", "scale", "offset"):
+            for field in ("tag", "address", "scale", "offset", "deadband"):
                 self._assert_input(field, expected[field])
-            self._assert_input("deadband", 0)
             for field in ("function", "data_type"):
                 self._assert_select(field, expected[field])
             self._assert_select("reg_count", "1 个寄存器")

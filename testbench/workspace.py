@@ -13,7 +13,6 @@ CONFIG_FILES = (
     "huawei-rtu.json",
     "modbus-rtu.json",
     "modbus-rtu-independent.json",
-    "modbus-rtu-104-quality.json",
     "agc-direction-block.json",
 )
 EVIDENCE_EXTENSIONS = {".json", ".jsonl", ".xml", ".log", ".md", ".txt", ".png", ".jpg", ".jpeg"}

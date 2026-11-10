@@ -65,7 +65,7 @@ def validate_topology(buses):
             raise ValueError("slaveSim 页面从站站号无效或重复")
 
 
-def basic_candidate(buses):
+def basic_candidate(buses, station_count=2):
     validate_topology(buses)
     for bus in buses:
         stations = []
@@ -79,8 +79,8 @@ def basic_candidate(buses):
                         and 0 <= reg["address"] <= 65535):
                     stations.append({"station_id": slave["station_id"], "address": reg["address"]})
                     break
-        if len(stations) >= 2:
-            return bus, stations[:2]
+        if len(stations) >= station_count:
+            return bus, stations[:station_count]
     return None
 
 

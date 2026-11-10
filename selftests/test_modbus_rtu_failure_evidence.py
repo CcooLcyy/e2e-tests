@@ -107,22 +107,21 @@ def test_stop_between_reads_preserves_partial_pair(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("plan,prefix", [("SOURCE_CHANGE", "first"), ("SCALED_CHANGE", "scaled"), ("TWO_STATIONS", "first")])
-def test_source_change_failure_stops_before_waiting_for_upper(tmp_path, monkeypatch, plan, prefix):
+def test_source_write_failure_stops_before_waiting_for_upper(tmp_path, monkeypatch, plan, prefix):
     cases = business_cases()
     steps = getattr(cases, plan)
-    start = steps.index(cases.WAIT_FIRST_CHANGE)
+    start = steps.index(cases.SET_FIRST_CHANGE)
     assert steps[start + 1].id == f"{prefix}.change.select"
 
-    def wait_source(*args, **kwargs):
+    def set_source(*args):
         assert args == ("专用总线", 1, "0x03", 0, 2345)
-        assert kwargs == {"timeout": 20}
-        raise AssertionError("外部工况未就绪：最后值为 1234")
+        raise AssertionError("模拟器设值未生效：最后值为 1234")
 
     environment = SimpleNamespace(bus="专用总线", stations=(RtuStation(1, 0),), acquisition_timeout=20)
-    scenario = cases.RtuScenario(EvidenceDesktop(tmp_path), SimpleNamespace(wait_value=wait_source), None, environment)
+    scenario = cases.RtuScenario(EvidenceDesktop(tmp_path), SimpleNamespace(set_value=set_source), None, environment)
     request = SimpleNamespace(node=SimpleNamespace(nodeid="rtu-source-not-ready"))
     monkeypatch.setattr("testbench.case_plan.emit", lambda _: None)
 
-    with pytest.raises(AssertionError, match="外部工况未就绪"):
+    with pytest.raises(AssertionError, match="模拟器设值未生效"):
         cases.run_observations(request, steps[start:], scenario)
-    assert request.node._bench_plan_steps == {cases.WAIT_FIRST_CHANGE.id: "failed"}
+    assert request.node._bench_plan_steps == {cases.SET_FIRST_CHANGE.id: "failed"}

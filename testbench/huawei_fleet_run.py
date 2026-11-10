@@ -1,5 +1,6 @@
 """六路21台页面编排和逐点证据，控制与采集边界明确记录。"""
 from collections import Counter
+from dataclasses import replace
 from decimal import Decimal
 import json
 import logging
@@ -30,7 +31,7 @@ class HuaweiFleetRun:
         self.addresses = sorted({point.address for point in READ_POINTS} | {30075})
         desktop.metadata["华为六路拓扑"] = self.buses
         desktop.metadata["华为遥控缺口"] = list(UNIMPLEMENTED_CONTROLS)
-        desktop.metadata["华为验收范围"] = "本次创建的机群连接对外部预置工况的抄读匹配"
+        desktop.metadata["华为验收范围"] = "本次创建的机群连接对 slaveSim 驱动工况的抄读匹配"
 
     @staticmethod
     def _identity(bus, device):
@@ -43,10 +44,11 @@ class HuaweiFleetRun:
                 try:
                     source = self.simulator.observe_device(bus["name"], station, self.addresses)
                 except (AssertionError, NoSuchElementException, TimeoutException) as error:
-                    raise RuntimeError(f"外部前置未满足：{bus['name']} 站号{station}的华为寄存器不可观察：{error}") from error
+                    raise RuntimeError(f"{bus['name']} 站号{station}的新建华为寄存器不可观察：{error}") from error
                 self.desktop.check(f"确认第{bus['index']}路站号{station}的模拟设备及串口",
                                    (source["bus"], source["station_id"], source["link_path"]),
                                    (bus["name"], station, bus["serial_device"]))
+                device["point_addresses"] = {point.key: source["registers"][point.address]["address"] for point in READ_POINTS}
 
     def create_device(self, bus, device):
         station = device["station_id"]
@@ -55,9 +57,29 @@ class HuaweiFleetRun:
         self.upper.create_connection(name, bus["serial_device"], self.config.baud_rate, 8, 1, "N", station,
                                      self.config.poll_interval_ms)
         for point in READ_POINTS:
-            self.upper.add_huawei_point(point, tags[point.key])
+            self.upper.add_huawei_point(replace(point, address=device["point_addresses"][point.key]), tags[point.key])
         self.upper.start()
         self.connections[self._identity(bus, device)] = {"name": name, "tags": tags}
+
+    def apply_stage(self, stage):
+        for bus in self.buses:
+            for device in bus["devices"]:
+                args = bus["name"], device["station_id"]
+                self.simulator.observe_device(*args, (32089, 32080, 32082, 35303, 35307))
+                if stage == "有功调节":
+                    self.simulator.apply_control(*args, "percent", Decimal(10) + Decimal(device["ordinal"]) / 10)
+                elif stage == "无功调节":
+                    self.simulator.apply_control(*args, "pf", Decimal("0.9"))
+                elif stage == "负无功调节":
+                    self.simulator.apply_control(*args, "ratio", Decimal("-0.2"))
+                elif stage == "待机":
+                    self.simulator.apply_scenario(*args, dc_available_kw=0)
+                elif stage == "限电停运":
+                    self.simulator.apply_control(*args, "percent", 0)
+                    self.simulator.apply_scenario(*args, dc_available_kw=device["dc_available_kw"])
+                elif stage == "恢复发电":
+                    self.simulator.apply_control(*args, "pf", 1)
+                    self.simulator.apply_control(*args, "percent", 100)
 
     def _physics_errors(self, stage, device, snapshot):
         """固定场景与目标独立约束，避免两端同时落在错误工况仍通过。"""
@@ -150,13 +172,13 @@ class HuaweiFleetRun:
             attempts.append(last)
             finished = last["通过"] or time.monotonic() >= deadline
             if finished and not last["通过"] and not source_stage_seen:
-                errors.insert(0, f"外部工况未就绪：在等待窗口内未观察到{stage}的预定源状态")
+                errors.insert(0, f"模拟器工况未就绪：在等待窗口内未观察到{stage}的预定源状态")
             self._save_attempts(identity, stage, attempts)
             if finished:
                 for row in rows:
                     self.previous[(identity, row["点标识"])] = row
                 return last
-            # 等待预先安排的外部工况与两端反馈收敛。
+            # 等待本例设置的模拟器工况与两端反馈收敛。
             time.sleep(0.2)
 
     def _save_attempts(self, identity, stage, attempts):
@@ -246,7 +268,7 @@ class HuaweiFleetRun:
         (self.desktop.artifacts / "huawei-fleet-results.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         lines = ["# 华为六路21台抄读匹配结果", "", f"设备工况完成：{completed}/{total}，失败：{len(failed)}。",
-                 "", "范围：本次创建的机群连接对外部预置工况的 DSP 抄读匹配。DSP 下发调节及 104 遥控未验证。",
+                 "", "范围：本次创建的机群连接对 slaveSim 工况的 DSP 抄读匹配。DSP 下发调节及 104 遥控未验证。",
                  "40200/40201启停遥控：模型未实现，未发送命令，不计为通过。", "",
                  "| 路号 | 设备数 | 全部工况匹配设备数 |", "| --- | --- | --- |"]
         lines.extend(f"| {item['路号']} | {item['设备数']} | {item['通过设备']} |" for item in channels)

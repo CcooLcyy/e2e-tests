@@ -35,7 +35,7 @@ class Desktop:
 
 
 def sample_run(tmp_path):
-    config = HuaweiFleetConfig("192.0.2.1:50051", tuple(f"/dev/rtu{i}" for i in range(6)), acquisition_timeout=30)
+    config = HuaweiFleetConfig(tuple(f"/dev/rtu{i}" for i in range(6)), acquisition_timeout=30)
     scenario = HuaweiFleetRun(Desktop(tmp_path), None, None, config, "unit")
     bus, device = scenario.buses[0], scenario.buses[0]["devices"][0]
     registers = {point.address: {"value": 0, "type": "UINT16" if point.data_type == "BOOL" else point.data_type}
@@ -129,7 +129,7 @@ def test_source_with_wrong_scene_does_not_pass_when_both_ends_agree(tmp_path):
     result = scenario.sample("发电", bus, device)
     assert not result["通过"] and any("固定目标" in error for error in result["工况错误"])
     assert not result["已观察到预定源工况"]
-    assert any("外部工况未就绪" in error for error in result["工况错误"])
+    assert any("模拟器工况未就绪" in error for error in result["工况错误"])
 
 
 def test_late_matching_observation_cannot_pass_deadline(tmp_path, monkeypatch):
@@ -149,6 +149,7 @@ def test_creation_uses_the_installed_serial_path_and_case_owned_tags(tmp_path):
     scenario.upper = SimpleNamespace(create_connection=lambda *args: connections.append(args),
                                      add_huawei_point=lambda *args: points.append(args), start=lambda: started.append(True))
     scenario.simulator = object()
+    device["point_addresses"] = {point.key: point.address for point in READ_POINTS}
     scenario.create_device(bus, device)
     name = "e2e-huawei-unit-r1-s1"
     assert connections == [(name, "/dev/rtu0", 9600, 8, 1, "N", 1, 1000)]
@@ -160,6 +161,7 @@ def test_creation_uses_the_installed_serial_path_and_case_owned_tags(tmp_path):
 def test_one_failed_device_stage_is_retained_while_other_devices_finish(tmp_path):
     """单台失败不放宽断言，完成其他独立观测后总结果仍失败且不能写全部抄通。"""
     scenario, *_ = sample_run(tmp_path)
+    scenario.apply_stage = lambda _: None
     scenario.capture_both = lambda *args: []
     def sample(stage, bus, device):
         return {"工况": stage, "路号": bus["index"], "站号": device["station_id"], "点位": [],
@@ -175,6 +177,7 @@ def test_one_failed_device_stage_is_retained_while_other_devices_finish(tmp_path
 def test_missing_screenshot_prevents_green_device_stage(tmp_path):
     """数据全匹配但双端取证缺失时，该工况与整台结果仍失败。"""
     scenario, *_ = sample_run(tmp_path)
+    scenario.apply_stage = lambda _: None
     def sample(stage, bus, device):
         return {"工况": stage, "路号": bus["index"], "站号": device["station_id"],
                 "点位": [{"通过": True} for _ in READ_POINTS], "通过": True, "工况错误": []}
