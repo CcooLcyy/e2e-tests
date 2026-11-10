@@ -5,7 +5,7 @@ import pytest
 from testbench.pytest_plugin import fail_e2e_prerequisite
 
 
-pytestmark = [pytest.mark.case_group("AVC 周期控制"), pytest.mark.opt_in]
+pytestmark = pytest.mark.case_group("AVC 周期控制")
 
 
 def test_avc_voltage_deviation_recalculates_without_new_input(request):

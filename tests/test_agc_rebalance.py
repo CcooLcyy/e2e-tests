@@ -4,7 +4,7 @@ import pytest
 from testbench.pytest_plugin import fail_e2e_prerequisite
 
 
-pytestmark = [pytest.mark.case_group("AGC 通信重分配"), pytest.mark.opt_in]
+pytestmark = pytest.mark.case_group("AGC 通信重分配")
 
 
 def test_agc_redistributes_when_rtu_member_loses_communication(request):
