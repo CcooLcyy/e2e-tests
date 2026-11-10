@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, Clock3, FileText, FolderOpen, History as HistoryIcon, Layers3, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
 import { call, choose, desktop, openArtifact } from './api';
 import type { Bootstrap, CaseInfo, Detail, Environment, History, Master104Check, Poll } from './api';
@@ -71,6 +71,7 @@ export default function App() {
   const starting = useRef(false);
   const checkingMaster104 = useRef(false);
   const master104Polling = useRef(false);
+  const flowScroll = useRef<HTMLDivElement>(null);
   const disabled = active || busy || maintenance;
   const slavesimCheckResult = slavesimCheck?.url===environment.slavesim_url.trim()?slavesimCheck:null;
 
@@ -225,6 +226,17 @@ export default function App() {
     if(taskIds.length)console.info('本次任务通过率：',passRate,'通过：',stats.passed,'失败：',stats.failed);
   },[passRate,stats.passed,stats.failed,taskIds]);
   const currentCase=cases.find(c=>c.id===focused);
+  const followStepId = record?.latest_plan_step_id;
+  useLayoutEffect(() => {
+    if (page !== 'execution' || tab !== 'flow' || !followStepId) return;
+    const panel = flowScroll.current;
+    const row = panel?.querySelector('[data-follow-step]');
+    if (!panel || !row) return;
+    const viewport = panel.getBoundingClientRect();
+    const step = row.getBoundingClientRect();
+    if (step.top >= viewport.top && step.bottom <= viewport.bottom) return;
+    panel.scrollTop += step.top - viewport.top - Math.max(0, (panel.clientHeight - step.height) / 2);
+  }, [page, tab, focused, followStepId]);
   const flowFinished=!!record && (record.status!=='pending' && record.status!=='running'
     || taskIds.includes(focused) && taskStatus!=='pending' && taskStatus!=='running');
   const visible=visibleCases(cases,'',search);
@@ -299,9 +311,9 @@ export default function App() {
                 <button className={tab==='steps'?'active':''} aria-pressed={tab==='steps'} onClick={()=>setTab('steps')}><CheckCheck size={14}/>测试结果</button>
                 <button className={tab==='logs'?'active':''} aria-pressed={tab==='logs'} onClick={()=>setTab('logs')}><Terminal size={14}/>诊断记录</button>
               </div>
-              {tab==='flow'?<div className="detail-scroll" key={focused}>
+              {tab==='flow'?<div className="detail-scroll" key={focused} ref={flowScroll}>
                 <CaseFlow testCase={currentCase} steps={record?.plan_steps}
-                  caseStatus={record?.status} finished={flowFinished}/>
+                  caseStatus={record?.status} finished={flowFinished} followStepId={followStepId}/>
               </div>:tab==='steps'?<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/><span><Clock3 size={13}/>{duration(record.duration)}</span></div>}<BusinessCaseDetails key={focused} detail={detail} status={record?.status} onOpen={path=>void open(path)}/></div>:<div className="log-scroll">{logs.length?logs.map((event,index)=><div className="log-line" key={index}><time>{event.time?.slice(11,19)||'--:--:--'}</time><span>{event.message||event.name||(event.type==='case_started'?'开始执行用例':event.type==='task_finished'?'任务执行结束':event.type==='case_finished'?`用例${labels[event.status||'']||'结束'}`:'准备测试任务')}{event.type==='step'&&` · ${labels[event.status||'']||''}`}</span></div>):<div className="empty"><Terminal size={26}/><span>执行日志将在任务开始后显示</span></div>}</div>}
             </section>
           </div>

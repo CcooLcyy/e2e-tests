@@ -170,6 +170,7 @@
 .case-flow li { padding: 8px 0 12px 4px; border-bottom: 1px solid #edf1f6; line-height: 1.7; }
 .case-flow li:last-child { border-bottom: 0; }
 .case-flow li::marker { color: #4677e4; font-weight: 600; }
+.case-flow li[aria-current="step"] { background: #eef4ff; box-shadow: -3px 0 #4677e4; }
 .case-flow p { color: #53647d; margin-top: 4px; }
 .case-flow p span { margin-inline-end: 8px; font-weight: 600; }
 .flow-step-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }

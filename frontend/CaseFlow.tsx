@@ -8,11 +8,12 @@ const stepLabels: Record<string, string> = {
   pending: '待执行',
 };
 
-export function CaseFlow({ testCase, steps, caseStatus, finished = false }: {
+export function CaseFlow({ testCase, steps, caseStatus, finished = false, followStepId }: {
   testCase?: Pick<CaseInfo, 'flow' | 'flow_blocked' | 'executable_flow'>;
   steps?: Record<string, string>;
   caseStatus?: string;
   finished?: boolean;
+  followStepId?: string;
 }) {
   if (!testCase?.flow?.length) {
     return <div className="empty"><span>{testCase ? '此用例尚未填写测试流程' : '选择用例查看测试流程'}</span></div>;
@@ -28,7 +29,8 @@ export function CaseFlow({ testCase, steps, caseStatus, finished = false }: {
           ? caseStatus === 'cancelled' ? 'cancelled' : 'incomplete'
           : recorded || (finished ? 'not_run' : 'pending');
         const label = stepLabels[status] || labels[status] || status;
-        return <li key={id ?? index} aria-current={status === 'running' ? 'step' : undefined}>
+        return <li key={id ?? index} aria-current={status === 'running' ? 'step' : undefined}
+          data-follow-step={id && id === followStepId ? true : undefined}>
           {group && group !== flow[index - 1]?.group && <h4 className="flow-step-group">{group}</h4>}
           <div className="flow-step-heading">
             <strong>{action}</strong>

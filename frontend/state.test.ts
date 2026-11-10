@@ -81,3 +81,16 @@ test('清理阶段失败应覆盖用例通过，保留错误供详情查看', ()
   assert.equal(state.a.message, '清理失败');
   assert.equal(counts(state, ['a']).failed, 1);
 });
+
+test('跟随各用例最后一条计划步骤事件，同批完成的步骤仍可定位', () => {
+  const state = applyEvents(initialRecords(['a', 'b']), [
+    { type: 'plan_step', case_id: 'a', plan_step_id: 'first', status: 'passed' },
+    { type: 'plan_step', case_id: 'a', plan_step_id: 'next', status: 'running' },
+    { type: 'plan_step', case_id: 'a', plan_step_id: 'next', status: 'passed' },
+    { type: 'case_finished', case_id: 'a', status: 'passed' },
+    { type: 'plan_step', case_id: 'b', plan_step_id: 'first', status: 'running' },
+  ]);
+  assert.equal(state.a.latest_plan_step_id, 'next');
+  assert.equal(state.a.plan_steps?.next, 'passed');
+  assert.equal(state.b.latest_plan_step_id, 'first');
+});
