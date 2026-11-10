@@ -5,8 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from testbench.slavesim_runtime import (basic_candidate, fleet_candidates, validate_topology,
-                                       assert_existing_preserved, validate_fleet_capacity)
+from testbench.slavesim_runtime import basic_candidate, fleet_candidates, validate_fleet_capacity, validate_topology
 from testbench.slavesim_page import SlaveSimPage
 from testbench.huawei_slavesim_page import HuaweiSlaveSimPage
 from testbench.huawei_fleet import HuaweiFleetConfig, build_fleet
@@ -54,15 +53,6 @@ def test_duplicate_links_are_reported_instead_of_guessed():
         validate_topology(buses)
 
 
-def test_adding_resources_requires_all_existing_configuration_definitions_unchanged():
-    before = [{"name": "原有", "link": "/srv/tty1", "slaves": [manual(1, 5)]}]
-    after = deepcopy(before) + [{"name": "新增", "link": "/srv/tty2", "slaves": [manual(1, 0)]}]
-    assert_existing_preserved(before, after)
-    after[0]["slaves"][0]["registers"][0]["address"] = 6
-    with pytest.raises(AssertionError, match="既有配置定义"):
-        assert_existing_preserved(before, after)
-
-
 def test_fleet_requires_six_exact_station_sets_and_model_registers():
     addresses = {32089, 30075}
     buses = [{"name": f"实际{i}", "link": f"/srv/actual{i}", "slaves": [
@@ -74,8 +64,11 @@ def test_fleet_requires_six_exact_station_sets_and_model_registers():
 
 
 class ReadOnlyDriver:
+    def __init__(self, marker=None):
+        self.marker = marker
+
     def find_element(self, *_):
-        return SimpleNamespace(click=lambda: None)
+        return SimpleNamespace(click=lambda: None, get_dom_attribute=lambda _: self.marker)
 
 
 def environment():
@@ -128,11 +121,24 @@ def test_basic_path_conflict_prevents_observation_and_modification(tmp_path):
 
 def test_basic_does_not_rebuild_unrelated_running_devices(tmp_path):
     page = SlaveSimPage(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
+    page.driver = ReadOnlyDriver()
     unrelated = {"name": "现有", "link": "/srv/live/tty9", "slaves": [manual(1, 0)]}
     page._read_configuration = lambda _: [unrelated]
     page._add_default_bus = lambda: pytest.fail("不应改变含无关运行资源的配置")
     with pytest.raises(RuntimeError, match="重置既有设备运行状态"):
         page.prepare_basic(environment(), station_count=2)
+
+
+@pytest.mark.parametrize("marker", [None, "false", "true"])
+def test_only_explicit_preservation_capability_allows_unrelated_running_devices(tmp_path, marker):
+    page = SlaveSimPage(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
+    page.driver = ReadOnlyDriver(marker)
+    before = [{"name": "既有", "link": "/srv/existing", "slaves": [manual(1, 0)]}]
+    if marker == "true":
+        assert page._assert_save_safe(before, ("本例",)) is True
+    else:
+        with pytest.raises(RuntimeError, match="重置既有设备运行状态"):
+            page._assert_save_safe(before, ("本例",))
 
 
 def fleet_page(tmp_path):
@@ -151,7 +157,7 @@ def test_fleet_does_not_save_over_other_simulator_buses(tmp_path):
     page = fleet_page(tmp_path)
     page._read_configuration = lambda _: [{"name": "既有", "link": "/srv/existing", "slaves": []}]
     page._save_configuration = lambda _: pytest.fail("已有其他资源时不得保存")
-    with pytest.raises(RuntimeError, match="已存在|已有总线"):
+    with pytest.raises(RuntimeError, match="重置既有设备运行状态"):
         page.prepare_owned_fleet(30, "本次", check_paths=lambda _: pytest.fail("不应分配串口"))
     assert page.owned_fleet is None
 
@@ -167,9 +173,9 @@ def test_fleet_uses_created_configuration_readback(tmp_path):
             "name": bus["name"], "link": path,
             "slaves": [{"station_id": device["station_id"]} for device in bus["devices"]],
         } for bus, path in zip(buses, paths, strict=True)}
+        return deepcopy(list(page.owned_fleet.values()))
 
     page.create_fleet = create
-    page._read_configuration = lambda _: deepcopy(list(page.owned_fleet.values()))
     config, actual = page.prepare_owned_fleet(30, "本次", check_paths=checked.append)
     assert config.serial_devices == checked[0]
     assert [bus["serial_device"] for bus in actual] == list(checked[0])
@@ -178,14 +184,56 @@ def test_fleet_uses_created_configuration_readback(tmp_path):
 
 def test_fleet_cleanup_refuses_a_changed_or_foreign_configuration(tmp_path):
     page = fleet_page(tmp_path)
+    page.driver = ReadOnlyDriver("true")
     owned = {"name": "本次", "link": "/srv/case", "slaves": [{"station_id": 1}]}
     page.owned_fleet = {"本次": owned}
-    page._read_configuration = lambda _: [deepcopy(owned), {"name": "其他", "link": "/srv/foreign", "slaves": []}]
+    page._read_configuration = lambda _: [{**owned, "link": "/srv/changed"},
+                                          {"name": "其他", "link": "/srv/foreign", "slaves": []}]
     page._config_bus = lambda _: pytest.fail("拒绝删除任意总线")
     with pytest.raises(AssertionError, match="不一致"):
         page.cleanup_owned_fleet()
     assert page.owned_fleet == {"本次": owned}
     assert not page._restoring
+
+
+def test_fleet_cleanup_with_preservation_capability_keeps_foreign_fleet(tmp_path):
+    page = fleet_page(tmp_path)
+    page.driver = ReadOnlyDriver("true")
+    owned = {"name": "本次", "link": "/srv/case", "slaves": [{"station_id": 1}]}
+    foreign = {"name": "其他", "link": "/srv/foreign", "slaves": [{"station_id": 1, "model": "huawei_v3"}]}
+    page.owned_fleet = {"本次": owned}
+    page._read_configuration = lambda _: deepcopy([owned, foreign])
+    deleted = []
+    page._config_bus = lambda name: SimpleNamespace(find_element=lambda *_: SimpleNamespace(click=lambda: deleted.append(name)))
+
+    def save(_, *, before, owned_names, protect_empty_buses):
+        assert before == [owned, foreign]
+        assert set(owned_names) == {"本次"}
+        assert deleted == ["本次"]
+        return [foreign]
+
+    page._save_configuration = save
+    page.cleanup_owned_fleet()
+    assert page.owned_fleet is None
+    assert not page._restoring
+
+
+@pytest.mark.parametrize("changed_at", ["draft", "readback"])
+def test_configuration_save_verifies_foreign_topology_before_and_after(tmp_path, changed_at):
+    page = fleet_page(tmp_path)
+    saved = []
+    fieldset = SimpleNamespace(get_dom_attribute=lambda _: "true")
+    save = SimpleNamespace(click=lambda: saved.append(True))
+    page.driver = SimpleNamespace(find_element=lambda _, name: fieldset if name == "config-fields" else save)
+    page._wait = lambda *_: None
+    foreign = {"name": "既有", "link": "/srv/foreign", "slaves": [manual(1, 0)]}
+    changed = {**foreign, "slaves": [manual(1, 3)]}
+    owned = {"name": "本次", "link": "/srv/case", "slaves": [manual(1, 0)]}
+    page._configuration_snapshot = lambda _: [changed if changed_at == "draft" else foreign, owned]
+    page._read_configuration = lambda _: [changed, owned]
+    with pytest.raises(AssertionError, match="无关 slaveSim 总线配置发生变化：既有"):
+        page._save_configuration("新增", before=[foreign], owned_names=("本次",))
+    assert bool(saved) == (changed_at == "readback")
 
 
 def capacity_fleet():

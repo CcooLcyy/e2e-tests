@@ -12,7 +12,7 @@ from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 
 from testbench.case_plan import (
-    DESKTOP_FINISH, DESKTOP_START, MASTER104_FINISH, MASTER104_START,
+    DESKTOP_FINISH, DESKTOP_START, MASTER104_FINISH, MASTER104_START, SLAVESIM_BROWSER_READY,
     Step, case_plan, run_steps, track_fixture_context, track_fixture_step,
 )
 from testbench.login_page import PlatformLoginPage, load_login_account
@@ -351,13 +351,15 @@ def _cleanup(context, request, failure):
             raise
 
 
-@case_plan(ENVIRONMENT, DESKTOP_START, *LOGIN, OPEN_PROTOCOL, SIM_START, *PREPARE_SCENARIO,
+@case_plan(ENVIRONMENT, SLAVESIM_BROWSER_READY, DESKTOP_START, *LOGIN, OPEN_PROTOCOL, SIM_START, *PREPARE_SCENARIO,
            MASTER104_START, *INITIAL_SESSION, *OBSERVATIONS, VERIFY_FRAMES,
            UPPER_CLEANUP, SIM_CLEANUP, SIM_FINISH, MASTER104_FINISH, DESKTOP_FINISH)
 def test_rtu_quality_reaches_iec104_with_unchanged_value(request):
     """总召省略未采到的点，值保持 100 时仍依次收到正常、NT、IV+NT 与恢复。"""
     with track_fixture_step(request, ENVIRONMENT):
         simulator_url, timeout = _check_environment()
+    with track_fixture_step(request, SLAVESIM_BROWSER_READY):
+        browser = request.getfixturevalue("slavesim_browser")
     desktop = request.getfixturevalue("fresh_desktop")
     name = f"e2e-quality-{uuid4().hex[:8]}"
     rtu = ModbusRtuPage(desktop)
@@ -365,7 +367,8 @@ def test_rtu_quality_reaches_iec104_with_unchanged_value(request):
                               desktop=desktop, page=PlatformLoginPage(desktop), rtu=rtu,
                               iec104=RtuQualityIec104(rtu, name), rtu_points={})
     run_steps(request, (*LOGIN, OPEN_PROTOCOL), context)
-    with track_fixture_context(request, SIM_START, SIM_FINISH, RtuQualitySimulator(desktop, simulator_url, name)) as simulator:
+    with track_fixture_context(request, SIM_START, SIM_FINISH,
+                               RtuQualitySimulator(desktop, simulator_url, name, browser=browser)) as simulator:
         context.simulator = simulator
         failure = None
         try:

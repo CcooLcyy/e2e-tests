@@ -43,11 +43,6 @@ def validate_fleet_capacity(actual_buses, planned_buses):
     return observations
 
 
-def assert_existing_preserved(before, after):
-    if any(bus not in after for bus in before):
-        raise AssertionError("新增模拟资源后既有配置定义发生变化，保留现场")
-
-
 def validate_topology(buses):
     names, links = set(), set()
     for bus in buses:

@@ -41,7 +41,13 @@ def installed_runtime():
 def matching_cached_driver(cache, runtime):
     if runtime is None:
         return None
-    build = _version(runtime.parent.name)[:3]
+    return matching_driver_version(cache, runtime.parent.name)
+
+
+def matching_driver_version(cache, version):
+    build = _version(version)[:3]
+    if not build:
+        return None
     candidates = (exe for exe in (cache / "msedgedriver" / "win64").glob("*/msedgedriver.exe")
                   if _version(exe.parent.name)[:3] == build and exe.is_file())
     return max(candidates, key=lambda exe: _version(exe.parent.name), default=None)
@@ -140,6 +146,36 @@ def _enable_driver_inheritance(driver):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def download_matching_driver(cache, browser, version, *, binary=None):
+    import selenium
+
+    manager = Path(selenium.__file__).parent / "webdriver/common/windows/selenium-manager.exe"
+    cache.mkdir(parents=True, exist_ok=True)
+    # 下载到同盘临时目录，避免超时或中断留下可被误选的半成品。
+    with TemporaryDirectory(dir=cache) as directory:
+        staging = Path(directory)
+        command = [
+            str(manager), "--browser", browser,
+            "--browser-version", version, "--arch", "x64", "--cache-path", str(staging),
+            "--avoid-browser-download", "--skip-driver-in-path", "--avoid-stats",
+            "--timeout", "15", "--output", "JSON",
+        ]
+        if binary is not None:
+            command += ["--browser-path", str(binary)]
+        # 先尝试精确版本，再尝试 Selenium Manager 找到的同构建线驱动。
+        for version_args in (["--driver-version", version], []):
+            result = subprocess.run(command + version_args, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=25,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            driver = matching_driver_version(staging, version)
+            if result.returncode == 0 and driver:
+                target = cache / driver.relative_to(staging)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                driver.replace(target)
+                return target
+    return None
+
+
 def _prepare_driver(cache, runtime):
     version = runtime.parent.name
     try:
@@ -148,32 +184,11 @@ def _prepare_driver(cache, runtime):
             print(f"Using cached WebDriver for WebView2 {version}.", flush=True)
             return 0
 
-        import selenium
-
-        manager = Path(selenium.__file__).parent / "webdriver/common/windows/selenium-manager.exe"
         print(f"Downloading WebDriver for WebView2 {version}.", flush=True)
-        cache.mkdir(parents=True, exist_ok=True)
-        # 下载到同盘临时目录，避免超时或中断留下可被误选的半成品。
-        with TemporaryDirectory(dir=cache) as directory:
-            staging = Path(directory)
-            command = [
-                str(manager), "--browser", "webview2",
-                "--browser-version", version, "--arch", "x64", "--cache-path", str(staging),
-                "--avoid-browser-download", "--skip-driver-in-path", "--avoid-stats",
-                "--timeout", "15", "--output", "JSON",
-            ]
-            # 先尝试精确版本，再让 Selenium Manager 查找同一主版本的发行版。
-            for version_args in (["--driver-version", version], []):
-                result = subprocess.run(command + version_args, stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.DEVNULL, timeout=25)
-                driver = matching_cached_driver(staging, runtime)
-                if result.returncode == 0 and driver:
-                    target = cache / driver.relative_to(staging)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    driver.replace(target)
-                    _enable_driver_inheritance(target)
-                    print("WebDriver is ready.", flush=True)
-                    return 0
+        if driver := download_matching_driver(cache, "webview2", version):
+            _enable_driver_inheritance(driver)
+            print("WebDriver is ready.", flush=True)
+            return 0
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"WebDriver 准备失败：{error}", flush=True)
         return 1

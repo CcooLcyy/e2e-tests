@@ -32,11 +32,12 @@ def _literal(value):
 
 
 class SlaveSimPage:
-    """每例创建独立 Edge；不接管用户浏览器，不保存整份模拟器配置。"""
+    """管理本例浏览器及模拟资源，按模拟器保存能力保护无关设备。"""
 
-    def __init__(self, desktop, url):
+    def __init__(self, desktop, url, *, browser=None):
         self.desktop = desktop
         self.url = validate_slavesim_url(url, required=True)
+        self.browser = browser
         self.driver = None
         self._originals = {}
         self._verified = set()
@@ -47,15 +48,20 @@ class SlaveSimPage:
     def __enter__(self):
         try:
             with self._step("打开独立管理页面"):
-                if not self.desktop.driver_path:
-                    raise ValueError("slaveSim 管理页需要匹配本机 Edge 的 EdgeDriver，请在测试环境中指定驱动路径")
+                browser = self.browser
+                if browser is None:
+                    raise RuntimeError("slaveSim 启动前缺少已匹配的系统 Edge 驱动")
+                self.desktop.metadata["slaveSim浏览器版本"] = browser.browser_version
+                self.desktop.metadata["slaveSim驱动版本"] = browser.driver_version
+                self.desktop.metadata["slaveSim驱动路径"] = str(browser.driver)
                 profile = self.desktop.artifacts / "slavesim-edge-profile"
                 profile.mkdir(parents=True, exist_ok=True)
                 options = webdriver.EdgeOptions()
+                options.binary_location = str(browser.binary)
                 options.add_argument(f"--user-data-dir={profile.resolve()}")
                 options.add_argument("--no-first-run")
                 options.add_argument("--window-size=1600,1000")
-                service = Service(executable_path=str(self.desktop.driver_path),
+                service = Service(executable_path=str(browser.driver),
                                   service_args=["--log-level=OFF"],
                                   log_output=str(self.desktop.artifacts / "slavesim-webdriver.log"))
                 self.driver = webdriver.Edge(service=service, options=options)
@@ -269,9 +275,27 @@ class SlaveSimPage:
         link = self._field(card, "串口软链接路径").get_attribute("value")
         return name, link
 
-    def _save_configuration(self, label, *, runtime_impact=None):
+    def _assert_save_safe(self, before, owned_names=(), *, protect_empty_buses=False):
+        fieldset = self.driver.find_element(By.ID, "config-fields")
+        preserves = fieldset.get_dom_attribute("data-preserves-unchanged-slaves") == "true"
+        if not preserves and any(bus["name"] not in owned_names and (protect_empty_buses or bus["slaves"]) for bus in before):
+            raise RuntimeError("此 slaveSim 版本保存配置会重置既有设备运行状态，本例未保存配置")
+        return preserves
+
+    @staticmethod
+    def _assert_unrelated_unchanged(before, after, owned_names):
+        expected = {bus["name"]: bus for bus in before if bus["name"] not in owned_names}
+        actual = {bus["name"]: bus for bus in after if bus["name"] not in owned_names}
+        if actual != expected:
+            changed = sorted(name for name in expected.keys() | actual.keys() if expected.get(name) != actual.get(name))
+            raise AssertionError("无关 slaveSim 总线配置发生变化：" + "、".join(changed))
+
+    def _save_configuration(self, label, *, before, owned_names, protect_empty_buses=False, legacy_owned_names=None):
         with self._step(f"保存并应用slaveSim必要配置：{label}"):
-            self._configuration_snapshot(label + "保存前草稿")
+            legacy_owned_names = owned_names if legacy_owned_names is None else legacy_owned_names
+            preserves = self._assert_save_safe(before, legacy_owned_names, protect_empty_buses=protect_empty_buses)
+            draft = self._configuration_snapshot(label + "保存前草稿")
+            self._assert_unrelated_unchanged(before, draft, owned_names)
             self.driver.find_element(By.ID, "save-config").click()
             def saved(_):
                 node = self.driver.find_element(By.ID, "config-status")
@@ -280,18 +304,20 @@ class SlaveSimPage:
                 return node.text.startswith("配置已保存并应用")
             self._wait(saved, "slaveSim配置未确认保存并应用")
             self.desktop.metadata.setdefault("slaveSim配置调整", []).append({
-                "内容": label, "运行影响": runtime_impact or "保存整份配置会重建所有模型并重置临时手动值及指令；原有配置定义保留"})
-        return self._read_configuration(label + "保存后实际配置")
+                "内容": label, "保留未改动从站运行状态": preserves,
+                "运行影响": "按页面声明保留未改动从站" if preserves else "旧版本全量重建，仅允许影响本例资源"})
+        actual = self._read_configuration(label + "保存后实际配置")
+        self._assert_unrelated_unchanged(before, actual, owned_names)
+        return actual
 
     def prepare_basic(self, environment, *, station_count=2, check_paths=None):
         """读取现有资源，或通过页面创建本次测试使用的总线及手动点。"""
         from .modbus_rtu_config import RtuRuntime, RtuStation
-        from .slavesim_runtime import basic_candidate, assert_existing_preserved
+        from .slavesim_runtime import basic_candidate
         before = self._read_configuration("基础采集准备前")
         selected = basic_candidate(before, station_count)
         if selected is None:
-            if any(bus["slaves"] for bus in before):
-                raise RuntimeError("没有可复用的手动测试点。新增总线需全量应用配置，会重置既有设备运行状态")
+            self._assert_save_safe(before)
             with self._step("按当前模拟器页面新增基础采集总线与手动点"):
                 default_name, new_link = self._add_default_bus()
                 name = f"e2e-rtu-{uuid4().hex[:12]}"
@@ -314,8 +340,7 @@ class SlaveSimPage:
                 if check_paths is not None:
                     check_paths((new_link,))
             self._temporary_basic_bus = (name, new_link)
-            actual = self._save_configuration("新增基础采集总线及手动寄存器")
-            assert_existing_preserved(before, actual)
+            actual = self._save_configuration("新增基础采集总线及手动寄存器", before=before, owned_names=(name,))
             selected = basic_candidate([bus for bus in actual if bus["name"] == name], station_count)
             if selected is None:
                 raise AssertionError("新增资源保存后未形成预期的 manual UINT16 AB 读写测试点")
@@ -335,20 +360,18 @@ class SlaveSimPage:
         return config
 
     def _cleanup_basic_bus(self):
-        from .slavesim_runtime import assert_existing_preserved
-
         name, link = self._temporary_basic_bus
         current = self._read_configuration("基础采集清理前")
         target = next((bus for bus in current if bus["name"] == name), None)
         if target is None:
             self._temporary_basic_bus = None
             return
-        if target["link"] != link or any(bus["slaves"] for bus in current if bus is not target):
-            raise RuntimeError(f"拒绝全量重载：本例总线 {name} 的身份已变化，或已出现其他运行设备")
+        if target["link"] != link:
+            raise RuntimeError(f"本例总线 {name} 的串口身份已变化，未删除")
+        self._assert_save_safe(current, (name,))
         with self._step(f"删除本次创建的总线 {name}"):
             self._config_bus(name).find_element(By.XPATH, "./summary//button[normalize-space(.)='删除总线']").click()
-        remaining = self._save_configuration("清理本次基础采集总线")
-        assert_existing_preserved([bus for bus in current if bus is not target], remaining)
+        remaining = self._save_configuration("清理本次基础采集总线", before=current, owned_names=(name,))
         if any(bus["name"] == name for bus in remaining):
             raise AssertionError(f"本次创建的总线 {name} 未删除")
         self._temporary_basic_bus = None

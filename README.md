@@ -41,6 +41,8 @@ Release 程序位于 src-tauri/target/release/mskdsp-testbench.exe，保留在�
 
 “打开管理页”使用默认浏览器打开当前填写的地址。“检查连接”只读检查 slaveSim 状态接口是否可访问。运行用例时，用例从该入口读取或准备自己的模拟场景，并核对工况是否已生效。子路径代理地址的使用约束见 [slaveSim 管理页地址](docs/slaveSim管理页地址.md)。
 
+运行用例时会按本机系统 Edge 的实际版本自动匹配、缓存或下载 EdgeDriver。该浏览器与 DSP 上位机的 WebView2 独立，报告记录实际使用的浏览器和驱动版本。
+
 ## 104 模拟主站
 
 “测试环境”里的“104 模拟主站”默认不启用。启用后选择支持测试会话的新版 `Msk104Master.exe` 和匹配 WebView2 的 `msedgedriver.exe`。曾保存旧主站路径的环境需要重新选择程序。测试使用独立的主站副本与 WebView2 数据目录，检查和运行均由测试上位机启动副本。

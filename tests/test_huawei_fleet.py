@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 from testbench.case_plan import (
-    ContinueAfterFailure, DESKTOP_FINISH, DESKTOP_START, Step, case_plan,
+    ContinueAfterFailure, DESKTOP_FINISH, DESKTOP_START, SLAVESIM_BROWSER_READY, Step, case_plan,
     run_steps, track_fixture_context, track_fixture_step,
 )
 from testbench.huawei_fleet_run import DEVICE_EXPECTED, STAGES, HuaweiFleetRun, device_step_title
@@ -50,10 +50,13 @@ def huawei_fleet(request):
         url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)
         timeout = float(environment.get("modbus_acquisition_timeout", 300))
         account = load_login_account(local_config("login-account.json"))
+    with track_fixture_step(request, SLAVESIM_BROWSER_READY):
+        browser = request.getfixturevalue("slavesim_browser")
     desktop = request.getfixturevalue("fresh_desktop")
     desktop.metadata["华为验收阶段"] = "前置条件"
     upper = HuaweiRtuPage(desktop)
-    with track_fixture_context(request, SIMULATOR_START, SIMULATOR_FINISH, HuaweiSlaveSimPage(desktop, url)) as simulator:
+    with track_fixture_context(request, SIMULATOR_START, SIMULATOR_FINISH,
+                               HuaweiSlaveSimPage(desktop, url, browser=browser)) as simulator:
         scenario = None
         setup_failed = False
 
@@ -165,7 +168,7 @@ BUSINESS_STEPS = (
 
 
 @case_plan(
-    FLEET_PREPARE, DESKTOP_START, SIMULATOR_START, *LOGIN_STEPS, OPEN_LINKS, SIMULATOR_CREATE,
+    FLEET_PREPARE, SLAVESIM_BROWSER_READY, DESKTOP_START, SIMULATOR_START, *LOGIN_STEPS, OPEN_LINKS, SIMULATOR_CREATE,
     *PREPARE_STEPS, *BUSINESS_STEPS, FLEET_CLEANUP, SIMULATOR_CLEANUP, SIMULATOR_FINISH, DESKTOP_FINISH,
 )
 def test_huawei_six_buses_21_devices_match(request, huawei_fleet):

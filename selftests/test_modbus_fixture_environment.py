@@ -31,6 +31,8 @@ def test_fixture_uses_supplied_entries_without_a_topology_profile(tmp_path, monk
     task.write_text(json.dumps({"environment": environment}), encoding="utf-8")
     monkeypatch.setenv("TESTBENCH_TASK", str(task))
     def stop_before_desktop(name):
+        if name == "slavesim_browser":
+            return object()
         assert name == "fresh_desktop"
         raise DesktopBoundary()
     request = SimpleNamespace(node=SimpleNamespace(), getfixturevalue=stop_before_desktop)

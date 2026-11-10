@@ -33,6 +33,14 @@ def fresh_desktop(request):
         yield app
 
 
+@pytest.fixture(scope="session")
+def slavesim_browser():
+    """同一任务只解析或准备一次系统 Edge 驱动，保留失败供所选协议用例报告。"""
+    from testbench.edge_browser import prepare_system_edge
+
+    return prepare_system_edge(local_config("environment.json").parent.parent / ".tools" / "system-edge")
+
+
 @contextmanager
 def _desktop_session(request, *, fresh=False):
     options = {}

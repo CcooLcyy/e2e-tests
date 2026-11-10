@@ -7,19 +7,16 @@ from .slavesim_page import SlaveSimPage
 
 
 class RtuQualitySimulator(SlaveSimPage):
-    def __init__(self, desktop, url, name):
-        super().__init__(desktop, url)
+    def __init__(self, desktop, url, name, *, browser=None):
+        super().__init__(desktop, url, browser=browser)
         self.names = {role: f"{name}-{role}" for role in ("reference", "target")}
         self.paths = {}
-        self.baseline = []
 
-    def _check_exclusive(self, buses):
+    def _check_owned_paths(self, buses):
         for bus in buses:
-            if bus["name"] in self.paths:
-                if bus["link"] != self.paths[bus["name"]]:
-                    raise AssertionError("本例模拟总线的路径已变化，停止配置")
-            elif bus["slaves"]:
-                raise AssertionError("slaveSim 存在无关运行从站。保存配置会重建所有模型，未调整该模拟器")
+            if bus["name"] in self.paths and bus["link"] != self.paths[bus["name"]]:
+                raise AssertionError("本例模拟总线的路径已变化，停止配置")
+        self._assert_save_safe(buses, self.paths)
 
     def _station(self, name, address, value):
         bus = self._config_bus(name)
@@ -56,31 +53,27 @@ class RtuQualitySimulator(SlaveSimPage):
                     1, "exception", "0x03", address, "UINT16", "const", "AB", value), bus
 
     def prepare(self, check_paths):
-        self.baseline = self._read_configuration("品质场景准备前")
-        self._check_exclusive(self.baseline)
+        before = self._read_configuration("品质场景准备前")
+        self._check_owned_paths(before)
         for name in self.names.values():
-            if any(bus["name"] == name for bus in self.baseline):
+            if any(bus["name"] == name for bus in before):
                 raise AssertionError(f"已有同名模拟总线 {name}，不接管")
             draft, link = self._add_default_bus()
             self._replace(self._field(self._config_bus(draft), "总线名称"), name)
             self.paths[name] = link
         check_paths(tuple(self.paths.values()))
         self._station(self.names["reference"], 0, 100)
-        actual = self._save_configuration("新建品质验收参照及静默目标总线")
-        self._assert_preserved(actual)
+        actual = self._save_configuration("新建品质验收参照及静默目标总线", before=before, owned_names=self.paths)
         self._assert_mode(actual, "reference", 0, 100)
         self._assert_mode(actual, "target", None, 0)
         return {role: self.paths[name] for role, name in self.names.items()}
 
-    def _assert_preserved(self, actual):
-        assert [bus for bus in actual if bus["name"] not in self.paths] == self.baseline, "无关模拟器配置发生变化"
-
     def set_target(self, address, value, label):
-        actual = self._read_configuration(f"切换{label}前")
-        self._check_exclusive(actual)
+        before = self._read_configuration(f"切换{label}前")
+        self._check_owned_paths(before)
         self._station(self.names["target"], address, value)
-        actual = self._save_configuration(label)
-        self._assert_preserved(actual)
+        actual = self._save_configuration(label, before=before, owned_names=(self.names["target"],),
+                                          legacy_owned_names=self.paths)
         self._assert_mode(actual, "target", address, value)
         self._assert_mode(actual, "reference", 0, 100)
 
@@ -112,13 +105,14 @@ class RtuQualitySimulator(SlaveSimPage):
         self._restoring = True
         try:
             before = self._read_configuration("清理本例品质总线前")
-            self._check_exclusive(before)
             owned = [bus["name"] for bus in before if bus["name"] in self.paths]
+            if not owned:
+                return
+            self._check_owned_paths(before)
             for name in owned:
                 card = self._config_bus(name)
                 card.find_element(By.XPATH, "./summary/button[normalize-space(.)='删除总线']").click()
-            if owned:
-                after = self._save_configuration("删除本例品质总线")
-                assert after == [bus for bus in before if bus["name"] not in owned], "清理后模拟器配置不符"
+            after = self._save_configuration("删除本例品质总线", before=before, owned_names=owned)
+            assert not any(bus["name"] in self.paths for bus in after), "清理后仍有本例模拟总线"
         finally:
             self._restoring = False

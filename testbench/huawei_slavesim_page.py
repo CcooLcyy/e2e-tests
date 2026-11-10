@@ -85,8 +85,7 @@ class HuaweiSlaveSimPage(SlaveSimPage):
 
         config = HuaweiFleetConfig(serial_devices=("",) * 6, acquisition_timeout=timeout)
         buses = build_fleet(config, run_id)
-        self.create_fleet(buses, check_paths=check_paths)
-        actual = self._read_configuration("读回本次机群总线与从站")
+        actual = self.create_fleet(buses, check_paths=check_paths)
         self._assert_owned_fleet(actual)
         saved = {bus["name"]: bus for bus in actual}
         for bus in buses:
@@ -100,7 +99,7 @@ class HuaweiSlaveSimPage(SlaveSimPage):
         return replace(config, serial_devices=tuple(bus["serial_device"] for bus in buses)), buses
 
     def _assert_owned_fleet(self, actual):
-        if {bus["name"]: bus for bus in actual} != self.owned_fleet:
+        if {bus["name"]: bus for bus in actual if bus["name"] in self.owned_fleet} != self.owned_fleet:
             raise AssertionError("模拟器实际配置与本例保存的机群不一致，拒绝修改可能属于其他会话的总线")
 
     def cleanup_owned_fleet(self):
@@ -109,33 +108,33 @@ class HuaweiSlaveSimPage(SlaveSimPage):
         self._restoring = True
         try:
             actual = self._read_configuration("清理本次机群前")
-            if actual:
+            if any(bus["name"] in self.owned_fleet for bus in actual):
                 self._assert_owned_fleet(actual)
+                self._assert_save_safe(actual, self.owned_fleet, protect_empty_buses=True)
                 for name in self.owned_fleet:
                     card = self._config_bus(name)
                     card.find_element(By.XPATH, "./summary//button[normalize-space(.)='删除总线']").click()
-                if self._configuration_snapshot("本例机群删除后的草稿"):
-                    raise AssertionError("本例机群清理后的草稿仍有其他总线，拒绝全量保存")
-                if self._save_configuration("清理本次六路华为机群"):
-                    raise AssertionError("保存后仍存在模拟总线")
+                remaining = self._save_configuration("清理本次六路华为机群", before=actual,
+                                                     owned_names=self.owned_fleet, protect_empty_buses=True)
+                if any(bus["name"] in self.owned_fleet for bus in remaining):
+                    raise AssertionError("保存后仍存在本例模拟总线")
             self.owned_fleet = None
         finally:
             self._restoring = False
 
     def create_fleet(self, buses, *, check_paths):
         validate_fleet(buses, require_paths=False)
+        names = {bus["name"] for bus in buses}
         with self._step("读取专用模拟器配置并检查六路资源未占用"):
-            if self._read_configuration("本例机群创建前"):
-                raise RuntimeError("slaveSim 已有总线。应用配置会重建全部运行资源，请使用空闲的专用模拟器")
+            before = self._read_configuration("本例机群创建前")
+            if any(bus["name"] in names for bus in before):
+                raise RuntimeError("slaveSim 已有本例同名总线，未接管或修改")
+            self._assert_save_safe(before, protect_empty_buses=True)
         for bus in buses:
             with self._step(f"新增华为总线 {bus['name']}，共{len(bus['devices'])}台"):
-                before = len(self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor"))
-                self.driver.find_element(By.ID, "add-bus").click()
-                self._wait(lambda _: len(self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")) == before + 1,
-                           "新增总线未显示")
-                card = self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")[-1]
-                self._replace(self._field(card, "总线名称"), bus["name"])
-                bus["serial_device"] = self._field(card, "串口软链接路径").get_attribute("value")
+                default_name, link = self._add_default_bus()
+                self._replace(self._field(self._config_bus(default_name), "总线名称"), bus["name"])
+                bus["serial_device"] = link
             for device in bus["devices"]:
                 station = device["station_id"]
                 with self._step(f"新增 {bus['name']} / 站号 {station} 华为V3行为模型"):
@@ -172,20 +171,12 @@ class HuaweiSlaveSimPage(SlaveSimPage):
             from .slavesim_runtime import validate_fleet_capacity
             capacity = validate_fleet_capacity(draft, buses)
             self._snapshot({"类型": "华为新增机群固定工况能力校验", "设备": capacity})
-            if {bus["name"] for bus in draft} != {bus["name"] for bus in buses}:
-                raise AssertionError("保存前草稿含其他模拟总线，拒绝应用配置")
-            self.owned_fleet = {bus["name"]: bus for bus in draft}
-            self.driver.find_element(By.ID, "save-config").click()
-            def saved(_):
-                node = self.driver.find_element(By.ID, "config-status")
-                if "error" in (node.get_attribute("class") or ""):
-                    raise AssertionError(f"华为机群配置保存失败：{node.text}")
-                return node.text.startswith("配置已保存并应用")
-            self._wait(saved, "华为机群配置未确认保存")
+            self.owned_fleet = {bus["name"]: bus for bus in draft if bus["name"] in names}
+            actual = self._save_configuration("新增六路21台华为模型", before=before, owned_names=names,
+                                              protect_empty_buses=True)
             self.desktop.metadata["华为已创建六路"] = buses
-            self.desktop.metadata.setdefault("slaveSim配置调整", []).append({
-                "内容": "新增六路21台华为模型，使用页面实际默认路径", "运行影响": "保存时配置中只有本例创建的总线"})
             LOG.info("已通过页面保存六路21台华为行为模型")
+            return actual
 
     def _device(self, bus, station):
         buttons = self.driver.find_elements(By.XPATH, "//div[@id='buses']//button[contains(@class,'bus-choice')][strong[normalize-space(.)=" + _literal(bus) + "]]")

@@ -24,12 +24,14 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
 
     desktop = SimpleNamespace(metadata={}, failure="", artifacts=tmp_path,
                               capture=lambda *a, **kw: calls.append("DSP现场"))
+    browser = object()
 
     class Simulator:
         owned_fleet = None
 
-        def __init__(self, desktop, url):
+        def __init__(self, desktop, url, *, browser):
             assert url == environment["slavesim_url"]
+            assert browser is prepared["slavesim_browser"]
 
         def __enter__(self):
             return self
@@ -58,8 +60,8 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
         monkeypatch.setattr(module, "HuaweiRtuPage", Upper)
     monkeypatch.setattr(module, "run_steps", lambda *_: calls.append("登录"))
     monkeypatch.setattr(module, "load_login_account", lambda _: object())
-    request = SimpleNamespace(node=SimpleNamespace(_bench_reports=[]),
-                              getfixturevalue=lambda _: desktop)
+    prepared = {"slavesim_browser": browser, "fresh_desktop": desktop}
+    request = SimpleNamespace(node=SimpleNamespace(_bench_reports=[]), getfixturevalue=prepared.__getitem__)
     generator = getattr(module, fixture).__wrapped__(request)
     with pytest.raises(RuntimeError, match="RTU 业务页面未打开"):
         next(generator)

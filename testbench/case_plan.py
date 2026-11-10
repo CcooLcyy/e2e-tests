@@ -25,6 +25,7 @@ DESKTOP_START = Step("desktop.start", "准备并启动测试上位机", "独立�
 DESKTOP_FINISH = Step("desktop.finish", "收尾并清理桌面测试资源", "按测试环境设置结束桌面会话")
 MASTER104_START = Step("master104.start", "启动独立的模拟 104 主站", "主站测试实例启动，驱动接管窗口")
 MASTER104_FINISH = Step("master104.finish", "关闭模拟 104 主站测试会话", "本次主站会话及资源已清理")
+SLAVESIM_BROWSER_READY = Step("slavesim.browser.ready", "匹配 slaveSim 使用的系统 Edge 驱动", "系统 Edge 与 EdgeDriver 的前三段版本一致")
 LOGIN_PREPARE = Step("login.prepare", "检查登录环境并读取专用账号", "使用全新副本及有效的测试账号配置")
 LOGIN_GUARD = Step("login.guard", "检查专用账号的已有凭据", "专用账号没有已保存凭据")
 LOGIN_CLEANUP = Step("login.cleanup", "关闭登录测试实例并清除测试凭据", "测试实例已关闭，专用账号凭据已清除")

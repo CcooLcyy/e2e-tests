@@ -12,7 +12,8 @@ from uuid import uuid4
 import pytest
 
 from testbench.case_plan import (
-    DESKTOP_FINISH, DESKTOP_START, Step, case_plan, run_steps, track_fixture_context, track_fixture_step,
+    DESKTOP_FINISH, DESKTOP_START, SLAVESIM_BROWSER_READY, Step, case_plan, run_steps,
+    track_fixture_context, track_fixture_step,
 )
 from testbench.login_page import PlatformLoginPage, load_login_account
 from testbench.login_plan import login_steps
@@ -222,7 +223,7 @@ def observation_steps(prefix, index, raw, *, scaled=False, previous=None):
 
 
 def rtu_plan(*steps):
-    return case_plan(RTU_PREPARE, DESKTOP_START, SIMULATOR_START, *RTU_LOGIN_STEPS, RTU_OPEN, RTU_PREPARE_SIM,
+    return case_plan(RTU_PREPARE, SLAVESIM_BROWSER_READY, DESKTOP_START, SIMULATOR_START, *RTU_LOGIN_STEPS, RTU_OPEN, RTU_PREPARE_SIM,
                      *steps, RTU_CLEANUP, SIMULATOR_FINISH, DESKTOP_FINISH)
 
 
@@ -251,6 +252,8 @@ def _rtu_session(request, *, station_count=1):
         validate_selected_modbus_cases(environment, BASIC_CASE_IDS)
         simulator_url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)
         account = load_login_account(local_config("login-account.json"))
+    with track_fixture_step(request, SLAVESIM_BROWSER_READY):
+        browser = request.getfixturevalue("slavesim_browser")
     desktop = request.getfixturevalue("fresh_desktop")
     desktop.metadata["RTU验收阶段"] = "前置条件"
     upper = ModbusRtuPage(desktop)
@@ -263,7 +266,8 @@ def _rtu_session(request, *, station_count=1):
                 LOGGER.exception("%s 失败现场采集异常，保留原业务错误", source)
                 desktop.metadata.setdefault("RTU取证错误", []).append(f"{source}：{error}")
 
-    with track_fixture_context(request, SIMULATOR_START, SIMULATOR_FINISH, SlaveSimPage(desktop, simulator_url)) as simulator:
+    with track_fixture_context(request, SIMULATOR_START, SIMULATOR_FINISH,
+                               SlaveSimPage(desktop, simulator_url, browser=browser)) as simulator:
         setup_failed = False
         try:
             login = SimpleNamespace(desktop=desktop, page=PlatformLoginPage(desktop), account=account)
