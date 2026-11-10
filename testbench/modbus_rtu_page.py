@@ -28,6 +28,8 @@ class ModbusRtuPage:
         self.desktop = desktop
         self.owned = {}
         self.current = None
+        self.creation_started = False
+        self.pending_creation = None
         self._cleaning = False
 
     @property
@@ -49,9 +51,14 @@ class ModbusRtuPage:
         return matches[0] if matches else None
 
     def _click(self, locator, name):
+        def ready(_):
+            element = self._visible(locator)
+            if element and element.is_enabled() and element.get_attribute("aria-disabled") != "true":
+                return element
+            return False
+
         with self.desktop.step(name, cancellable=not self._cleaning):
-            element = self._until(lambda _: (item if (item := self._visible(locator)) and item.is_enabled() else False),
-                                  f"控件未就绪：{name}")
+            element = self._until(ready, f"控件未就绪：{name}")
             element.click()
 
     @staticmethod
@@ -98,7 +105,7 @@ class ModbusRtuPage:
         self._rtu()
 
     def assert_serial_paths_available(self, paths):
-        """只读检查目标串口占用，在修改模拟资源前调用；不接管既有DSP连接。"""
+        """创建连接前，只读检查目标串口是否被现有配置占用。"""
         with self.desktop.step("检查目标串口未被既有RTU连接使用"):
             refresh = (By.CSS_SELECTOR, 'button[aria-label="刷新连接列表"]')
             def ready(_):
@@ -124,7 +131,7 @@ class ModbusRtuPage:
                     path = self._detail("串口设备")
                     observed.append({"连接": name, "串口": path})
                     if path in paths:
-                        raise AssertionError(f"串口 {path} 已被既有连接 {name} 使用，停止新增DSP连接；模拟器准备情况见执行记录")
+                        raise AssertionError(f"专用串口 {path} 已被既有连接 {name} 使用，请准备独立测试链路")
             self.desktop.metadata["RTU既有串口检查"] = observed
 
     @staticmethod
@@ -194,6 +201,7 @@ class ModbusRtuPage:
         options = dict(transport_type="本地串口", parity={"N": "无校验", "O": "奇校验", "E": "偶校验"}[parity],
                        stop_bits=str(stop_bits), address_base="0 基 (协议偏移)" if address_base == 0 else "1 基 (人类编号)")
         self._click(self._button("新增连接", "//div[contains(@class,'protocol-connection-list-card')]"), "新增专用 RTU 连接")
+        self.creation_started = True
         self._select_option("transport_type", options["transport_type"])
         for field, value in expected.items():
             self._fill(field, value, field)
@@ -202,13 +210,20 @@ class ModbusRtuPage:
                 self._select_option(field, value)
         self.desktop.metadata.setdefault("RTU创建意图", []).append({"连接名称": name, "串口": serial_device,
                                                                "站号": station_id, "说明": "仅为创建请求，连接身份待页面确认"})
-        self._submit("创建连接")
+        self._click(self._button("创建连接", self.DIALOG_XPATH), "提交创建连接")
+        self.pending_creation = name
+        self._until(lambda _: not self._visible(self.DIALOG), "创建连接未成功，配置窗口仍然打开")
         self._until(lambda _: self._visible(self._connection_locator(name)), "创建后连接列表未显示本例连接")
         # 创建成功且名称已在提交前确认未占用，随后读取设备分配的编号作为清理凭据。
         self._click(self._connection_locator(name), "读取新建连接身份")
         self._until(lambda _: name in self.driver.find_element(By.CSS_SELECTOR, ".modbus-connection-card .ant-card-head").text)
-        conn_id = self._until(lambda _: self._detail("连接编号") if self._detail("连接编号") not in ("", "-", "0") else False)
+        def visible_id(_):
+            conn_id = self._detail("连接编号")
+            return conn_id if conn_id.isdecimal() and int(conn_id) > 0 else False
+
+        conn_id = self._until(visible_id, "未取得新建连接的编号")
         self.owned[name] = {"name": name, "conn_id": conn_id, "fields": expected, "options": options, "points": {}}
+        self.pending_creation = None
         self.desktop.metadata.setdefault("本例RTU连接", []).append({"name": name, "conn_id": conn_id, "清理状态": "待清理"})
         self.current = name
         logging.getLogger(__name__).info("已创建本例 RTU 连接：%s，编号=%s", name, conn_id)
@@ -230,6 +245,8 @@ class ModbusRtuPage:
         self._fill("deadband", 0, "死区")
         self._select_option("byte_order", "AB")
         self._submit("添加点位")
+        edit = (By.CSS_SELECTOR, f'button[aria-label="编辑点位 {tag}"]')
+        self._until(lambda _: self._visible(edit), f"保存后点表未显示采集点 {tag}")
         self.owned[self.current]["points"][tag] = {"tag": tag, "function": function_label, "address": address,
                                                      "data_type": data_type, "scale": scale, "offset": offset}
 
@@ -325,28 +342,37 @@ class ModbusRtuPage:
         header = self.driver.find_element(By.CSS_SELECTOR, ".modbus-connection-card .ant-card-head").text
         if "运行中" in header:
             self._click(self._button("停止轮询", "//div[contains(@class,'modbus-connection-card')]"), "停止本例 RTU 轮询")
-            self._click(self._button("确定", "//div[contains(@class,'ant-popover') and not(contains(@class,'hidden'))]"), "确认停止本例轮询")
+            self._confirm("确认停止轮询？", "确认停止本例轮询")
             self._until(lambda _: "已停止" in self.driver.find_element(By.CSS_SELECTOR, ".modbus-connection-card .ant-card-head").text,
                         "本例连接未停止")
+
+    def _confirm(self, title, step):
+        popup = ("//div[contains(@class,'ant-popover') and not(contains(@class,'hidden'))]"
+                 "[.//*[contains(@class,'ant-popconfirm-title') and normalize-space(.)=" + xpath_text(title) + "]]")
+        self._click(self._button("确定", popup), step)
 
     def cleanup(self):
         """协作取消时仍清理；身份不符时停止，不删除未知连接。"""
         self._cleaning = True
         errors = []
         try:
+            try:
+                if self._visible((By.CSS_SELECTOR, '.modbus-config-modal[role="dialog"]')):
+                    discard = self._button("放弃草稿", self.DIALOG_XPATH)
+                    close = discard if self._visible(discard) else self._button("取消", self.DIALOG_XPATH)
+                    self._click(close, "关闭本例未提交的配置窗口")
+                    self._until(lambda _: not self._visible(self.DIALOG), "本例配置窗口未关闭")
+            except Exception as error:
+                errors.append(f"关闭本例配置窗口：{error}")
             for name in list(self.owned):
                 try:
                     with self.desktop.step(f"清理本例 RTU 连接 {name}", cancellable=False):
-                        # 失败现场已经由步骤截图保留，随后只关闭未提交的配置窗口。
-                        modal = self._visible(self.DIALOG)
-                        if modal:
-                            self._click(self._button("取消", self.DIALOG_XPATH), "取消未提交的配置窗口")
                         self._rtu()
                         self.select(name)
                         self.stop()
                         self._assert_identity()
                         self._click((By.XPATH, "//button[@aria-label=" + xpath_text("删除连接 " + name) + "]"), "删除本例专用连接")
-                        self._click(self._button("确定", "//div[contains(@class,'ant-popover') and not(contains(@class,'hidden'))]"), "确认删除本例专用连接")
+                        self._confirm(f"确认删除 {name}？", "确认删除本例专用连接")
                         self._until(lambda _: not self.driver.find_elements(*self._connection_locator(name)), "本例连接未删除")
                         for identity in self.desktop.metadata.get("本例RTU连接", []):
                             if identity["name"] == name and identity["conn_id"] == self.owned[name]["conn_id"]:
@@ -354,6 +380,8 @@ class ModbusRtuPage:
                         del self.owned[name]
                 except Exception as error:
                     errors.append(f"{name}：{error}")
+            if self.pending_creation is not None:
+                errors.append(f"无法确认创建请求是否生效及连接身份：{self.pending_creation}")
             if errors:
                 raise RuntimeError("RTU连接清理失败，请人工检查本例资源：" + "；".join(errors))
         finally:

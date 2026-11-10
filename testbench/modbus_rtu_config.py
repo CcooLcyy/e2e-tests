@@ -44,15 +44,17 @@ class RtuEnvironment:
     acquisition_timeout: float = 300
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path, *, station_count=2, acquisition_timeout=None):
         try:
             value = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError):
-            raise ValueError("请按示例准备 local/modbus-rtu.json 专用测试环境") from None
-        return cls.from_dict(value)
+            raise ValueError(f"请按示例准备 local/{Path(path).name} 专用测试环境") from None
+        if isinstance(value, dict) and acquisition_timeout is not None:
+            value["acquisition_timeout"] = acquisition_timeout
+        return cls.from_dict(value, station_count=station_count)
 
     @classmethod
-    def from_dict(cls, value):
+    def from_dict(cls, value, *, station_count=2):
         if not isinstance(value, dict):
             raise ValueError("RTU 测试环境必须是 JSON 对象")
         allowed = set(cls.__dataclass_fields__) | {"dedicated_test_resources"}
@@ -82,8 +84,8 @@ class RtuEnvironment:
                 or any(char.isspace() for char in path)):
             raise ValueError("serial_device 必须为规范的Linux绝对串口路径")
         stations = value.get("stations")
-        if not isinstance(stations, list) or len(stations) != 2:
-            raise ValueError("首批 RTU 用例需要恰好两个专用从站")
+        if not isinstance(stations, list) or len(stations) != station_count:
+            raise ValueError(f"RTU 测试环境需要恰好 {station_count} 个专用从站")
         parsed = []
         for station in stations:
             if not isinstance(station, dict) or set(station) != {"station_id", "address"}:
@@ -94,8 +96,8 @@ class RtuEnvironment:
             if type(address) is not int or not 0 <= address <= 65535:
                 raise ValueError("RTU 地址须为 0 至 65535 的零基整数")
             parsed.append(RtuStation(station_id, address))
-        if parsed[0].station_id == parsed[1].station_id:
-            raise ValueError("两个专用从站必须使用不同站号")
+        if len({station.station_id for station in parsed}) != station_count:
+            raise ValueError("各专用从站必须使用不同站号")
         options["stations"] = tuple(parsed)
         for key, default, minimum, maximum in (
                 ("baud_rate", 9600, 1, 4000000), ("data_bits", 8, 5, 8),

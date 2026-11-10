@@ -1,0 +1,13 @@
+{
+  "dedicated_test_resources": true,
+  "device_name": "专用 RTU 联调下位机",
+  "manager_address": "192.0.2.10:50051",
+  "bus": "e2e-rtu-independent",
+  "serial_device": "/dev/rtu-test",
+  "stations": [{"station_id": 1, "address": 0}],
+  "baud_rate": 9600,
+  "data_bits": 8,
+  "stop_bits": 1,
+  "parity": "无校验",
+  "poll_interval_ms": 1000
+}

@@ -1,4 +1,4 @@
-"""RTU 用例在接触浏览器前核对预置观察身份。"""
+"""RTU 用例在启动上位机前校验各自需要的专项配置。"""
 import importlib.util
 import json
 from pathlib import Path
@@ -11,10 +11,12 @@ class DesktopBoundary(Exception):
 
 
 @pytest.mark.parametrize("filename,fixture,profile_name", [
-    ("test_modbus_rtu.py", "rtu", "modbus-rtu"), ("test_huawei_fleet.py", "huawei_fleet", "huawei-rtu"),
+    ("test_modbus_rtu.py", "rtu", "modbus-rtu"),
+    ("test_modbus_rtu.py", "independent_rtu", "modbus-rtu-independent"),
+    ("test_huawei_fleet.py", "huawei_fleet", "huawei-rtu"),
 ])
-def test_fixture_requires_prepared_observation_profile(tmp_path, monkeypatch, filename, fixture, profile_name):
-    """缺少专项观察配置时失败，填好预置身份后才打开桌面。"""
+def test_fixture_requires_its_own_environment_profile(tmp_path, monkeypatch, filename, fixture, profile_name):
+    """每例只需所属场景的配置，缺少时在打开桌面前失败。"""
     source = Path(__file__).resolve().parents[1] / "tests" / filename
     spec = importlib.util.spec_from_file_location("fixture_environment_contract", source)
     module = importlib.util.module_from_spec(spec)
@@ -30,7 +32,7 @@ def test_fixture_requires_prepared_observation_profile(tmp_path, monkeypatch, fi
         raise DesktopBoundary()
     request = SimpleNamespace(node=SimpleNamespace(), getfixturevalue=stop_before_desktop)
     prepare = getattr(module, fixture).__wrapped__
-    with pytest.raises(RuntimeError, match="前置条件未满足"):
+    with pytest.raises(RuntimeError, match="前置条件未满足|外部测试环境未就绪"):
         next(prepare(request))
     local = tmp_path / "local"
     local.mkdir()
