@@ -46,6 +46,7 @@ def test_installer_reuses_matching_cache_and_fetches_after_runtime_upgrade(tmp_p
 
 def test_installed_bridge_uses_new_matching_driver_and_preserves_manual_path(tmp_path, monkeypatch):
     bridge = TestbenchBridge(tmp_path / "suite", tmp_path / "data")
+    app = create_file(tmp_path / "mskdsp-upper.exe")
     drivers = bridge.data_root / ".tools/msedgedriver/win64"
     old = create_file(drivers / "156.0.4314.58/msedgedriver.exe")
     new = create_file(drivers / "157.0.4341.45/msedgedriver.exe")
@@ -53,11 +54,11 @@ def test_installed_bridge_uses_new_matching_driver_and_preserves_manual_path(tmp
     monkeypatch.setattr("testbench.bridge.installed_runtime", lambda: runtime)
 
     assert bridge.handle("get_environment")["driver_path"] == str(new)
-    bridge.handle("save_environment", {"environment": {"driver_path": str(old)}})
+    bridge.handle("save_environment", {"environment": {"app_path": str(app), "driver_path": str(old)}})
     assert bridge.handle("get_environment")["driver_path"] == str(new)
     new.unlink()
     assert bridge.handle("get_environment")["driver_path"] == ""
 
     manual = create_file(tmp_path / "manual/msedgedriver.exe")
-    bridge.handle("save_environment", {"environment": {"driver_path": str(manual)}})
+    bridge.handle("save_environment", {"environment": {"app_path": str(app), "driver_path": str(manual)}})
     assert bridge.handle("get_environment")["driver_path"] == str(manual)
