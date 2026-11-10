@@ -4,7 +4,6 @@ import pytest
 from testbench.controller import TaskController
 from testbench.modbus_environment import (
     AGC_REBALANCE_CASE_ID,
-    RTU_CONFIG_CASE_ID,
     RTU_OBSERVATION_CASE_IDS,
 )
 from testbench.model import CaseInfo, Environment, load_environment, save_environment
@@ -40,7 +39,7 @@ def test_unrelated_cases_do_not_require_rtu_observation_settings(tmp_path):
     environment = populated_environment(tmp_path)
     environment.slavesim_url = ""
     environment.modbus_acquisition_timeout = None
-    environment.validate_for_cases([RTU_CONFIG_CASE_ID, AGC_REBALANCE_CASE_ID,
+    environment.validate_for_cases([AGC_REBALANCE_CASE_ID,
                                     "tests/test_login_success.py::test_valid_account_enters_workspace"])
 
 

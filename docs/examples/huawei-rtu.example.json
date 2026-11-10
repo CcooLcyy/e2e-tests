@@ -1,4 +1,6 @@
 {
+  "dedicated_test_resources": true,
+  "manager_address": "192.0.2.1:50051",
   "buses": [
     {"name": "e2e-huawei-485-1", "serial_device": "/srv/serial-sim/tty0"},
     {"name": "e2e-huawei-485-2", "serial_device": "/srv/serial-sim/tty1"},

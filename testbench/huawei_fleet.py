@@ -126,6 +126,32 @@ def build_fleet(config, run_id):
     return buses
 
 
+def load_dedicated_fleet(path, timeout):
+    """Read the six installed simulator paths and the dedicated DSP endpoint."""
+    path = Path(path)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as error:
+        raise RuntimeError(f"前置条件未满足：请按示例填写 {path.name}") from error
+    fields = {"manager_address", "dedicated_test_resources", "buses"}
+    if not isinstance(value, dict) or value.keys() != fields or value["dedicated_test_resources"] is not True:
+        raise ValueError("华为机群配置须填写专用 manager_address、dedicated_test_resources=true 和六路 buses")
+    buses = value["buses"]
+    if (not isinstance(buses, list) or len(buses) != 6
+            or any(not isinstance(bus, dict) or set(bus) != {"name", "serial_device"}
+                   or not isinstance(bus["name"], str) or not bus["name"].strip()
+                   or any(ord(char) < 32 for char in bus["name"]) for bus in buses)
+            or len({bus["name"] for bus in buses}) != 6):
+        raise ValueError("须按路号填写六个不同的预置 slaveSim 总线名称及对应串口")
+    config = HuaweiFleetConfig.from_dict({"manager_address": value["manager_address"],
+                                         "serial_devices": [bus["serial_device"] for bus in buses],
+                                         "acquisition_timeout": timeout, "dedicated_simulator": True})
+    topology = build_fleet(config, "prepared")
+    for bus, actual in zip(topology, buses, strict=True):
+        bus["name"] = actual["name"]
+    return config, topology
+
+
 def point_expected(point, raw):
     value = decimal_value(raw)
     if value != value.to_integral_value():

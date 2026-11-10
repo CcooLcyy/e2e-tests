@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -12,21 +13,23 @@ from testbench.case_plan import (
     ContinueAfterFailure, DESKTOP_FINISH, DESKTOP_START, Step, case_plan,
     run_steps, track_fixture_context, track_fixture_step,
 )
+from testbench.huawei_fleet import load_dedicated_fleet
 from testbench.huawei_fleet_run import DEVICE_EXPECTED, STAGES, HuaweiFleetRun, device_step_title
+from testbench.huawei_rtu_page import HuaweiRtuPage
 from testbench.login_page import PlatformLoginPage, load_login_account
 from testbench.login_plan import login_steps
 from testbench.modbus_environment import HUAWEI_CASE_ID, validate_selected_modbus_cases
 from testbench.model import validate_slavesim_url
-from testbench.rtu_observation import FleetObservationProfile, PreparedRtuPage
 from testbench.workspace import local_config
 
 
 pytestmark = pytest.mark.case_group("Modbus RTU")
 
-FLEET_PREPARE = Step("fleet.prepare", "读取华为机群观察配置和专用账号", "六路预置总线配置与测试账号有效")
+FLEET_PREPARE = Step("fleet.prepare", "读取华为机群专项配置和专用账号", "专用下位机、六路预置总线和测试账号有效")
 SIMULATOR_START = Step("fleet.simulator.open", "打开 slaveSim 观察会话", "运行页面显示新的状态刷新")
 SIMULATOR_FINISH = Step("fleet.simulator.close", "关闭 slaveSim 观察会话", "释放本次浏览器资源")
-OPEN_LINKS = Step("fleet.links.open", "打开上位机预置 RTU 连接列表", "可观察已预置的采集连接")
+OPEN_LINKS = Step("fleet.links.open", "在上位机连接专用下位机并打开 RTU 配置", "RTU 模块正在运行，连接列表可用")
+FLEET_CLEANUP = Step("fleet.links.cleanup", "停止并删除本次机群连接", "本次创建的连接均已清理")
 LOGIN_STEPS = login_steps("login")
 
 
@@ -43,12 +46,15 @@ def huawei_fleet(request):
         environment = task["environment"]
         validate_selected_modbus_cases(environment, [HUAWEI_CASE_ID])
         url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)
-        config, buses = FleetObservationProfile.load(local_config("huawei-rtu.json"),
-                                                    float(environment.get("modbus_acquisition_timeout", 300)))
+        try:
+            config, buses = load_dedicated_fleet(local_config("huawei-rtu.json"),
+                                                environment.get("modbus_acquisition_timeout", 300))
+        except ValueError as error:
+            raise RuntimeError(f"前置条件未满足：{error}") from error
         account = load_login_account(local_config("login-account.json"))
-    desktop = request.getfixturevalue("desktop")
+    desktop = request.getfixturevalue("fresh_desktop")
     desktop.metadata["华为验收阶段"] = "前置条件"
-    upper = PreparedRtuPage(desktop)
+    upper = HuaweiRtuPage(desktop)
     with track_fixture_context(request, SIMULATOR_START, SIMULATOR_FINISH, HuaweiSlaveSimPage(desktop, url)) as simulator:
         scenario = None
         setup_failed = False
@@ -68,9 +74,9 @@ def huawei_fleet(request):
         try:
             run_steps(request, LOGIN_STEPS, SimpleNamespace(desktop=desktop, page=PlatformLoginPage(desktop), account=account))
             with track_fixture_step(request, OPEN_LINKS):
-                upper.open_prepared_links()
-            scenario = HuaweiFleetRun(desktop, simulator, upper, config, "prepared", buses=buses)
-            desktop.metadata["华为验收阶段"] = "观察六路21台预置模型与采集反馈"
+                upper.open_device(config.manager_address)
+            scenario = HuaweiFleetRun(desktop, simulator, upper, config, uuid4().hex[:16], buses=buses)
+            desktop.metadata["华为验收阶段"] = "准备本例连接并观察外部预置工况"
             yield scenario
         except BaseException as error:
             setup_failed = True
@@ -90,6 +96,36 @@ def huawei_fleet(request):
                 logging.getLogger(__name__).exception("华为汇总报告写入失败，保留原始业务错误")
                 if not had_failure:
                     raise
+            finally:
+                if upper.creation_started:
+                    failed_before_cleanup = had_failure or sys.exc_info()[0] is not None
+                    try:
+                        with track_fixture_step(request, FLEET_CLEANUP):
+                            upper.cleanup()
+                    except Exception as error:
+                        desktop.metadata["华为连接清理错误"] = str(error)
+                        if not failed_before_cleanup:
+                            raise
+                        logging.getLogger(__name__).exception("华为连接清理失败，保留原始用例错误")
+
+
+def _prepare_device_step(route, station):
+    def prepare(fleet):
+        bus = fleet.buses[route - 1]
+        fleet.create_device(bus, bus["devices"][station - 1])
+
+    return Step(f"fleet.prepare.route-{route}.station-{station}", f"新建第{route}路站号{station}的 RTU 连接",
+                "本例专用连接已保存18个采集点并启动轮询", prepare,
+                group="准备本例 RTU 连接")
+
+
+PREPARE_STEPS = (
+    Step("fleet.source", "核对六路 21 台的预置 slaveSim 模型", "各台站号、串口和目标寄存器均可观察",
+         HuaweiFleetRun.check_sources),
+    Step("fleet.serial", "确认专用串口未被既有 RTU 连接占用", "六条串口均可用于本例",
+         lambda fleet: fleet.upper.assert_serial_paths_available(fleet.config.serial_devices)),
+    *(_prepare_device_step(route, station) for route in range(1, 7) for station in range(1, route + 1)),
+)
 
 
 def _device_step(stage_index, stage, route, station):
@@ -106,8 +142,6 @@ def _device_step(stage_index, stage, route, station):
 
 
 BUSINESS_STEPS = (
-    Step("fleet.topology", "核对六路 21 台预置拓扑", "按现场总线、串口和站号登记对应的采集连接",
-         lambda fleet: fleet.select_prepared_topology()),
     *(_device_step(stage_index, stage, route, station)
       for stage_index, stage in enumerate(STAGES, 1)
       for route in range(1, 7)
@@ -119,8 +153,8 @@ BUSINESS_STEPS = (
 
 @case_plan(
     FLEET_PREPARE, DESKTOP_START, SIMULATOR_START, *LOGIN_STEPS, OPEN_LINKS,
-    *BUSINESS_STEPS, SIMULATOR_FINISH, DESKTOP_FINISH,
+    *PREPARE_STEPS, *BUSINESS_STEPS, FLEET_CLEANUP, SIMULATOR_FINISH, DESKTOP_FINISH,
 )
 def test_huawei_six_buses_21_devices_match(request, huawei_fleet):
     """六路21台华为逆变器逐台核对遥测、状态及外部工况反馈。"""
-    run_steps(request, BUSINESS_STEPS, huawei_fleet)
+    run_steps(request, (*PREPARE_STEPS, *BUSINESS_STEPS), huawei_fleet)

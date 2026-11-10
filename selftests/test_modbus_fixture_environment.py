@@ -10,12 +10,12 @@ class DesktopBoundary(Exception):
     """证明已完成配置读取，实际桌面入口在自测中不执行。"""
 
 
-@pytest.mark.parametrize("filename,fixture,profile_name", [
-    ("test_modbus_rtu.py", "rtu", "modbus-rtu"),
-    ("test_modbus_rtu.py", "independent_rtu", "modbus-rtu-independent"),
-    ("test_huawei_fleet.py", "huawei_fleet", "huawei-rtu"),
+@pytest.mark.parametrize("filename,fixture,profile_name,station_count", [
+    ("test_modbus_rtu.py", "independent_rtu", "modbus-rtu-independent", 1),
+    ("test_modbus_rtu.py", "two_station_rtu", "modbus-rtu-independent", 2),
+    ("test_huawei_fleet.py", "huawei_fleet", "huawei-rtu", None),
 ])
-def test_fixture_requires_its_own_environment_profile(tmp_path, monkeypatch, filename, fixture, profile_name):
+def test_fixture_requires_its_own_environment_profile(tmp_path, monkeypatch, filename, fixture, profile_name, station_count):
     """每例只需所属场景的配置，缺少时在打开桌面前失败。"""
     source = Path(__file__).resolve().parents[1] / "tests" / filename
     spec = importlib.util.spec_from_file_location("fixture_environment_contract", source)
@@ -28,7 +28,7 @@ def test_fixture_requires_its_own_environment_profile(tmp_path, monkeypatch, fil
     task.write_text(json.dumps({"environment": environment}), encoding="utf-8")
     monkeypatch.setenv("TESTBENCH_TASK", str(task))
     def stop_before_desktop(name):
-        assert name == "desktop"
+        assert name == "fresh_desktop"
         raise DesktopBoundary()
     request = SimpleNamespace(node=SimpleNamespace(), getfixturevalue=stop_before_desktop)
     prepare = getattr(module, fixture).__wrapped__
@@ -37,6 +37,16 @@ def test_fixture_requires_its_own_environment_profile(tmp_path, monkeypatch, fil
     local = tmp_path / "local"
     local.mkdir()
     example = source.parents[1] / "docs" / "examples" / f"{profile_name}.example.json"
-    (local / f"{profile_name}.json").write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+    config = json.loads(example.read_text(encoding="utf-8"))
+    path = local / f"{profile_name}.json"
+    if station_count is not None:
+        stations = config["stations"]
+        config["stations"] = stations[:1]
+        path.write_text(json.dumps(config), encoding="utf-8")
+        if station_count == 2:
+            with pytest.raises(RuntimeError, match="两个专用从站"):
+                next(prepare(request))
+        config["stations"] = stations[:station_count]
+    path.write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(DesktopBoundary):
         next(prepare(request))

@@ -48,7 +48,7 @@ try {
     foreach ($relativePath in @(
         'desktop_demo.py', 'windows_privileges.py', 'pytest.ini', 'requirements.txt',
         'tests/case-order.json', 'docs/examples/agc-direction-block.json',
-        'docs/examples/huawei-rtu.example.json', 'docs/examples/modbus-rtu.example.json',
+        'docs/examples/huawei-rtu.example.json',
         'docs/examples/modbus-rtu-independent.example.json'
     )) {
         $destination = Join-Path $suiteRoot $relativePath

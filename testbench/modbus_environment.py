@@ -15,7 +15,7 @@ BASIC_CASE_IDS = frozenset({
 })
 HUAWEI_CASE_ID = "tests/test_huawei_fleet.py::test_huawei_six_buses_21_devices_match"
 AGC_REBALANCE_CASE_ID = "tests/test_agc_rebalance.py::test_agc_redistributes_when_rtu_member_loses_communication"
-RTU_OBSERVATION_CASE_IDS = (BASIC_CASE_IDS - {RTU_CONFIG_CASE_ID}) | {HUAWEI_CASE_ID}
+RTU_OBSERVATION_CASE_IDS = BASIC_CASE_IDS | {HUAWEI_CASE_ID}
 
 
 def _shared(environment):

@@ -8,7 +8,7 @@ import pytest
 
 
 @pytest.mark.parametrize("filename,fixture", [
-    ("test_modbus_rtu.py", "rtu"), ("test_huawei_fleet.py", "huawei_fleet"),
+    ("test_modbus_rtu.py", "independent_rtu"), ("test_huawei_fleet.py", "huawei_fleet"),
 ])
 def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch, filename, fixture):
     """上位机入口失败时不进入任何环境配置，保留原错误与两端现场。"""
@@ -39,26 +39,31 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
             calls.append("模拟器现场")
 
     class Upper:
+        creation_started = False
+
         def __init__(self, desktop):
             pass
 
-        def open_prepared_links(self):
+        def open_device(self, address):
+            assert address == "192.0.2.1:50051"
             calls.append("打开业务点表")
-            raise RuntimeError("预置连接不可观察")
+            raise RuntimeError("RTU 业务页面未打开")
 
     monkeypatch.setattr("testbench.slavesim_page.SlaveSimPage", Simulator)
     monkeypatch.setattr("testbench.huawei_slavesim_page.HuaweiSlaveSimPage", Simulator)
-    monkeypatch.setattr(module, "PreparedRtuPage", Upper)
-    if fixture == "rtu":
-        monkeypatch.setattr(module, "BasicObservationProfile", SimpleNamespace(load=lambda *args: object()))
+    config = SimpleNamespace(manager_address="192.0.2.1:50051")
+    if fixture == "independent_rtu":
+        monkeypatch.setattr(module, "ModbusRtuPage", Upper)
+        monkeypatch.setattr(module, "RtuEnvironment", SimpleNamespace(load=lambda *args, **kwargs: config))
     else:
-        monkeypatch.setattr(module, "FleetObservationProfile", SimpleNamespace(load=lambda *args: (object(), [])))
+        monkeypatch.setattr(module, "HuaweiRtuPage", Upper)
+        monkeypatch.setattr(module, "load_dedicated_fleet", lambda *args: (config, []))
     monkeypatch.setattr(module, "run_steps", lambda *_: calls.append("登录"))
     monkeypatch.setattr(module, "load_login_account", lambda _: object())
     request = SimpleNamespace(node=SimpleNamespace(_bench_reports=[]),
                               getfixturevalue=lambda _: desktop)
     generator = getattr(module, fixture).__wrapped__(request)
-    with pytest.raises(RuntimeError, match="预置连接不可观察"):
+    with pytest.raises(RuntimeError, match="RTU 业务页面未打开"):
         next(generator)
     assert calls[:2] == ["登录", "打开业务点表"]
     assert calls.index("模拟器现场") < calls.index("模拟器关闭")

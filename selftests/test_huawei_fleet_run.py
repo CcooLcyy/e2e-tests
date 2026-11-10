@@ -19,7 +19,7 @@ def run_business_plan(scenario):
     case = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(case)
     request = SimpleNamespace(node=SimpleNamespace(nodeid="huawei-fleet"))
-    case.test_huawei_six_buses_21_devices_match(request, scenario)
+    case.run_steps(request, case.BUSINESS_STEPS, scenario)
 
 
 class Desktop:
@@ -128,6 +128,8 @@ def test_source_with_wrong_scene_does_not_pass_when_both_ends_agree(tmp_path):
     upper["active"]["value"] = "20"
     result = scenario.sample("发电", bus, device)
     assert not result["通过"] and any("固定目标" in error for error in result["工况错误"])
+    assert not result["已观察到预定源工况"]
+    assert any("外部工况未就绪" in error for error in result["工况错误"])
 
 
 def test_late_matching_observation_cannot_pass_deadline(tmp_path, monkeypatch):
@@ -141,21 +143,23 @@ def test_late_matching_observation_cannot_pass_deadline(tmp_path, monkeypatch):
     assert any("超过30秒" in error for error in result["工况错误"])
 
 
-def test_topology_only_declares_prepared_connection_identities(tmp_path):
-    """21台预置连接只登记观察身份，不调用任何下位机或模拟器写入。"""
-    scenario, *_ = sample_run(tmp_path)
-    seen = []
-    scenario.upper = SimpleNamespace(expect_connection=lambda *args: seen.append(args))
+def test_creation_uses_the_installed_serial_path_and_case_owned_tags(tmp_path):
+    scenario, bus, device, *_ = sample_run(tmp_path)
+    connections, points, started = [], [], []
+    scenario.upper = SimpleNamespace(create_connection=lambda *args: connections.append(args),
+                                     add_huawei_point=lambda *args: points.append(args), start=lambda: started.append(True))
     scenario.simulator = object()
-    scenario.select_prepared_topology()
-    assert len(seen) == 21 and len(scenario.connections) == 21
-    assert seen[0] == ("e2e-huawei-unit-485-1-s1", "/dev/rtu0", 1)
+    scenario.create_device(bus, device)
+    name = "e2e-huawei-unit-r1-s1"
+    assert connections == [(name, "/dev/rtu0", 9600, 8, 1, "N", 1, 1000)]
+    assert points == [(point, f"{name}-{point.key}") for point in READ_POINTS]
+    assert started == [True]
+    assert scenario.connections["1/1"]["name"] == name
 
 
 def test_one_failed_device_stage_is_retained_while_other_devices_finish(tmp_path):
     """单台失败不放宽断言，完成其他独立观测后总结果仍失败且不能写全部抄通。"""
     scenario, *_ = sample_run(tmp_path)
-    scenario.select_prepared_topology = lambda: None
     scenario.capture_both = lambda *args: []
     def sample(stage, bus, device):
         return {"工况": stage, "路号": bus["index"], "站号": device["station_id"], "点位": [],
@@ -171,7 +175,6 @@ def test_one_failed_device_stage_is_retained_while_other_devices_finish(tmp_path
 def test_missing_screenshot_prevents_green_device_stage(tmp_path):
     """数据全匹配但双端取证缺失时，该工况与整台结果仍失败。"""
     scenario, *_ = sample_run(tmp_path)
-    scenario.select_prepared_topology = lambda: None
     def sample(stage, bus, device):
         return {"工况": stage, "路号": bus["index"], "站号": device["station_id"],
                 "点位": [{"通过": True} for _ in READ_POINTS], "通过": True, "工况错误": []}

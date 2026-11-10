@@ -91,6 +91,8 @@ class HuaweiRtuPage(ModbusRtuPage):
             self._select_option("word_order", "HL")
         self._select_option("byte_order", "AB")
         self._submit("添加点位")
+        edit = (By.XPATH, "//button[@aria-label=" + xpath_text("编辑点位 " + tag) + "]")
+        self._until(lambda _: self._visible(edit), f"保存后点表未显示华为采集点 {tag}")
         point["tag"] = tag
         self.owned[self.current]["points"][tag] = point
         self.desktop.metadata.setdefault("华为配置点表", {}).setdefault(self.current, []).append(dict(point))

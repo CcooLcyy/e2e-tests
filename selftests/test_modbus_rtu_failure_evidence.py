@@ -104,3 +104,25 @@ def test_stop_between_reads_preserves_partial_pair(tmp_path, monkeypatch):
     saved, = json.loads((tmp_path / "modbus-rtu-observations.json").read_text(encoding="utf-8"))
     assert saved["DSP上位机"] == upper_snapshot
     assert saved["slaveSim"] == {"观察错误": "任务停止，未完成本轮模拟器观察"}
+
+
+@pytest.mark.parametrize("plan,prefix", [("SOURCE_CHANGE", "first"), ("SCALED_CHANGE", "scaled"), ("TWO_STATIONS", "first")])
+def test_source_change_failure_stops_before_waiting_for_upper(tmp_path, monkeypatch, plan, prefix):
+    cases = business_cases()
+    steps = getattr(cases, plan)
+    start = steps.index(cases.WAIT_FIRST_CHANGE)
+    assert steps[start + 1].id == f"{prefix}.change.select"
+
+    def wait_source(*args, **kwargs):
+        assert args == ("专用总线", 1, "0x03", 0, 2345)
+        assert kwargs == {"timeout": 20}
+        raise AssertionError("外部工况未就绪：最后值为 1234")
+
+    environment = SimpleNamespace(bus="专用总线", stations=(RtuStation(1, 0),), acquisition_timeout=20)
+    scenario = cases.RtuScenario(EvidenceDesktop(tmp_path), SimpleNamespace(wait_value=wait_source), None, environment)
+    request = SimpleNamespace(node=SimpleNamespace(nodeid="rtu-source-not-ready"))
+    monkeypatch.setattr("testbench.case_plan.emit", lambda _: None)
+
+    with pytest.raises(AssertionError, match="外部工况未就绪"):
+        cases.run_observations(request, steps[start:], scenario)
+    assert request.node._bench_plan_steps == {cases.WAIT_FIRST_CHANGE.id: "failed"}

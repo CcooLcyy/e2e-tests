@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 from selenium import webdriver
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.service import Service
@@ -121,7 +121,7 @@ class SlaveSimPage:
         failed = self.desktop.failure or entry.get("状态") == "失败" or entry.get("错误")
         self._capture(entry, "failed" if failed else "unknown", required=True)
 
-    def _wait(self, predicate, message):
+    def _wait(self, predicate, message, *, timeout=None):
         def condition(driver):
             if not self._restoring:
                 self.desktop._check_stop()
@@ -129,7 +129,8 @@ class SlaveSimPage:
                 return predicate(driver)
             except StaleElementReferenceException:
                 return False
-        return WebDriverWait(self.driver, self.desktop.timeout, poll_frequency=0.2).until(condition, message)
+        wait = self.desktop.timeout if timeout is None else timeout
+        return WebDriverWait(self.driver, wait, poll_frequency=0.2).until(condition, message)
 
     def _tick(self):
         state = self.driver.execute_script("return window.__testbenchSim")
@@ -417,6 +418,37 @@ class SlaveSimPage:
             self._snapshot(result)
             entry["实际"] = json.dumps(result, ensure_ascii=False)
             return result
+
+    def wait_value(self, bus, station_id, function, address, expected, *, timeout):
+        """等待外部准备的工况出现，只读取新的页面刷新。"""
+        key = self._key(bus, station_id, function, address)
+        with self._step(f"等待站号 {station_id} 寄存器 {address} 的外部工况", expected=expected) as entry:
+            last_tick = max(self._tick(), 0)
+            last = None
+
+            def matches(_):
+                nonlocal last_tick, last
+                tick = self._tick()
+                if tick <= last_tick:
+                    return False
+                last = self._read(key)
+                last_tick = tick
+                return last if last["value"] == expected else False
+
+            try:
+                self._wait(matches, "未看到目标工况", timeout=timeout)
+            except TimeoutException:
+                actual = last["value"] if last else "无新鲜页面反馈"
+                entry["实际"] = str(actual)
+                if last is not None:
+                    try:
+                        self._snapshot(last)
+                    except OSError:
+                        LOG.exception("保存外部工况最后观察失败，保留等待工况错误")
+                raise AssertionError(f"外部工况未就绪：{timeout:g} 秒内未观察到 {expected}，最后值为 {actual}") from None
+            self._snapshot(last)
+            entry["实际"] = json.dumps(last, ensure_ascii=False)
+            return last
 
     def set_value(self, bus, station_id, function, address, value):
         key = self._key(bus, station_id, function, address)

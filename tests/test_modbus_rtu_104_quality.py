@@ -2,6 +2,8 @@
 from decimal import Decimal
 import json
 import math
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,8 +16,9 @@ from testbench.case_plan import (
 )
 from testbench.login_page import PlatformLoginPage, load_login_account
 from testbench.login_plan import login_steps
-from testbench.modbus_rtu_page import xpath_text
-from testbench.rtu_observation import PreparedRtuPage
+from testbench.modbus_rtu_config import validate_manager_address
+from testbench.modbus_rtu_page import ModbusRtuPage, xpath_text
+from testbench.model import Environment
 from testbench.rtu_quality_frames import capture_frames, decode_frame
 from testbench.workspace import local_config
 
@@ -35,9 +38,7 @@ def _profile():
         profile = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeError(f"前置条件缺失或配置不可读，请填写 {path}") from exc
-    if isinstance(profile, dict):
-        profile.pop("manager_address", None)
-    text_fields = ("rtu_connection", "rtu_tag", "master_host")
+    text_fields = ("manager_address", "rtu_connection", "rtu_tag", "master_host")
     bounds = {"master_port": (1, 65535), "common_address": (1, 65534),
               "target_ioa": (0, 0xFFFFFF), "reference_ioa": (0, 0xFFFFFF)}
     if not isinstance(profile, dict) or profile.keys() != {*text_fields, *bounds, "phase_timeout_seconds"}:
@@ -46,6 +47,7 @@ def _profile():
         if not isinstance(profile[name], str) or not profile[name].strip():
             raise ValueError(f"专项配置 {name} 须为非空字符串")
         profile[name] = profile[name].strip()
+    validate_manager_address(profile["manager_address"])
     for name, (minimum, maximum) in bounds.items():
         if type(profile[name]) is not int or not minimum <= profile[name] <= maximum:
             raise ValueError(f"专项配置 {name} 须在 {minimum}～{maximum} 之间")
@@ -61,6 +63,16 @@ def _load_account(context):
     context.account = load_login_account(local_config("login-account.json"))
 
 
+def _check_master_environment():
+    task_path = os.environ.get("TESTBENCH_TASK")
+    if not task_path:
+        raise RuntimeError("前置条件未满足：请从测试上位机运行并启用专用 104 主站")
+    task = json.loads(Path(task_path).read_text(encoding="utf-8"))
+    environment = Environment.from_dict(task["environment"])
+    environment.validate_master104(required=True)
+    environment.validate_master104_driver()
+
+
 def _select_connection(context):
     page = context.rtu
     connection = context.profile["rtu_connection"]
@@ -68,16 +80,19 @@ def _select_connection(context):
     title = (By.XPATH, "//div[contains(@class,'modbus-connection-card')]"
              "//div[contains(@class,'ant-card-head-title')]//span[normalize-space(.)=" + xpath_text(connection) + "]")
     page._until(lambda _: page._visible(title), "前置条件未满足：未显示预置 RTU 连接")
-    page._until(lambda _: connection in page.driver.find_element(
+    page._until(lambda _: "运行中" in page.driver.find_element(
         By.CSS_SELECTOR, ".modbus-connection-card .ant-card-head").text,
-        "前置条件缺失，未打开专用 RTU 连接")
+        "前置条件未满足：专用 RTU 连接须预置并保持轮询运行")
+
+
+def _target_row(context):
+    locator = (By.XPATH, "//div[contains(@class,'protocol-point-card')]//tr[.//td//strong[normalize-space(.)="
+               + xpath_text(context.profile["rtu_tag"]) + "]]")
+    return context.rtu._visible(locator)
 
 
 def _wait_for_target(context):
-    page = context.rtu
-    locator = (By.XPATH, "//div[contains(@class,'protocol-point-card')]//tr[.//td//strong[normalize-space(.)="
-               + xpath_text(context.profile["rtu_tag"]) + "]]")
-    page._until(lambda _: page._visible(locator), "前置条件缺失，专用 RTU 点表未显示目标点")
+    context.rtu._until(lambda _: _target_row(context), "前置条件未满足：专用 RTU 点表未显示目标点")
 
 
 def _measurement(master, ca, ioa):
@@ -106,8 +121,17 @@ def _observation_step(index, label, quality):
             try:
                 row = master.wait_for(match, f"未看到 {label} 的新遥测", timeout=profile["phase_timeout_seconds"])
             except TimeoutException:
-                step["实际"] = last
-                raise AssertionError(f"未观察到{label}的新遥测，期望品质0x{quality:02X}，最后点表行：{last!r}") from None
+                evidence = {"阶段": label, "期望品质": f"0x{quality:02X}", "最后主站点表": last,
+                            "上个已通过报文编号": context.frame_id, "应答源状态": "本例没有独立观测"}
+                try:
+                    upper = _target_row(context)
+                    evidence["上位机目标行"] = upper.text if upper is not None else None
+                except Exception as error:
+                    evidence["上位机取证错误"] = str(error)
+                step["实际"] = evidence
+                master.metadata["RTU品质未观察到的阶段"] = evidence
+                raise AssertionError(f"等待{label}阶段超时，104 未观察到品质 0x{quality:02X} 的新遥测；"
+                                     f"最后点表行：{last!r}。请结合外部应答源记录区分工况未到和上送异常") from None
             step["实际"] = row
             context.observations.append(row)
             assert int(row["cells"][2]) == 36, f"目标点须为带时标短浮点遥测：{row!r}"
@@ -204,15 +228,16 @@ def _verify_frames(context):
         step["实际"] = sequence
 
 
-PROFILE = Step("quality.profile", "检查 RTU 到 IEC104 品质专项配置", "预置 RTU 点位和专用 104 观察参数有效")
+PROFILE = Step("quality.profile", "检查 RTU 到 IEC104 品质专项配置", "专用下位机、预置 RTU 点位和 104 观察参数有效")
+MASTER_READY = Step("quality.master.ready", "检查独立 104 主站的运行配置", "已启用专用主站，主站程序及驱动可用")
 LOGIN = (
     Step("quality.login.account", "读取测试账号", "专用平台账号配置有效", _load_account),
     *login_steps("quality.login"),
 )
 PREPARED_POINT = (
-    Step("quality.rtu.links", "打开预置 RTU 连接列表", "上位机显示 RTU 连接列表",
-         lambda context: context.rtu.open_prepared_links()),
-    Step("quality.rtu.select", "选择专用 RTU 连接", "详情显示配置指定的连接", _select_connection),
+    Step("quality.rtu.links", "通过上位机连接专用下位机并打开 RTU 配置", "RTU 模块运行中，连接列表可用",
+         lambda context: context.rtu.open_device(context.profile["manager_address"])),
+    Step("quality.rtu.select", "选择专用 RTU 连接", "详情显示配置指定的连接且轮询运行中", _select_connection),
     Step("quality.rtu.runtime", "打开 RTU 运行视图", "点表显示实时值列", lambda context: context.rtu._runtime_view()),
     Step("quality.rtu.target", "核对预置目标点", "运行点表显示配置指定的 Tag", _wait_for_target),
 )
@@ -232,16 +257,18 @@ VERIFY_FRAMES = Step("quality.frames", "核对原始总召及自发遥测报文"
                      "总召省略目标，品质依次为 00、40、C0、00，故障沿用样本时标且恢复后刷新", _verify_frames)
 
 
-@case_plan(PROFILE, DESKTOP_START, *LOGIN, *PREPARED_POINT, MASTER104_START, *INITIAL_SESSION, *OBSERVATIONS, VERIFY_FRAMES,
+@case_plan(PROFILE, MASTER_READY, DESKTOP_START, *LOGIN, *PREPARED_POINT, MASTER104_START, *INITIAL_SESSION, *OBSERVATIONS, VERIFY_FRAMES,
            MASTER104_FINISH, DESKTOP_FINISH)
 def test_rtu_quality_reaches_iec104_with_unchanged_value(request):
     """总召省略未采到的点，值保持 100 时仍依次收到正常、NT、IV+NT 与恢复。"""
     with track_fixture_step(request, PROFILE):
         profile = _profile()
-    desktop = request.getfixturevalue("desktop")
+    with track_fixture_step(request, MASTER_READY):
+        _check_master_environment()
+    desktop = request.getfixturevalue("fresh_desktop")
     context = SimpleNamespace(profile=profile, desktop=desktop, page=PlatformLoginPage(desktop))
     run_steps(request, LOGIN, context)
-    context.rtu = PreparedRtuPage(desktop)
+    context.rtu = ModbusRtuPage(desktop)
     with desktop.step("打开已预配置的 RTU 点表", expected=profile["rtu_tag"]):
         run_steps(request, PREPARED_POINT, context)
     master = request.getfixturevalue("master104")

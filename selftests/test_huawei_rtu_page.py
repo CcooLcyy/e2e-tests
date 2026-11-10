@@ -78,6 +78,12 @@ class RecordingPage(HuaweiRtuPage):
     def _submit(self, label):
         self.actions.append(("submit", label))
 
+    def _until(self, predicate, message="", timeout=None):
+        return predicate(None)
+
+    def _visible(self, locator):
+        return True
+
 
 def test_write_point_does_not_fill_hidden_deadband_and_preserves_signed_type():
     """写单寄存器Q/S使用INT16，不能填写写点页面不存在的死区。"""

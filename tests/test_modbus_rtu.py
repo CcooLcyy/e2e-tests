@@ -19,7 +19,6 @@ from testbench.login_plan import login_steps
 from testbench.modbus_rtu_config import RtuEnvironment, assert_dual_observation, expected_value
 from testbench.modbus_environment import BASIC_CASE_IDS, validate_selected_modbus_cases
 from testbench.modbus_rtu_page import ModbusRtuPage
-from testbench.rtu_observation import BasicObservationProfile, PreparedRtuPage
 from testbench.workspace import local_config
 
 
@@ -30,7 +29,6 @@ SCALED_FACTORS = ("0.1", 2)
 RTU_PREPARE = Step("rtu.prepare", "检查 RTU 测试环境", "已提供专项配置、观察时限和专用测试账号")
 SIMULATOR_START = Step("rtu.simulator.start", "打开 slaveSim 观察会话", "运行页面已加载且收到新刷新")
 RTU_LOGIN_STEPS = login_steps("login")
-RTU_OPEN = Step("rtu.open", "打开上位机预置 RTU 业务页面", "可以观察已经准备好的连接")
 RTU_OPEN_DEDICATED = Step("rtu.open_dedicated", "在上位机连接专用下位机并打开 RTU 配置", "RTU 模块已运行，连接列表可用")
 RTU_CLEANUP = Step("rtu.cleanup", "停止并清理本次创建的 RTU 连接及点表", "本例连接已删除")
 SIMULATOR_FINISH = Step("rtu.simulator.finish", "关闭 slaveSim 观察会话", "本例观察会话已收尾")
@@ -53,27 +51,29 @@ class RtuScenario:
         self.desktop.check("两端使用同一专用串口路径", observed["link_path"], self.environment.serial_device)
         return observed
 
-    def use_prepared_connection(self, index=0, *, scaled=False):
-        config, point = self.environment, self.point(index)
-        if scaled:
-            name, tag = config.scaled_connection, config.scaled_tag
-            scale, offset = SCALED_FACTORS
-        else:
-            name, tag = point.connection, point.tag
-            scale, offset = RAW_FACTORS
-        self.upper.expect_connection(name, config.serial_device, point.station_id)
-        self.connections[index] = {"name": name, "tag": tag, "scale": scale, "offset": offset}
+    def wait_simulator(self, index, expected):
+        point = self.point(index)
+        config = self.environment
+        observed = self.simulator.wait_value(config.bus, point.station_id, "0x03", point.address, expected,
+                                             timeout=config.acquisition_timeout)
+        self.desktop.check("外部工况对应本例专用串口", observed["link_path"], config.serial_device)
 
-    def create_connection(self):
+    def create_connection(self, index, *, scaled=False):
         config = self.environment
         name = f"e2e-rtu-{uuid4().hex[:16]}"
         parity = {"无校验": "N", "奇校验": "O", "偶校验": "E"}[config.parity]
         self.upper.create_connection(name, config.serial_device, config.baud_rate, config.data_bits,
-                                     config.stop_bits, parity, self.point(0).station_id, config.poll_interval_ms)
-        self.connections[0] = {"name": name, "tag": f"{name}-value", "scale": 1, "offset": 0}
+                                     config.stop_bits, parity, self.point(index).station_id, config.poll_interval_ms)
+        scale, offset = SCALED_FACTORS if scaled else RAW_FACTORS
+        self.connections[index] = {"name": name, "tag": f"{name}-value", "scale": scale, "offset": offset}
 
-    def add_point(self):
-        self.upper.add_point(self.connections[0]["tag"], address=self.point(0).address)
+    def add_point(self, index):
+        point = self.connections[index]
+        self.upper.add_point(point["tag"], address=self.point(index).address, scale=point["scale"], offset=point["offset"])
+
+    def start(self, index):
+        self.upper.select(self.connections[index]["name"])
+        self.upper.start()
 
     def select_for_observation(self, index, raw, previous_timestamp):
         connection = self.connections[index]
@@ -191,13 +191,7 @@ class RtuObservation:
                              expected=str(self.expected), actual=json.dumps(self.upper, ensure_ascii=False, default=str))
 
 
-def connection_step(id, index, *, scaled=False):
-    connection = "倍率 0.1、偏移 2 的预置点" if scaled else f"第 {index + 1} 站的预置连接"
-    return Step(id, f"读取{connection}的观察配置", "已声明对应连接、串口和站号",
-                lambda scenario: scenario.use_prepared_connection(index, scaled=scaled))
-
-
-def observation_steps(prefix, index, raw, *, scaled=False, previous=None, prepared=True):
+def observation_steps(prefix, index, raw, *, scaled=False, previous=None):
     expected = expected_value(raw, *(SCALED_FACTORS if scaled else RAW_FACTORS))
     label = f"第 {index + 1} 站{'后续' if previous else '初始'}采集"
 
@@ -209,11 +203,8 @@ def observation_steps(prefix, index, raw, *, scaled=False, previous=None, prepar
         return lambda scenario: method(scenario.observations[prefix])
 
     time_expected = "采集时间与前次不同" if previous else "采集时间有效"
-    selection = "预置连接" if prepared else "本次创建的连接"
-    selection_expected = ("连接正在运行，串口、站号和连接身份符合预置" if prepared
-                          else "连接编号与本次创建的一致")
     return (
-        Step(f"{prefix}.select", f"选择{label}的{selection}", selection_expected, select),
+        Step(f"{prefix}.select", f"选择{label}的连接", "连接编号与本次创建的一致", select),
         Step(f"{prefix}.upper", f"等待{label}的上位机点值", f"显示 {expected}，质量正常，{time_expected}",
              action(RtuObservation.wait_upper)),
         Step(f"{prefix}.simulator", f"读取{label}的 slaveSim 寄存器", "读到同一专用链路上的目标寄存器",
@@ -231,11 +222,6 @@ def observation_steps(prefix, index, raw, *, scaled=False, previous=None, prepar
 
 
 def rtu_plan(*steps):
-    return case_plan(RTU_PREPARE, DESKTOP_START, SIMULATOR_START, *RTU_LOGIN_STEPS, RTU_OPEN,
-                     *steps, SIMULATOR_FINISH, DESKTOP_FINISH)
-
-
-def independent_rtu_plan(*steps):
     return case_plan(RTU_PREPARE, DESKTOP_START, SIMULATOR_START, *RTU_LOGIN_STEPS, RTU_OPEN_DEDICATED,
                      *steps, RTU_CLEANUP, SIMULATOR_FINISH, DESKTOP_FINISH)
 
@@ -251,8 +237,8 @@ def run_observations(request, steps, scenario):
 
 
 @contextmanager
-def _rtu_session(request, *, independent=False):
-    """按本例的模式打开两个观察会话，失败时在清理前保留现场。"""
+def _rtu_session(request, *, minimum_stations=1):
+    """打开本例的两个会话，失败时在清理前保留现场。"""
     from testbench.slavesim_page import SlaveSimPage
     from testbench.model import validate_slavesim_url
 
@@ -265,18 +251,15 @@ def _rtu_session(request, *, independent=False):
         validate_selected_modbus_cases(environment, BASIC_CASE_IDS)
         simulator_url = validate_slavesim_url(environment.get("slavesim_url", ""), required=True)
         timeout = float(environment.get("modbus_acquisition_timeout", 300))
-        if independent:
-            try:
-                config = RtuEnvironment.load(local_config("modbus-rtu-independent.json"),
-                                             station_count=1, acquisition_timeout=timeout)
-            except ValueError as error:
-                raise RuntimeError(f"RTU 外部测试环境未就绪：{error}") from error
-        else:
-            config = BasicObservationProfile.load(local_config("modbus-rtu.json"), timeout)
+        try:
+            config = RtuEnvironment.load(local_config("modbus-rtu-independent.json"),
+                                         minimum_stations=minimum_stations, acquisition_timeout=timeout)
+        except ValueError as error:
+            raise RuntimeError(f"RTU 外部测试环境未就绪：{error}") from error
         account = load_login_account(local_config("login-account.json"))
-    desktop = request.getfixturevalue("desktop")
+    desktop = request.getfixturevalue("fresh_desktop")
     desktop.metadata["RTU验收阶段"] = "前置条件"
-    upper = ModbusRtuPage(desktop) if independent else PreparedRtuPage(desktop)
+    upper = ModbusRtuPage(desktop)
 
     def capture_failure(simulator):
         for source, capture in (("slaveSim", simulator.capture), ("DSP上位机", desktop.capture)):
@@ -291,12 +274,8 @@ def _rtu_session(request, *, independent=False):
         try:
             login = SimpleNamespace(desktop=desktop, page=PlatformLoginPage(desktop), account=account)
             run_steps(request, RTU_LOGIN_STEPS, login)
-            if independent:
-                with track_fixture_step(request, RTU_OPEN_DEDICATED):
-                    upper.open_device(config.manager_address)
-            else:
-                with track_fixture_step(request, RTU_OPEN):
-                    upper.open_prepared_links()
+            with track_fixture_step(request, RTU_OPEN_DEDICATED):
+                upper.open_device(config.manager_address)
             desktop.metadata["RTU环境"] = asdict(config)
             desktop.metadata["RTU验收阶段"] = "业务验收"
             yield RtuScenario(desktop, simulator, upper, config)
@@ -308,7 +287,7 @@ def _rtu_session(request, *, independent=False):
             case_failed = any(report.failed for report in getattr(request.node, "_bench_reports", []))
             if not setup_failed and case_failed:
                 capture_failure(simulator)
-            if independent and upper.creation_started:
+            if upper.creation_started:
                 try:
                     with track_fixture_step(request, RTU_CLEANUP):
                         upper.cleanup()
@@ -320,14 +299,14 @@ def _rtu_session(request, *, independent=False):
 
 
 @pytest.fixture
-def rtu(request):
+def independent_rtu(request):
     with _rtu_session(request) as scenario:
         yield scenario
 
 
 @pytest.fixture
-def independent_rtu(request):
-    with _rtu_session(request, independent=True) as scenario:
+def two_station_rtu(request):
+    with _rtu_session(request, minimum_stations=2) as scenario:
         yield scenario
 
 
@@ -336,78 +315,89 @@ SIMULATOR_POINT = Step("rtu.source", "读取 slaveSim 的专用总线和目标�
                        lambda scenario: scenario.observe_simulator(0))
 CHECK_SERIAL = Step("rtu.check_serial", "检查专用串口可用于本次测试", "既有连接未使用此串口",
                     lambda scenario: scenario.upper.assert_serial_paths_available((scenario.environment.serial_device,)))
-CREATE_POINT_TABLE = (
-    Step("rtu.create", "新建并保存本次 RTU 连接", "连接列表显示新连接及设备分配的连接编号",
-         RtuScenario.create_connection),
-    Step("rtu.add_point", "新增并保存本次采集点", "配置点表显示对应站号的 0x03 UINT16 采集点",
-         RtuScenario.add_point),
-)
+
+
+def point_setup(index, *, scaled=False):
+    prefix = f"rtu.s{index + 1}"
+    label = f"第 {index + 1} 站"
+    factors = "，倍率 0.1、偏移 2" if scaled else ""
+    return (
+        Step(f"{prefix}.create", f"创建并保存{label} RTU 连接", "列表显示新连接及设备分配的编号",
+             lambda scenario: scenario.create_connection(index, scaled=scaled)),
+        Step(f"{prefix}.add_point", f"新增并保存{label}采集点", f"点表显示 0x03 UINT16 采集点{factors}",
+             lambda scenario: scenario.add_point(index)),
+    )
+
+
+def start_station(index):
+    return Step(f"rtu.s{index + 1}.start", f"启动第 {index + 1} 站轮询并打开运行视图",
+                "连接进入运行中，显示实时值列", lambda scenario: scenario.start(index))
+
+
+def check_initial_source(index, expected):
+    def check(scenario):
+        observed = scenario.observe_simulator(index)
+        scenario.desktop.check("外部工况的初始原始值", observed["value"], expected)
+
+    return Step(f"rtu.s{index + 1}.initial_source", f"核对 slaveSim 第 {index + 1} 站的初始工况",
+                f"串口和寄存器匹配，已生效原始值为 {expected}", check)
+
+
+WAIT_FIRST_CHANGE = Step("rtu.s1.wait_change", "等待外部将 slaveSim 第一站切换到下一工况",
+                         "同一寄存器的新反馈显示 2345", lambda scenario: scenario.wait_simulator(0, 2345))
 SAVED_CONFIGURATION = (
-    SIMULATOR_POINT, CHECK_SERIAL, *CREATE_POINT_TABLE,
+    SIMULATOR_POINT, CHECK_SERIAL, *point_setup(0),
     Step("rtu.readback", "重新打开页面核对已保存的连接和点表", "连接参数和点位映射与配置及模拟器一致",
          lambda scenario: scenario.upper.assert_saved_configuration()),
 )
 
 
-def verify_initial_source(scenario):
-    observed = scenario.observe_simulator(0)
-    scenario.desktop.check("外部工况的初始原始值", observed["value"], 1234)
-
-
-INITIAL_ACQUISITION = (
-    Step("rtu.source", "核对 slaveSim 已准备的初始工况", "串口和寄存器匹配，已生效原始值为 1234",
-         verify_initial_source),
-    CHECK_SERIAL, *CREATE_POINT_TABLE,
-    Step("rtu.start", "启动本次连接的轮询并打开运行视图", "连接进入运行中，显示实时值列",
-         lambda scenario: scenario.upper.start()),
-    *observation_steps("first.baseline", 0, 1234, prepared=False),
-)
-
-
-FIRST_CONNECTION = connection_step("first.connection", 0)
 FIRST_BASELINE = observation_steps("first.baseline", 0, 1234)
 FIRST_CHANGE = observation_steps("first.change", 0, 2345, previous="first.baseline")
-SOURCE_CHANGE = (FIRST_CONNECTION, *FIRST_BASELINE, *FIRST_CHANGE)
+FIRST_SOURCE = check_initial_source(0, 1234)
+INITIAL_ACQUISITION = (FIRST_SOURCE, CHECK_SERIAL, *point_setup(0), start_station(0), *FIRST_BASELINE)
+SOURCE_CHANGE = (*INITIAL_ACQUISITION, WAIT_FIRST_CHANGE, *FIRST_CHANGE)
 SCALED_CHANGE = (
-    connection_step("scaled.connection", 0, scaled=True),
+    FIRST_SOURCE, CHECK_SERIAL, *point_setup(0, scaled=True), start_station(0),
     *observation_steps("scaled.baseline", 0, 1234, scaled=True),
+    WAIT_FIRST_CHANGE,
     *observation_steps("scaled.change", 0, 2345, scaled=True, previous="scaled.baseline"),
 )
 TWO_STATIONS = (
-    FIRST_CONNECTION,
-    connection_step("second.connection", 1),
+    FIRST_SOURCE, check_initial_source(1, 4321), CHECK_SERIAL,
+    *point_setup(0), *point_setup(1), start_station(0), start_station(1),
     *FIRST_BASELINE,
     *observation_steps("second.baseline", 1, 4321),
-    *FIRST_CHANGE,
+    WAIT_FIRST_CHANGE, *FIRST_CHANGE,
     *observation_steps("second.change", 1, 4321, previous="second.baseline"),
 )
 
 
-@independent_rtu_plan(*SAVED_CONFIGURATION)
+@rtu_plan(*SAVED_CONFIGURATION)
 def test_rtu_configuration_saved_on_both_pages(request, independent_rtu):
     """RTU连接与点表保存后重新读取一致，模拟器点位身份正确。"""
     run_observations(request, SAVED_CONFIGURATION, independent_rtu)
 
 
-@independent_rtu_plan(*INITIAL_ACQUISITION)
+@rtu_plan(*INITIAL_ACQUISITION)
 def test_rtu_initial_acquisition_matches_simulator(request, independent_rtu):
     """RTU初始采集值与slaveSim已生效原始值一致。"""
     run_observations(request, INITIAL_ACQUISITION, independent_rtu)
 
 
 @rtu_plan(*SOURCE_CHANGE)
-def test_rtu_source_change_updates_value_and_time(request, rtu):
+def test_rtu_source_change_updates_value_and_time(request, independent_rtu):
     """slaveSim数值变化后RTU实时值与采集时间同步更新。"""
-    run_observations(request, SOURCE_CHANGE, rtu)
+    run_observations(request, SOURCE_CHANGE, independent_rtu)
 
 
 @rtu_plan(*SCALED_CHANGE)
-def test_rtu_scale_and_offset_match_fixed_expectations(request, rtu):
+def test_rtu_scale_and_offset_match_fixed_expectations(request, independent_rtu):
     """RTU倍率0.1偏移2将两组原始值换算为125.4和236.5。"""
-    run_observations(request, SCALED_CHANGE, rtu)
+    run_observations(request, SCALED_CHANGE, independent_rtu)
 
 
 @rtu_plan(*TWO_STATIONS)
-def test_rtu_two_stations_do_not_cross_values(request, rtu):
+def test_rtu_two_stations_do_not_cross_values(request, two_station_rtu):
     """同一RTU总线两站数值独立，改变第一站不改变第二站。"""
-    run_observations(request, TWO_STATIONS, rtu)
+    run_observations(request, TWO_STATIONS, two_station_rtu)
