@@ -385,10 +385,14 @@ mod tests {
     fn update_versions_are_exclusive_to_each_channel() {
         let stable = Version::parse("0.1.1").unwrap();
         let ci = Version::parse("0.1.1-ci.12.1").unwrap();
+        let timed_ci = Version::parse("0.1.1-ci.20261110143025123.1").unwrap();
         assert!(UpdateChannel::Stable.accepts_version(&stable));
         assert!(!UpdateChannel::Ci.accepts_version(&stable));
         assert!(UpdateChannel::Ci.accepts_version(&ci));
         assert!(!UpdateChannel::Stable.accepts_version(&ci));
+        assert!(UpdateChannel::Ci.accepts_version(&timed_ci));
+        assert_eq!(timed_ci.cmp_precedence(&ci), Ordering::Greater);
+        assert_eq!(stable.cmp_precedence(&timed_ci), Ordering::Greater);
         for invalid in [
             "0.1.1-beta.12.1",
             "0.1.1-ci.0.1",

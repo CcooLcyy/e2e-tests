@@ -2,6 +2,7 @@
 
 import argparse
 from base64 import b64decode
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ from urllib.request import Request, urlopen
 
 PRODUCT = "mskdsp-testbench"
 PLATFORM = "windows-x86_64-nsis"
+BEIJING_TIME = timezone(timedelta(hours=8))
 PUBLISH_TARGETS = {
     "ci": ("push", "TESTBENCH_CI_PUBLISHER_TOKEN"),
     "stable": ("workflow_dispatch", "TESTBENCH_PUBLISHER_TOKEN"),
@@ -68,26 +70,34 @@ def package_version():
     return version
 
 
-def release_version(channel, recorded=None):
+def release_version(channel, recorded=None, *, allow_previous_attempt=False):
     version = package_version()
     if channel == "stable":
         if recorded is not None and recorded != version:
             raise ReleaseError("Stable build version differs from the source version")
         return version
 
-    run_number = os.environ.get("GITHUB_RUN_NUMBER", "")
     run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
-    if not all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_number, run_attempt)):
-        raise ReleaseError("Missing or invalid GitHub run number or attempt")
+    if not re.fullmatch(r"[1-9][0-9]*", run_attempt):
+        raise ReleaseError("Missing or invalid GitHub run attempt")
     major, minor, patch = version.split(".")
-    prefix = f"{major}.{minor}.{int(patch) + 1}-ci.{run_number}."
+    prefix = f"{major}.{minor}.{int(patch) + 1}-ci."
     if recorded is None:
-        return prefix + run_attempt
+        timestamp = datetime.now(BEIJING_TIME).strftime("%Y%m%d%H%M%S%f")[:-3]
+        return f"{prefix}{timestamp}.{run_attempt}"
 
     # A publish-only rerun keeps the signed artifact from its original build attempt.
-    match = re.fullmatch(re.escape(prefix) + r"([1-9][0-9]*)", recorded) if isinstance(recorded, str) else None
-    if not match or int(match[1]) > int(run_attempt):
-        raise ReleaseError("CI build version differs from this workflow run")
+    pattern = re.escape(prefix) + r"([1-9][0-9]{16})\.([1-9][0-9]*)"
+    match = re.fullmatch(pattern, recorded) if isinstance(recorded, str) else None
+    if not match:
+        raise ReleaseError("CI build version differs from this workflow attempt")
+    timestamp, attempt = match.groups()
+    if attempt != run_attempt and not (allow_previous_attempt and int(attempt) < int(run_attempt)):
+        raise ReleaseError("CI build version differs from this workflow attempt")
+    try:
+        datetime.fromisoformat(f"{timestamp[:8]}T{timestamp[8:14]}.{timestamp[14:]}")
+    except ValueError:
+        raise ReleaseError("CI build version has an invalid Beijing timestamp") from None
     return recorded
 
 
@@ -123,10 +133,10 @@ def minisign_key_id(box, payload_size):
 
 
 def stage(channel):
-    version = release_version(channel)
     config = json.loads(config_path().read_text(encoding="utf-8"))
-    if config["version"] != version:
-        raise ReleaseError("Tauri build version differs from the expected release version")
+    if not isinstance(config["version"], str):
+        raise ReleaseError("Missing Tauri build version")
+    version = release_version(channel, config["version"])
     product_name = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))["productName"]
     installers = list(BUNDLE.glob("*.exe"))
     if len(installers) != 1 or installers[0].name != f"{product_name}_{version}_x64-setup.exe":
@@ -146,6 +156,8 @@ def stage(channel):
     if len(lines) != 4 or not re.fullmatch(comment, lines[2]):
         raise ReleaseError("Updater signature must bind the original NSIS filename and app version")
     recorded = dict(metadata, endpoint=updater["endpoint"])
+    if channel == "ci":
+        recorded["run_id"] = os.environ["GITHUB_RUN_ID"]
     (RELEASE / "metadata.json").write_text(json.dumps(recorded, indent=2) + "\n", encoding="utf-8")
 
 
@@ -260,7 +272,9 @@ def publish(channel):
     if not token or any(not 33 <= ord(char) <= 126 for char in token):
         raise ReleaseError(f"Missing or invalid {token_variable}")
     recorded = json.loads((RELEASE / "metadata.json").read_text(encoding="utf-8"))
-    version = release_version(channel, recorded["version"])
+    if channel == "ci" and recorded.pop("run_id", None) != os.environ["GITHUB_RUN_ID"]:
+        raise ReleaseError("CI installer was not built by this workflow run")
+    version = release_version(channel, recorded["version"], allow_previous_attempt=True)
     archive = release_archive(version)
     metadata = identity(archive, version, channel)
     if dict(metadata, endpoint=endpoint) != recorded:
