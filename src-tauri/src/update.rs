@@ -58,19 +58,17 @@ impl UpdateChannel {
         match self {
             Self::Stable => version.pre.is_empty(),
             Self::Ci => {
-                let Some((run, attempt)) = version
-                    .pre
-                    .as_str()
-                    .strip_prefix("ci.")
-                    .and_then(|suffix| suffix.split_once('.'))
-                else {
+                let Some(suffix) = version.pre.as_str().strip_prefix("ci.") else {
                     return false;
                 };
-                [run, attempt].into_iter().all(|number| {
-                    !number.is_empty()
-                        && number != "0"
-                        && number.bytes().all(|byte| byte.is_ascii_digit())
-                })
+                match suffix.split_once('.') {
+                    Some((build, attempt)) => [build, attempt].into_iter().all(|number| {
+                        !number.is_empty()
+                            && number != "0"
+                            && number.bytes().all(|byte| byte.is_ascii_digit())
+                    }),
+                    None => suffix.len() == 17 && suffix.bytes().all(|byte| byte.is_ascii_digit()),
+                }
             }
         }
     }
@@ -386,13 +384,20 @@ mod tests {
         let stable = Version::parse("0.1.1").unwrap();
         let ci = Version::parse("0.1.1-ci.12.1").unwrap();
         let timed_ci = Version::parse("0.1.1-ci.20261110143025123.1").unwrap();
+        let timestamp_only_ci = Version::parse("0.1.1-ci.20261110143025124").unwrap();
         assert!(UpdateChannel::Stable.accepts_version(&stable));
         assert!(!UpdateChannel::Ci.accepts_version(&stable));
         assert!(UpdateChannel::Ci.accepts_version(&ci));
         assert!(!UpdateChannel::Stable.accepts_version(&ci));
         assert!(UpdateChannel::Ci.accepts_version(&timed_ci));
         assert_eq!(timed_ci.cmp_precedence(&ci), Ordering::Greater);
-        assert_eq!(stable.cmp_precedence(&timed_ci), Ordering::Greater);
+        assert!(UpdateChannel::Ci.accepts_version(&timestamp_only_ci));
+        assert!(!UpdateChannel::Stable.accepts_version(&timestamp_only_ci));
+        assert_eq!(
+            timestamp_only_ci.cmp_precedence(&timed_ci),
+            Ordering::Greater
+        );
+        assert_eq!(stable.cmp_precedence(&timestamp_only_ci), Ordering::Greater);
         for invalid in [
             "0.1.1-beta.12.1",
             "0.1.1-ci.0.1",
@@ -400,6 +405,8 @@ mod tests {
             "0.1.1-ci.12",
             "0.1.1-ci.12.1.2",
             "0.1.1-ci.12.1+build",
+            "0.1.1-ci.2026111014302512x",
+            "0.1.1-ci.20261110143025124+build",
         ] {
             assert!(!UpdateChannel::Ci.accepts_version(&Version::parse(invalid).unwrap()));
         }
