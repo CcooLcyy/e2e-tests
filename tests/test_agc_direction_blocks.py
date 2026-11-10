@@ -1,4 +1,4 @@
-"""从 DSP 上位机发起目标操作，通过对外反馈验收 AGC 增减闭锁。"""
+"""通过专用 IEC104 业务链路验收 AGC 增减闭锁。"""
 
 import pytest
 
@@ -7,17 +7,23 @@ from testbench.blocked_control import report_blocked_control_case
 
 pytestmark = pytest.mark.case_group("AGC 增减闭锁")
 
-_REQUIRED = "从 DSP 上位机为运行中的专用 AGC 组提交有功总目标，使用独立的 104 主站观察反馈"
-_BLOCKED = "当前 DSP 上位机没有为运行中的 AGC 组提交有功总目标的业务界面。"
+_REQUIRED = "从业务界面确认本例专用 AGC 与 IEC104 映射，取得可连接协议端点和点位后由独立主站遥调及观察"
+_BLOCKED = (
+    "尚无从已提供的测试入口自主定位专用设备、AGC 组及其 IEC104 路由的流程。"
+    "上位机显示的通配监听地址无法用于主站连接，旧方案需要另填下位机 104 地址和 IOA。"
+)
 
 
-def _agc_flow(prepare_kw, initial, target_kw, feedback):
+def _agc_flow(prepare_kw, initial, target_kw, feedback, *, measured=False):
+    mapping = "明确可连接的协议端点、公共地址、总目标遥调及闭锁遥信映射"
+    if measured:
+        mapping += "，以及实测功率遥测映射"
     return pytest.mark.case_flow(
-        ("登录独立的 DSP 上位机会话并打开运行中的专用 AGC 组",
-         "当前组包含一个支持绝对值有功控制的成员，试验上下限为 10 和 100 kW"),
-        ("连接独立的模拟 104 主站并读取初值", "可按专用点表观察所需遥信或遥测及其有效品质"),
-        (f"在 DSP 上位机提交 {prepare_kw} kW，建立本例初态", initial),
-        (f"记录 104 接收基线，在 DSP 上位机提交 {target_kw} kW", "上位机确认本轮有功总目标提交"),
+        ("从正常业务界面确认专用 AGC 组及专用 IEC104 从站点表",
+         f"单成员组运行、投入、允许远方绝对值有功控制，上下限为 10 和 100 kW。{mapping}"),
+        ("连接独立模拟 104 主站并总召", "从专用点表取得所需遥信或遥测的有效初值"),
+        (f"通过模拟 104 主站遥调 {prepare_kw} kW，建立本例初态", initial),
+        (f"记录接收基线，通过模拟 104 主站遥调 {target_kw} kW", "本轮短浮点直接执行收到肯定确认和终止"),
         ("在同一模拟 104 主站会话中核对本轮新反馈", feedback),
         blocked=_BLOCKED,
     )
@@ -50,6 +56,7 @@ def test_agc_higher_target_clears_decrease_block(request):
 @_agc_flow(
     50, "有效实测功率严格位于 10 和 100 kW 之间", 100,
     "同一轮观察中，新收到有效增闭锁置位和低于 100 kW 的新有效实测，减闭锁为否且品质有效",
+    measured=True,
 )
 def test_agc_increase_block_does_not_wait_for_measured_limit(request):
     """实测仍低于上限时，AGC 按已下发上限设定置增闭锁并上送 104 遥信。"""
