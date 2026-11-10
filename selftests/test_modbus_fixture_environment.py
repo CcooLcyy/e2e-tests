@@ -28,7 +28,7 @@ def test_fixture_requires_prepared_observation_profile(tmp_path, monkeypatch, fi
     def stop_before_desktop(name):
         assert name == "desktop"
         raise DesktopBoundary()
-    request = SimpleNamespace(getfixturevalue=stop_before_desktop)
+    request = SimpleNamespace(node=SimpleNamespace(), getfixturevalue=stop_before_desktop)
     prepare = getattr(module, fixture).__wrapped__
     with pytest.raises(RuntimeError, match="前置条件未满足"):
         next(prepare(request))
