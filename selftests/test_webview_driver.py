@@ -17,16 +17,24 @@ def create_file(path):
 
 def test_installer_reuses_matching_cache_and_fetches_after_runtime_upgrade(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
     monkeypatch.delenv("ProgramFiles", raising=False)
     monkeypatch.delenv("ProgramFiles(x86)", raising=False)
     runtimes = tmp_path / "Microsoft/EdgeWebView/Application"
     create_file(runtimes / "156.0.4314.58/msedgewebview2.exe")
     cache = tmp_path / "app-data/.tools"
     drivers = cache / "msedgedriver/win64"
-    create_file(drivers / "156.0.4314.60/msedgedriver.exe")
+    cached_driver = create_file(drivers / "156.0.4314.60/msedgedriver.exe")
     calls = []
+    permissions = []
 
     def download(args, **kwargs):
+        if Path(args[0]).name == "icacls.exe":
+            assert args[2:] == ["/inheritance:e", "/L"]
+            assert kwargs["check"]
+            assert Path(args[1]).is_file()
+            permissions.append(Path(args[1]))
+            return subprocess.CompletedProcess(args, 0)
         calls.append(args)
         if "--driver-version" in args:
             return subprocess.CompletedProcess(args, 1)
@@ -37,6 +45,7 @@ def test_installer_reuses_matching_cache_and_fetches_after_runtime_upgrade(tmp_p
     monkeypatch.setattr(webview_driver.subprocess, "run", download)
     assert webview_driver.install_driver(cache) == 0
     assert calls == []
+    assert permissions == [cached_driver]
 
     runtime = create_file(runtimes / "157.0.4341.42/msedgewebview2.exe")
     assert webview_driver.install_driver(cache) == 0
@@ -45,7 +54,7 @@ def test_installer_reuses_matching_cache_and_fetches_after_runtime_upgrade(tmp_p
     assert Path(args[0]).name == "selenium-manager.exe"
     assert args[args.index("--browser-version") + 1] == runtime.parent.name
     assert "--avoid-browser-download" in args
-    assert (drivers / "157.0.4341.45/msedgedriver.exe").is_file()
+    assert permissions == [cached_driver, drivers / "157.0.4341.45/msedgedriver.exe"]
 
 
 def test_installed_bridge_uses_new_matching_driver_and_preserves_manual_path(tmp_path, monkeypatch):
@@ -87,6 +96,7 @@ def test_missing_exact_driver_checks_microsoft_release_listing(monkeypatch, late
 def test_installer_activates_only_a_complete_private_pair(tmp_path, monkeypatch, failure):
     system = tmp_path / "155.0.4283.62/msedgewebview2.exe"
     cache = tmp_path / ".tools"
+    driver_runtimes = []
     monkeypatch.setattr(webview_driver, "installed_runtime", lambda: system)
 
     def check_availability(version):
@@ -95,6 +105,7 @@ def test_installer_activates_only_a_complete_private_pair(tmp_path, monkeypatch,
         return True
 
     def prepare_driver(directory, runtime):
+        driver_runtimes.append(runtime)
         if runtime == system:
             return 1
         create_file(directory / "msedgedriver/win64" / webview_driver.FIXED_VERSION / "msedgedriver.exe")
@@ -114,5 +125,7 @@ def test_installer_activates_only_a_complete_private_pair(tmp_path, monkeypatch,
         assert pair is None
     else:
         assert pair and all(item.is_file() for item in pair)
+        assert webview_driver.install_driver(cache) == 0
+        assert driver_runtimes == [system, pair[0], pair[0]]
         changed_system = tmp_path / "156.0.4314.58/msedgewebview2.exe"
         assert webview_driver.private_webview(cache, changed_system) is None

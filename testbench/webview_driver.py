@@ -130,17 +130,28 @@ def _prepare_fixed_runtime(cache, runtime):
                 raise
 
 
+def _enable_driver_inheritance(driver):
+    # 只修改缓存中的普通文件，避免提权安装时修改链接指向的文件。
+    if driver.resolve(strict=True) != Path(os.path.abspath(driver)) or driver.stat().st_nlink != 1:
+        raise ValueError("WebDriver 缓存路径指向链接")
+    icacls = Path(os.environ["SystemRoot"]) / "System32" / "icacls.exe"
+    # 解压文件移到同一磁盘上的缓存时可能保留原权限，普通权限的测试进程需要继承用户缓存权限。
+    subprocess.run([str(icacls), str(driver), "/inheritance:e", "/L"], check=True, timeout=30,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _prepare_driver(cache, runtime):
     version = runtime.parent.name
-    if matching_cached_driver(cache, runtime):
-        print(f"Using cached WebDriver for WebView2 {version}.", flush=True)
-        return 0
-
-    import selenium
-
-    manager = Path(selenium.__file__).parent / "webdriver/common/windows/selenium-manager.exe"
-    print(f"Downloading WebDriver for WebView2 {version}.", flush=True)
     try:
+        if driver := matching_cached_driver(cache, runtime):
+            _enable_driver_inheritance(driver)
+            print(f"Using cached WebDriver for WebView2 {version}.", flush=True)
+            return 0
+
+        import selenium
+
+        manager = Path(selenium.__file__).parent / "webdriver/common/windows/selenium-manager.exe"
+        print(f"Downloading WebDriver for WebView2 {version}.", flush=True)
         cache.mkdir(parents=True, exist_ok=True)
         # 下载到同盘临时目录，避免超时或中断留下可被误选的半成品。
         with TemporaryDirectory(dir=cache) as directory:
@@ -160,10 +171,11 @@ def _prepare_driver(cache, runtime):
                     target = cache / driver.relative_to(staging)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     driver.replace(target)
+                    _enable_driver_inheritance(target)
                     print("WebDriver is ready.", flush=True)
                     return 0
-    except (OSError, subprocess.TimeoutExpired) as error:
-        print(f"WebDriver preparation failed ({type(error).__name__}).", flush=True)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f"WebDriver 准备失败：{error}", flush=True)
         return 1
     print(f"No matching WebDriver was prepared for WebView2 {version}.", flush=True)
     return 1
@@ -176,9 +188,9 @@ def install_driver(cache):
         return 1
     if matching_cached_driver(cache, runtime):
         return _prepare_driver(cache, runtime)
-    if private_webview(cache, runtime):
-        print(f"Using prepared private WebView2 {FIXED_VERSION} and its WebDriver.", flush=True)
-        return 0
+    if pair := private_webview(cache, runtime):
+        fixed_runtime, _ = pair
+        return _prepare_driver(cache, fixed_runtime)
     if _prepare_driver(cache, runtime) == 0:
         return 0
 
