@@ -29,6 +29,10 @@ try {
     $sitePackages = Join-Path $pythonRoot 'Lib/site-packages'
     & python -m pip --isolated --disable-pip-version-check install --only-binary=:all: --no-compile --target $sitePackages -r (Join-Path $PSScriptRoot 'requirements-windows.lock')
     if ($LASTEXITCODE -ne 0) { throw 'Failed to stage the Python wheels' }
+    $seleniumManager = Join-Path $sitePackages 'selenium/webdriver/common/windows/selenium-manager.exe'
+    if (-not (Test-Path -LiteralPath $seleniumManager -PathType Leaf)) {
+        throw 'The bundled Selenium Manager executable is missing'
+    }
 
     # The embedded interpreter resolves these paths relative to its own executable.
     Set-Content -LiteralPath (Join-Path $pythonRoot 'python313._pth') -Encoding ascii -Value @(

@@ -20,6 +20,7 @@ from .catalog import discover_cases
 from .controller import TaskController
 from .model import Environment, load_environment, save_environment, validate_slavesim_url
 from .reporting import STATUS_LABELS, business_case
+from .webview_driver import installed_runtime, matching_cached_driver
 from .workspace import import_workspace
 
 
@@ -230,18 +231,28 @@ class TestbenchBridge:
         return [asdict(case) for case in discover_cases(self.root)]
 
     def _environment(self):
+        cache = self.data_root / ".tools"
+        workspace = str(self.data_root / "local" / "workspaces" / "default")
         if self.environment_path.is_file():
-            return load_environment(self.environment_path).to_dict()
-        candidates = list((self.data_root / ".tools" / "msedgedriver").glob("**/msedgedriver.exe"))
+            env = load_environment(self.environment_path)
+            if not self.installed:
+                return env.to_dict()
+        else:
+            env = Environment(name="本机测试环境", workspace_path=workspace)
+        if self.installed:
+            if not env.driver_path or (isinstance(env.driver_path, str) and
+                                       Path(env.driver_path).is_relative_to(cache / "msedgedriver")):
+                driver = matching_cached_driver(cache, installed_runtime())
+                env.driver_path = str(driver) if driver else ""
+            return env.to_dict()
+        candidates = list((cache / "msedgedriver").glob("**/msedgedriver.exe"))
         def version(path):
             try:
                 return tuple(int(part) for part in path.parent.name.split("."))
             except ValueError:
                 return (0,)
-        driver = str(max(candidates, key=version)) if candidates else ""
-        return Environment(name="本机测试环境",
-                           driver_path=driver,
-                           workspace_path=str(self.data_root / "local" / "workspaces" / "default")).to_dict()
+        env.driver_path = str(max(candidates, key=version)) if candidates else ""
+        return env.to_dict()
 
     def _history(self):
         paths = sorted(self.artifacts.glob("*/summary.json"),

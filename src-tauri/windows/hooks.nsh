@@ -89,6 +89,17 @@
   ${EndIf}
 !macroend
 
+!macro NSIS_HOOK_POSTINSTALL
+  Push $0
+  DetailPrint "Preparing Microsoft Edge WebDriver."
+  nsExec::ExecToLog '"$INSTDIR\runtime\python\python.exe" -X utf8 -B -m testbench.webview_driver "$LOCALAPPDATA\${BUNDLEID}\.tools"'
+  Pop $0
+  ${If} $0 != "0"
+    DetailPrint "WebDriver could not be prepared. Select a matching driver in Test Environment."
+  ${EndIf}
+  Pop $0
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   ClearErrors
