@@ -4,7 +4,8 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "resources": {
-      ".bundle/runtime/": "runtime/"
+      ".bundle/runtime/.mskdsp-testbench-runtime": "runtime/.mskdsp-testbench-runtime",
+      ".bundle/runtime/suite/": "runtime/suite/"
     },
     "createUpdaterArtifacts": true,
     "windows": {

@@ -16,6 +16,7 @@ if ($bundleDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint) {
 $staging = Join-Path $bundleRoot ([guid]::NewGuid().ToString('N'))
 $newRuntime = Join-Path $staging 'runtime'
 $pythonRoot = Join-Path $newRuntime 'python'
+$suiteRoot = Join-Path $newRuntime 'suite'
 $archive = Join-Path $staging 'python.zip'
 New-Item -ItemType Directory -Path $pythonRoot -Force | Out-Null
 try {
@@ -31,11 +32,11 @@ try {
 
     # The embedded interpreter resolves these paths relative to its own executable.
     Set-Content -LiteralPath (Join-Path $pythonRoot 'python313._pth') -Encoding ascii -Value @(
-        'python313.zip', '.', '..', 'Lib\site-packages'
+        'python313.zip', '.', '..\suite', 'Lib\site-packages'
     )
 
     foreach ($directory in @('testbench', 'tests')) {
-        $destination = Join-Path $newRuntime $directory
+        $destination = Join-Path $suiteRoot $directory
         New-Item -ItemType Directory -Path $destination | Out-Null
         Get-ChildItem -LiteralPath (Join-Path $repoRoot $directory) -File -Filter '*.py' |
             Copy-Item -Destination $destination
@@ -45,7 +46,7 @@ try {
         'tests/case-order.json', 'docs/examples/agc-direction-block.json',
         'docs/examples/huawei-rtu.example.json', 'docs/examples/modbus-rtu.example.json'
     )) {
-        $destination = Join-Path $newRuntime $relativePath
+        $destination = Join-Path $suiteRoot $relativePath
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repoRoot $relativePath) -Destination $destination
     }
@@ -55,7 +56,7 @@ try {
     $responses = @(
         '{"id":1,"method":"bootstrap"}'
         '{"id":2,"method":"shutdown"}'
-    ) | & $bundledPython -X utf8 -B -u -m testbench.bridge --root $newRuntime --data-root $smokeData
+    ) | & $bundledPython -X utf8 -B -u -m testbench.bridge --root $suiteRoot --data-root $smokeData
     if ($LASTEXITCODE -ne 0 -or @($responses).Count -ne 2) {
         throw 'Bundled Python bridge did not complete its smoke check'
     }
@@ -66,6 +67,18 @@ try {
         throw "Bundled Python could not discover the installed cases: $($bootstrap.error)"
     }
     Set-Content -LiteralPath (Join-Path $newRuntime '.mskdsp-testbench-runtime') -Encoding ascii -Value $pythonVersion
+
+    [string[]]$pythonFiles = @(Get-ChildItem -LiteralPath $pythonRoot -File -Recurse -Force |
+        ForEach-Object { [IO.Path]::GetRelativePath($pythonRoot, $_.FullName) })
+    [Array]::Sort($pythonFiles, [StringComparer]::Ordinal)
+    $manifest = foreach ($relativePath in $pythonFiles) {
+        $fileHash = (Get-FileHash -LiteralPath (Join-Path $pythonRoot $relativePath) -Algorithm SHA256).Hash
+        "$fileHash $relativePath"
+    }
+    $manifestBytes = [Text.Encoding]::UTF8.GetBytes(($manifest -join "`n"))
+    $fingerprint = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($manifestBytes))
+    Set-Content -LiteralPath (Join-Path $newRuntime 'python-fingerprint.nsh') -Encoding ascii `
+        -Value ('!define TESTBENCH_PYTHON_FINGERPRINT "{0}"' -f $fingerprint)
 
     # Replace an earlier stage only within the expected, non-linked output directory.
     if (Test-Path -LiteralPath $runtime) {

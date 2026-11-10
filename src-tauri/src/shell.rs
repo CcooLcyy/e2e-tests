@@ -372,9 +372,10 @@ pub fn run() {
         .setup(|app| {
             let installed = app.config().bundle.active;
             let (root, data_root, python) = if installed {
-                let root = app.path().resource_dir()?.join("runtime");
+                let runtime = app.path().resource_dir()?.join("runtime");
+                let root = runtime.join("suite");
                 let data_root = app.path().app_local_data_dir()?;
-                let python = root.join("python/python.exe");
+                let python = runtime.join("python/python.exe");
                 (root, data_root, python)
             } else {
                 let root = repository_root().map_err(std::io::Error::other)?;
