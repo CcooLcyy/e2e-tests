@@ -58,6 +58,7 @@
 .environment-page .form-actions{position:sticky;bottom:0;z-index:5;align-items:center;flex-wrap:wrap;padding:14px 24px;border-top-color:#ccd8e7;background:#fff;box-shadow:0 -4px 16px #2037540a;border-radius:0 0 10px 10px}
 .environment-page .form-actions>span{margin-right:auto;font-size:12px;color:#526174;line-height:1.7}
 .environment-page .slavesim-actions>span{color:#526174;font-size:12px}
+.slavesim-check-result{margin:10px 0 0}
 .environment-page .environment-help{position:sticky;top:20px;display:block;padding:0;min-width:0}
 .environment-directory{padding:18px 14px;border:1px solid #dce4ef;border-radius:10px;background:#fff}
 .environment-directory h3{font-size:14px;color:#24344b;margin:0 8px 4px}

@@ -53,6 +53,7 @@ export default function App() {
   const [active,setActive] = useState(false);
   const [stopping,setStopping] = useState(false);
   const [busy,setBusy] = useState(false);
+  const [slavesimCheck,setSlavesimCheck] = useState<{url:string;status:'info'|'success'|'error';message:string}|null>(null);
   const [maintenance,setMaintenance] = useState(false);
   const [master104Checking,setMaster104Checking] = useState(false);
   const [master104Snapshot,setMaster104Snapshot] = useState<Record<string,unknown>|null>(null);
@@ -69,6 +70,7 @@ export default function App() {
   const checkingMaster104 = useRef(false);
   const master104Polling = useRef(false);
   const disabled = active || busy || maintenance;
+  const slavesimCheckResult = slavesimCheck?.url===environment.slavesim_url.trim()?slavesimCheck:null;
 
   function goToEnvironment(id:string) {
     setPage('environment');
@@ -148,17 +150,40 @@ export default function App() {
   }
   async function stop(){setStopping(true);try{await call('stop');}catch(e){setError(String(e));setStopping(false);}}
   async function save(){setBusy(true);try{setEnvironment(withModbusDefaults({...emptyEnvironment,...await call<Environment>('save_environment',{environment})}));setNotice('测试环境已保存，下次启动会自动加载。');}catch(e){setError(String(e));}finally{setBusy(false);}}
-  async function load(){try{const path=await choose('environment');if(path){setEnvironment(withModbusDefaults({...emptyEnvironment,...await call<Environment>('load_environment',{path})}));setNotice('环境配置已载入，保存后生效。');}}catch(e){setError(String(e));}}
+  async function load() {
+    try {
+      const path=await choose('environment');
+      if(!path)return;
+      setEnvironment(withModbusDefaults({...emptyEnvironment,...await call<Environment>('load_environment',{path})}));
+      setSlavesimCheck(null);
+      setNotice('环境配置已载入，保存后生效。');
+    } catch(e) {setError(String(e));}
+  }
   async function pick(key:'app_path'|'driver_path'|'workspace_path'|'baseline_path'|'master104_path'){try{const path=await choose(key==='app_path'||key==='driver_path'||key==='master104_path'?'exe':'directory');if(path){setEnvironment(old=>({...old,[key]:path}));if(key==='master104_path')setMaster104Snapshot(null);}}catch(e){setError(String(e));}}
   async function open(path:string){try{await openArtifact(path);}catch(e){setError(String(e));}}
-  async function slavesimAction(method: 'open_slavesim' | 'check_slavesim') {
+  async function openSlavesim() {
     if(disabled || !environment.slavesim_url.trim())return;
     setBusy(true);setError('');setNotice('');
     try {
-      const result=await call<{message:string}>(method,{url:environment.slavesim_url});
+      const result=await call<{message:string}>('open_slavesim',{url:environment.slavesim_url});
       setNotice(result.message);
-      console.info(method==='open_slavesim'?'已请求打开 slaveSim 管理页':'已完成 slaveSim 连接检查');
+      console.info('已请求打开 slaveSim 管理页');
     } catch(e) {setError(String(e));} finally {setBusy(false);}
+  }
+  async function checkSlavesim() {
+    const url=environment.slavesim_url.trim();
+    if(disabled || !url)return;
+    setBusy(true);setError('');setNotice('');
+    setSlavesimCheck({url,status:'info',message:'正在检查 slaveSim 管理页和状态接口…'});
+    try {
+      const result=await call<{message:string}>('check_slavesim',{url});
+      setSlavesimCheck({url,status:'success',message:result.message});
+      console.info('已完成 slaveSim 连接检查');
+    } catch(e) {
+      setSlavesimCheck({url,status:'error',message:String(e)});
+    } finally {
+      setBusy(false);
+    }
   }
   async function checkMaster104() {
     if(disabled || checkingMaster104.current || !environment.master104_enabled)return;
@@ -277,9 +302,18 @@ export default function App() {
           <details className="form-section collapsible-section" id="environment-annotation" tabIndex={-1} onToggle={event=>console.info('测试环境分区：',event.currentTarget.id,event.currentTarget.open?'展开':'收起')}><summary className="section-title"><span>03</span><div><h3>截图标注</h3><p>统一为步骤截图添加操作位置和简短说明</p></div></summary><label className="cleanup-toggle"><input data-testid="environment-annotation-enabled" type="checkbox" checked={environment.annotation_enabled} onChange={e=>setEnvironment({...environment,annotation_enabled:e.target.checked})}/><span>自动生成标注图<small>保留原图；查看截图时可切换原图和标注图</small></span></label></details>
           <details className="form-section collapsible-section" id="environment-slavesim" tabIndex={-1} onToggle={event=>console.info('测试环境分区：',event.currentTarget.id,event.currentTarget.open?'展开':'收起')}><summary className="section-title"><span>04</span><div><h3>slaveSim 模拟器</h3><p>统一保存管理页地址，随时打开查看模拟器状态</p></div></summary>
             <Field label="管理页地址（可选）" hint="填写完整的 HTTP 或 HTTPS 地址；修改后保存环境，下次打开会自动回填">
-              <input data-testid="environment-slavesim-url" type="url" placeholder="http://192.168.1.219:16000" value={environment.slavesim_url} onChange={e=>{setEnvironment({...environment,slavesim_url:e.target.value});setNotice('');setError('');}}/>
+              <input data-testid="environment-slavesim-url" type="url" placeholder="http://192.168.1.219:16000" value={environment.slavesim_url} onChange={e=>{setEnvironment({...environment,slavesim_url:e.target.value});setSlavesimCheck(null);setNotice('');setError('');}}/>
             </Field>
-            <div className="slavesim-actions"><button className="button" data-testid="slavesim-open" disabled={!environment.slavesim_url.trim()} onClick={()=>void slavesimAction('open_slavesim')}><ArrowRight size={15}/>打开管理页</button><button className="button" data-testid="slavesim-check" disabled={!environment.slavesim_url.trim()} onClick={()=>void slavesimAction('check_slavesim')}><Activity size={15}/>检查连接</button><span>使用当前填写的地址，在默认浏览器中打开</span></div>
+            <div className="slavesim-actions">
+              <button className="button" data-testid="slavesim-open" disabled={!environment.slavesim_url.trim()} onClick={()=>void openSlavesim()}><ArrowRight size={15}/>打开管理页</button>
+              <button className="button" data-testid="slavesim-check" disabled={!environment.slavesim_url.trim()} onClick={()=>void checkSlavesim()}>
+                {slavesimCheckResult?.status==='info'?<><LoaderCircle size={15} className="spin"/>正在检查…</>:<><Activity size={15}/>检查连接</>}
+              </button>
+              <span>使用当前填写的地址，在默认浏览器中打开</span>
+            </div>
+            {slavesimCheckResult&&<div className={`notice ${slavesimCheckResult.status} slavesim-check-result`} role={slavesimCheckResult.status==='error'?'alert':'status'}>
+              <span>{slavesimCheckResult.message}</span>
+            </div>}
           </details>
           <details className="form-section collapsible-section" id="environment-master104" tabIndex={-1} onToggle={event=>console.info('测试环境分区：',event.currentTarget.id,event.currentTarget.open?'展开':'收起')}><summary className="section-title"><span>05</span><div><h3>104 模拟主站</h3><p>通过 EdgeDriver 操作本次测试启动的 Msk104Master 独立副本</p></div></summary>
             <label className="cleanup-toggle"><input data-testid="environment-master104-enabled" type="checkbox" checked={environment.master104_enabled} onChange={e=>{setEnvironment({...environment,master104_enabled:e.target.checked});setMaster104Snapshot(null);}}/><span>启用 104 主站<small>仅供需要主站的用例使用，既有用例保持原行为</small></span></label>
