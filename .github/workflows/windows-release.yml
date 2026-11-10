@@ -88,7 +88,7 @@ jobs:
           PLATFORM_GRPC_ENDPOINT: ${{ vars.PLATFORM_GRPC_ENDPOINT }}
           TESTBENCH_UPDATER_PUBLIC_KEY: ${{ vars.TESTBENCH_UPDATER_PUBLIC_KEY }}
         run: python scripts/windows_release.py configure $env:RELEASE_CHANNEL
-      - name: Build and sign NSIS installer
+      - name: Build and sign the platform NSIS installer
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TESTBENCH_TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TESTBENCH_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -98,12 +98,35 @@ jobs:
           npm run tauri -- build --target x86_64-pc-windows-msvc --bundles nsis --ci --config $releaseConfig -- --locked
       - name: Record installer identity
         run: python scripts/windows_release.py stage $env:RELEASE_CHANNEL
-      - name: Retain signed installer
+      - name: Retain the platform installer
         id: installer
         uses: actions/upload-artifact@v4
         with:
           name: testbench-windows-x64-nsis-${{ env.RELEASE_CHANNEL }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: release/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: Bundle and sign the offline NSIS installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TESTBENCH_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TESTBENCH_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $releaseConfig = Join-Path $env:RUNNER_TEMP 'testbench-tauri-release.json'
+          $offlineConfig = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/tauri.offline.conf.json'
+          # Both variants use the same NSIS output path. The platform package is already staged and uploaded.
+          $nsisOutput = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis'
+          Move-Item -LiteralPath $nsisOutput -Destination (Join-Path $env:RUNNER_TEMP 'testbench-nsis-platform')
+          npm run tauri -- bundle --target x86_64-pc-windows-msvc --bundles nsis --ci --no-binary-patching --config $releaseConfig --config $offlineConfig
+      - name: Retain the offline installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbench-windows-x64-nsis-offline-${{ env.RELEASE_CHANNEL }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
           compression-level: 0
           if-no-files-found: error
           retention-days: 14

@@ -9,7 +9,7 @@
     },
     "createUpdaterArtifacts": true,
     "windows": {
-      "webviewInstallMode": { "type": "offlineInstaller" },
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {
         "installMode": "currentUser",
         "installerHooks": "./windows/hooks.nsh"
