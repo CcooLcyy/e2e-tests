@@ -1,13 +1,16 @@
 """登录记忆用例的账号输入、密码报告和工作区边界。"""
+import importlib.util
 import json
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
 from selenium.webdriver.common.keys import Keys
 
-from testbench.login_page import load_login_account, require_fresh_login_environment, PlatformLoginPage
+from testbench.login_page import load_login_account, PlatformLoginPage
 
 
 def test_account_password_is_not_exposed_by_repr(tmp_path):
@@ -43,15 +46,40 @@ def test_corrupt_or_missing_account_has_actionable_error(tmp_path):
         assert "secret" not in str(caught.value)
 
 
-def test_memory_cases_reject_workspace_before_creating_desktop(tmp_path):
-    """固定工作区可能包含自动登录状态，必须在创建任何桌面进程前拒绝。"""
+def test_fresh_desktop_ignores_fixed_workspace_without_losing_baseline(tmp_path, monkeypatch):
+    """需要干净状态的场景不用全局固定工作区，但仍使用显式基线。"""
+    source = Path(__file__).resolve().parents[1] / "tests" / "conftest.py"
+    spec = importlib.util.spec_from_file_location("login_desktop_fixtures", source)
+    fixtures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixtures)
+    launch = MagicMock()
+    launch.return_value.metadata = {}
+    launch.return_value.cleanup_failure = None
+    monkeypatch.setattr(fixtures, "ReleaseDesktop", launch)
+
+    workspace = str(tmp_path / "fixed")
+    baseline = str(tmp_path / "baseline")
+    node = SimpleNamespace(nodeid="tests/test_login.py::test_login", name="test_login", obj=None)
     task = tmp_path / "task.json"
-    task.write_text(json.dumps({"environment": {"mode": "workspace"}}), encoding="utf-8")
-    with pytest.raises(RuntimeError, match="全新独立副本"):
-        require_fresh_login_environment(str(task))
-    task.write_text(json.dumps({"environment": {"mode": "fresh"}}), encoding="utf-8")
-    require_fresh_login_environment(str(task))
-    require_fresh_login_environment(None)
+    task.write_text(json.dumps({
+        "environment": {"mode": "workspace", "workspace_path": workspace,
+                        "baseline_path": baseline, "close_app": True},
+        "case_ids": [node.nodeid],
+    }), encoding="utf-8")
+    monkeypatch.setenv("TESTBENCH_TASK", str(task))
+    options = {"--app-path": "release.exe", "--driver-path": "driver.exe",
+               "--artifacts-dir": str(tmp_path), "--ui-timeout": "5"}
+    request = SimpleNamespace(node=node, config=SimpleNamespace(getoption=options.__getitem__))
+
+    with fixtures._desktop_session(request, fresh=True):
+        isolated = launch.call_args.kwargs
+        assert isolated["mode"] == "fresh"
+        assert isolated["workspace_path"] == ""
+        assert isolated["baseline_path"] == baseline
+    with fixtures._desktop_session(request):
+        shared = launch.call_args.kwargs
+        assert shared["mode"] == "workspace"
+        assert shared["workspace_path"] == workspace
 
 
 def test_password_comparison_reports_only_boolean():

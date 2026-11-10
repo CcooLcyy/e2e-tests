@@ -1,12 +1,13 @@
 """公共登录操作提供截图目标，标注内容不包含输入值，不连接真实窗口。"""
 import ast
 from contextlib import contextmanager
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from selenium.webdriver.common.by import By
 
+from testbench.case_plan import get_case_plan
 from testbench.login_page import LoginAccount, PlatformLoginPage
 
 
@@ -92,13 +93,9 @@ def test_wrong_password_business_case_declares_error_target_without_changing_ass
     assert "_is_explicit_password_error(actual_message)" in ast.unparse(tree)
 
 
-@pytest.mark.parametrize("filename,names", [
-    ("test_login_validation.py", ["等待登录页账号输入框可见", "点击提交空账号密码", "账号必填提示", "密码必填提示", "empty-login-validation"]),
-    ("test_login_success.py", ["填写正确平台账号", "填写正确密码", "点击登录按钮", "工作台显示已登录账号", "successful-login-workspace"]),
-])
-def test_direct_login_cases_declare_targets_for_operations_and_business_evidence(filename, names):
-    """计划步骤和公共提交操作都提供截图目标。"""
-    source = Path(__file__).resolve().parents[1] / "tests" / filename
+def test_empty_login_declares_targets_for_operations_and_business_evidence():
+    """空表单初始值、提交、必填提示和现场截图都提供截图目标。"""
+    source = Path(__file__).resolve().parents[1] / "tests" / "test_login_validation.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     calls = {node.args[0].value: node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -113,5 +110,25 @@ def test_direct_login_cases_declare_targets_for_operations_and_business_evidence
             for keyword in node.keywords:
                 if keyword.arg == "click_name" and isinstance(keyword.value, ast.Constant):
                     calls[keyword.value.value] = node
-    for name in names:
+    for name in ("账号初始值", "点击提交空账号密码", "账号必填提示", "密码必填提示", "empty-login-validation"):
         assert any(keyword.arg == "targets" for keyword in calls[name].keywords)
+
+
+def test_successful_login_plan_annotates_shared_operations_and_business_evidence():
+    """成功登录用例复用的动作和该用例的工作台截图都标注对应控件。"""
+    source = Path(__file__).resolve().parents[1] / "tests" / "test_login_success.py"
+    spec = importlib.util.spec_from_file_location("successful_login_case", source)
+    case = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(case)
+    page, records = recording_page()
+    page.desktop.capture = lambda name, **kwargs: records.append((name, kwargs.get("targets", [])))
+    context = SimpleNamespace(page=page, desktop=page.desktop, account=LoginAccount("testuser", "private-password"))
+
+    for step in get_case_plan(case.test_valid_account_enters_workspace):
+        if step.run is not None and step.id != "account.read" and (step.when is None or step.when(context)):
+            step.run(context)
+
+    for name in ("输入专用测试账号", "输入测试密码", "点击登录按钮", "工作台账号信息非空",
+                 "successful-login-workspace"):
+        target_for(records, name)
+    assert "private-password" not in repr(records)

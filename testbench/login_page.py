@@ -29,13 +29,6 @@ def load_login_account(path):
         raise RuntimeError("请在 local/login-account.json 配置专用测试账号，username 和 password 必须为非空字符串") from None
 
 
-def require_fresh_login_environment(task_path):
-    if task_path:
-        task = json.loads(Path(task_path).read_text(encoding="utf-8"))
-        if task["environment"]["mode"] != "fresh":
-            raise RuntimeError("登录记忆用例仅支持全新独立副本，请先在测试环境切换运行模式")
-
-
 class PlatformLoginPage:
     SCREEN = (By.CSS_SELECTOR, "main.platform-login-screen")
     USERNAME = (By.CSS_SELECTOR, 'input[placeholder="平台账号"]')

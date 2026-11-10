@@ -4,18 +4,16 @@ from types import SimpleNamespace
 
 import pytest
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
 
 from testbench.case_plan import (
     DESKTOP_FINISH, DESKTOP_START, Step, case_plan, desktop_action, desktop_check, run_case_plan,
 )
 from testbench.login_page import PlatformLoginPage
-from testbench.login_plan import submit_steps
+from testbench.login_plan import password_check, ready_steps, submit_steps
 
 pytestmark = pytest.mark.case_group("基础登录")
 PAGE = PlatformLoginPage
 USERNAME_TARGET = PAGE.target(PAGE.USERNAME, "检查空账号输入框")
-PASSWORD_TARGET = PAGE.target(PAGE.PASSWORD, "检查空密码输入框")
 SUBMIT_TARGET = PAGE.target(PAGE.SUBMIT, "提交空账号密码")
 USERNAME_ERROR = PAGE.target((By.XPATH, '//div[contains(@class,"ant-form-item-explain-error") and normalize-space(.)="请输入平台账号"]'), "检查账号必填提示")
 PASSWORD_ERROR = PAGE.target((By.XPATH, '//div[contains(@class,"ant-form-item-explain-error") and normalize-space(.)="请输入密码"]'), "检查密码必填提示")
@@ -39,15 +37,10 @@ def _capture_validation(context):
 
 @case_plan(
     DESKTOP_START,
-    desktop_action("username.wait", "等待登录页账号输入框可见", "登录页显示账号输入框",
-                   lambda c: c.desktop.wait.until(EC.visibility_of_element_located(PAGE.USERNAME)),
-                   targets=USERNAME_TARGET, save_as="username_input"),
-    desktop_action("password.find", "定位登录页密码输入框", "存在密码输入框",
-                   lambda c: c.desktop.driver.find_element(*PAGE.PASSWORD), targets=PASSWORD_TARGET, save_as="password_input"),
+    *ready_steps("login"),
     desktop_check("username.empty", "账号初始值", "账号为空",
-                  lambda c: c.username_input.get_attribute("value"), "", targets=USERNAME_TARGET),
-    desktop_check("password.empty", "密码初始值", "密码为空",
-                  lambda c: c.password_input.get_attribute("value"), "", targets=PASSWORD_TARGET),
+                  lambda c: c.page.username_input().get_attribute("value"), "", targets=USERNAME_TARGET),
+    password_check("password.empty", lambda _: "", filled=False),
     *submit_steps("submit", wait_name="等待空表单登录按钮可点击", click_name="点击提交空账号密码",
                   targets=SUBMIT_TARGET),
     desktop_action("errors.wait", "等待账号和密码必填提示同时显示", "两项必填提示同时可见",
@@ -63,6 +56,6 @@ def _capture_validation(context):
                   targets=PAGE.target(PAGE.SCREEN, "检查仍停留在登录页")),
     DESKTOP_FINISH,
 )
-def test_empty_login_reports_required_fields(request, desktop):
+def test_empty_login_reports_required_fields(request, fresh_desktop):
     """空账号密码登录时明确提示必填项。"""
-    run_case_plan(request, SimpleNamespace(desktop=desktop))
+    run_case_plan(request, SimpleNamespace(desktop=fresh_desktop, page=PAGE(fresh_desktop)))

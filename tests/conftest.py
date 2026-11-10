@@ -25,8 +25,16 @@ def desktop(request):
         yield app
 
 
+@pytest.fixture
+def fresh_desktop(request):
+    """为需要干净启动状态的用例创建独立副本。"""
+    with track_fixture_context(request, DESKTOP_START, DESKTOP_FINISH,
+                               _desktop_session(request, fresh=True)) as app:
+        yield app
+
+
 @contextmanager
-def _desktop_session(request):
+def _desktop_session(request, *, fresh=False):
     options = {}
     task_path = os.environ.get("TESTBENCH_TASK")
     if task_path:
@@ -38,6 +46,8 @@ def _desktop_session(request):
                    "close_app": environment["close_app"] or request.node.nodeid != task["case_ids"][-1]}
         if private_webview := task.get("private_webview"):
             options["private_webview_pair"] = (Path(private_webview["runtime_path"]), Path(private_webview["driver_path"]))
+    if fresh:
+        options.update(mode="fresh", workspace_path="")
     driver_path = request.config.getoption("--driver-path")
     if not driver_path and "private_webview_pair" not in options:
         pytest.fail("运行桌面用例需要指定 --driver-path")
@@ -100,13 +110,12 @@ def _master104_session(request):
 @pytest.fixture
 def login_memory(request):
     """登录记忆用例始终独立运行，并保护系统中已有的平台凭据。"""
-    from testbench.login_page import load_login_account, require_fresh_login_environment, PlatformLoginPage
+    from testbench.login_page import load_login_account, PlatformLoginPage
     from testbench.login_credentials import WindowsCredentialGuard, cleanup_login_credentials
 
     with track_fixture_step(request, LOGIN_PREPARE):
-        require_fresh_login_environment(os.environ.get("TESTBENCH_TASK"))
         account = load_login_account(local_config("login-account.json"))
-    app = request.getfixturevalue("desktop")
+    app = request.getfixturevalue("fresh_desktop")
     page = PlatformLoginPage(app)
     with track_fixture_step(request, LOGIN_GUARD), app.step("确认专用测试账号没有已有保存凭据"):
         guard = WindowsCredentialGuard(page.endpoint(), account.username)
