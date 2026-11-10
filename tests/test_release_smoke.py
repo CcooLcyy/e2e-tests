@@ -5,6 +5,11 @@ from selenium.webdriver.support import expected_conditions as EC
 pytestmark = pytest.mark.case_group("启动与界面")
 
 
+@pytest.mark.case_flow(
+    ("打开上位机登录页", "平台连接设置初始折叠，地址输入框隐藏"),
+    ("点击平台连接设置", "展开地址输入框，地址可编辑"),
+    ("再次点击平台连接设置", "设置折叠，地址输入框隐藏"),
+)
 def test_release_platform_settings_expand_and_collapse(desktop):
     """平台连接设置可以展开并折叠。"""
     driver = desktop.driver

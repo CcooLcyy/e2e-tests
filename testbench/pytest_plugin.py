@@ -33,6 +33,7 @@ def pytest_configure(config):
     if not any(value.startswith("case_group(") for value in config.getini("markers")):
         config.addinivalue_line("markers", "case_group(name): 声明用例所属的一级功能分组")
     config.addinivalue_line("markers", "opt_in: 此用例需要在界面中单独勾选")
+    config.addinivalue_line("markers", "case_flow(*steps, blocked=''): 声明测试流程的操作和预期结果")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -68,9 +69,12 @@ def pytest_collection_finish(session):
             name = description.splitlines()[0] if description else item.name
             if "[" in item.name:
                 name += " " + item.name[item.name.index("["):]
+            flow = item.get_closest_marker("case_flow")
             items.append({"id": item.nodeid, "name": name, "description": description,
                           "group": getattr(item, "_bench_group", "未分组"),
-                          "opt_in": item.get_closest_marker("opt_in") is not None})
+                          "opt_in": item.get_closest_marker("opt_in") is not None,
+                          "flow": [{"action": action, "expected": expected} for action, expected in flow.args] if flow else [],
+                          "flow_blocked": flow.kwargs.get("blocked", "") if flow else ""})
         Path(output).write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
 
 

@@ -164,6 +164,11 @@ def _assert_wire_sequence(frames, profile):
     return sequence
 
 
+@pytest.mark.case_flow(
+    ("打开上位机预置采集点，用模拟 104 主站观察初始总召", "参照点正常，未产生有效样本的目标点缺席"),
+    ("观察用例外预置的首次采集、超时、异常响应和恢复工况", "目标点始终为 100，新的带时标自发遥测品质依次为正常、NT、IV+NT、正常"),
+    ("核对总召及自发遥测原始报文", "总召省略目标点，两次故障沿用同一样本时标，恢复后刷新样本时标"),
+)
 def test_rtu_quality_reaches_iec104_with_unchanged_value(request):
     """总召省略未采到的点，值保持 100 时仍依次收到正常、NT、IV+NT 与恢复。"""
     profile = _profile()

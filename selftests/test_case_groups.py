@@ -18,7 +18,9 @@ def test_legacy_cases_default_to_ungrouped(tmp_path):
     """未声明分组的既有用例仍可发现，模型和发现结果都默认归入未分组。"""
     write_suite(tmp_path, 'def test_old():\n    """旧用例。"""\n    raise RuntimeError("发现不得执行")\n')
     assert CaseInfo("case", "旧用例").group == "未分组"
-    assert discover_cases(tmp_path)[0].group == "未分组"
+    case = discover_cases(tmp_path)[0]
+    assert case.group == "未分组"
+    assert case.flow == []
 
 
 def test_module_group_function_override_and_parameterized_order(tmp_path):
@@ -53,7 +55,7 @@ def test_invalid_group_declaration_fails_discovery(tmp_path, arguments):
 
 
 def test_current_cases_keep_ids_order_and_expected_group_counts():
-    """完整用例清单保留分组及组内顺序。"""
+    """完整用例清单保留分组及组内顺序，并提供运行前可读的流程。"""
     root = Path(__file__).resolve().parents[1]
     cases = discover_cases(root)
     assert [case.id for case in cases] == [
@@ -89,3 +91,6 @@ def test_current_cases_keep_ids_order_and_expected_group_counts():
         "基础登录": 3, "启动与界面": 1, "密码记忆与自动登录": 7, "Modbus RTU": 7,
         "AGC 增减闭锁": 5, "AGC 通信重分配": 1, "AVC 周期控制": 3,
     }
+    for case in cases:
+        assert case.flow, f"用例缺少测试流程：{case.id}"
+        assert all(step["action"].strip() and step["expected"].strip() for step in case.flow), case.id

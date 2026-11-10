@@ -1,5 +1,5 @@
 """环境与用例模型。"""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from copy import deepcopy
 import json
 import logging
@@ -142,6 +142,8 @@ class CaseInfo:
     description: str = ""
     group: str = "未分组"
     opt_in: bool = False
+    flow: list[dict[str, str]] = field(default_factory=list)
+    flow_blocked: str = ""
 
 
 def save_environment(path, environment, *, private_webview_pair=None):

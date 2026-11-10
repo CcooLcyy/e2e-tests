@@ -9,6 +9,11 @@ from testbench.login_page import PlatformLoginPage
 pytestmark = pytest.mark.case_group("基础登录")
 
 
+@pytest.mark.case_flow(
+    ("打开上位机登录页", "账号和密码均为空"),
+    ("直接点击登录", "同时显示「请输入平台账号」和「请输入密码」"),
+    ("检查当前页面", "仍停留在登录页"),
+)
 def test_empty_login_reports_required_fields(desktop):
     """空账号密码登录时明确提示必填项。"""
     mark = PlatformLoginPage.target

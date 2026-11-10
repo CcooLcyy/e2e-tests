@@ -21,6 +21,11 @@ def _is_explicit_password_error(message):
     ) is not None
 
 
+@pytest.mark.case_flow(
+    ("使用正确账号密码登录后退出", "有效账号能够进入工作台，退出后返回登录页"),
+    ("输入正确账号及非空错误密码并提交", "显示明确的账号或密码错误提示，仍停留在登录页"),
+    ("检查表单能否重试", "账号和密码可编辑，密码保持掩码，登录按钮可操作"),
+)
 def test_wrong_password_reports_explicit_credentials_error(login_memory):
     """正确账号输入错误密码时明确提示认证失败并允许重新输入。"""
     case = login_memory

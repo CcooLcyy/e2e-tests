@@ -5,6 +5,7 @@ import type { Bootstrap, CaseInfo, Detail, Environment, History, Master104Check,
 import { applyEvents, counts, initialRecords, labels } from './state';
 import type { BenchEvent, CaseRecord } from './state';
 import { BusinessCaseDetails } from './BusinessCaseDetails';
+import { CaseFlow } from './CaseFlow';
 import { formatPassRate } from './pass-rate';
 import { ModbusEnvironment } from './ModbusEnvironment';
 import { UpdateControls } from './UpdateControls';
@@ -62,7 +63,7 @@ export default function App() {
   const [taskIds,setTaskIds] = useState<string[]>([]);
   const [taskStatus,setTaskStatus] = useState('pending');
   const [logs,setLogs] = useState<BenchEvent[]>([]);
-  const [tab,setTab] = useState<'steps'|'logs'>('steps');
+  const [tab,setTab] = useState<'flow'|'steps'|'logs'>('steps');
   const [detail,setDetail] = useState<Detail|null>(null);
   const [historyFocus,setHistoryFocus] = useState('');
   const [historyDetail,setHistoryDetail] = useState<{summary: Record<string,unknown>; task: {environment?:Environment}; cases: Array<Record<string,unknown> & Partial<Detail>>; diagnostics_path?: string; business_report_path?: string}|null>(null);
@@ -126,7 +127,7 @@ export default function App() {
   },[ready,maintenance]);
   const record=records[focused];
   useEffect(()=>{
-    setDetail(null);setTab('steps');
+    setDetail(null);setTab(previous=>previous==='flow'?'flow':'steps');
     const path=record?.artifacts_dir;
     if(!path)return;
     let valid=true;
@@ -290,8 +291,12 @@ export default function App() {
             </section>
 
             <section className="panel detail-panel"><div className="panel-heading"><div><h2>执行详情</h2><p>{currentCase?.name || '选择用例查看执行详情'}</p></div><button className="icon-button" aria-label="打开报告资料" disabled={!record?.artifacts_dir} onClick={()=>void open(detail?.business_report_path||detail?.diagnostics_path||record!.artifacts_dir!)}><FolderOpen size={17}/></button></div>
-              <div className="tabs"><button className={tab==='steps'?'active':''} onClick={()=>setTab('steps')}><ListChecks size={14}/>测试结果</button><button className={tab==='logs'?'active':''} onClick={()=>setTab('logs')}><Terminal size={14}/>诊断记录</button></div>
-              {tab==='steps'?<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/><span><Clock3 size={13}/>{duration(record.duration)}</span></div>}<BusinessCaseDetails key={focused} detail={detail} status={record?.status} onOpen={path=>void open(path)}/></div>:<div className="log-scroll">{logs.length?logs.map((event,index)=><div className="log-line" key={index}><time>{event.time?.slice(11,19)||'--:--:--'}</time><span>{event.message||event.name||(event.type==='case_started'?'开始执行用例':event.type==='task_finished'?'任务执行结束':event.type==='case_finished'?`用例${labels[event.status||'']||'结束'}`:'准备测试任务')}{event.type==='step'&&` · ${labels[event.status||'']||''}`}</span></div>):<div className="empty"><Terminal size={26}/><span>执行日志将在任务开始后显示</span></div>}</div>}
+              <div className="tabs">
+                <button className={tab==='flow'?'active':''} aria-pressed={tab==='flow'} onClick={()=>setTab('flow')}><ListChecks size={14}/>测试流程</button>
+                <button className={tab==='steps'?'active':''} aria-pressed={tab==='steps'} onClick={()=>setTab('steps')}><CheckCheck size={14}/>测试结果</button>
+                <button className={tab==='logs'?'active':''} aria-pressed={tab==='logs'} onClick={()=>setTab('logs')}><Terminal size={14}/>诊断记录</button>
+              </div>
+              {tab==='flow'?<div className="detail-scroll" key={focused}><CaseFlow testCase={currentCase}/></div>:tab==='steps'?<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/><span><Clock3 size={13}/>{duration(record.duration)}</span></div>}<BusinessCaseDetails key={focused} detail={detail} status={record?.status} onOpen={path=>void open(path)}/></div>:<div className="log-scroll">{logs.length?logs.map((event,index)=><div className="log-line" key={index}><time>{event.time?.slice(11,19)||'--:--:--'}</time><span>{event.message||event.name||(event.type==='case_started'?'开始执行用例':event.type==='task_finished'?'任务执行结束':event.type==='case_finished'?`用例${labels[event.status||'']||'结束'}`:'准备测试任务')}{event.type==='step'&&` · ${labels[event.status||'']||''}`}</span></div>):<div className="empty"><Terminal size={26}/><span>执行日志将在任务开始后显示</span></div>}</div>}
             </section>
           </div>
           <footer className="page-footer"><span><ShieldCheck size={14}/>测试在本地执行，日志与截图仅保存在本机</span><button className="text-button" disabled={!runDir} onClick={()=>void open(runDir)}><FolderOpen size={14}/>打开本次报告目录</button></footer>

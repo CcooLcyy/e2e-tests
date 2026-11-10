@@ -78,6 +78,11 @@ def huawei_fleet(request):
                     raise
 
 
+@pytest.mark.case_flow(
+    ("打开预置的华为逆变器机群", "可定位六路总线上的 21 台设备及其对应连接"),
+    ("按预置工况逐台比对 slaveSim 与上位机", "每台设备的 18 个采集点匹配，品质正常，遥测和状态符合当前工况的固定目标"),
+    ("汇总各设备在每个工况下的检查", "所有设备工况均完成且通过，并保留双端证据"),
+)
 def test_huawei_six_buses_21_devices_match(huawei_fleet):
     """六路21台华为逆变器逐台核对遥测、状态及外部工况反馈。"""
     huawei_fleet.run()

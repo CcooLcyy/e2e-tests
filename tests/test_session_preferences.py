@@ -5,6 +5,11 @@ import pytest
 pytestmark = pytest.mark.case_group("密码记忆与自动登录")
 
 
+@pytest.mark.case_flow(
+    ("不勾选记住密码或自动登录，提交有效账号和密码", "进入工作台"),
+    ("关闭并重开同一测试副本", "停留在登录页"),
+    ("检查回填和勾选状态", "保留原账号，密码为空，两项均未勾选"),
+)
 def test_no_remember_requires_password_after_reopen(login_memory):
     """不记住密码时重开上位机仍需输入密码。"""
     case = login_memory
@@ -18,6 +23,11 @@ def test_no_remember_requires_password_after_reopen(login_memory):
         actual="已验证账号保留、密码为空、两项均未勾选，且仍需手动登录")
 
 
+@pytest.mark.case_flow(
+    ("仅勾选记住密码后登录", "进入工作台"),
+    ("关闭并重开同一测试副本", "回填原账号和掩码密码，仅勾选记住密码，等待手动登录"),
+    ("直接使用回填密码点击登录", "进入原账号工作台，显示「退出」入口"),
+)
 def test_remember_password_requires_manual_login_after_reopen(login_memory):
     """仅记住密码时重开回填密码，手动点击后登录成功。"""
     case = login_memory
@@ -38,6 +48,11 @@ def test_remember_password_requires_manual_login_after_reopen(login_memory):
         actual="已验证工作台可见、退出入口可见，且登录账号与重开前一致")
 
 
+@pytest.mark.case_flow(
+    ("勾选下次自动登录并登录", "进入工作台"),
+    ("关闭并重开同一测试副本，不操作登录表单", "自动进入原账号工作台，显示「退出」入口"),
+    ("退出工作台", "回填原账号和掩码密码，仅勾选记住密码"),
+)
 def test_auto_login_enters_same_account_after_reopen(login_memory):
     """下次自动登录在重开上位机后自动进入原账号工作台。"""
     case = login_memory
@@ -54,6 +69,11 @@ def test_auto_login_enters_same_account_after_reopen(login_memory):
     case.page.form(case.account, remember=True, auto=False, filled=True)
 
 
+@pytest.mark.case_flow(
+    ("从两项均未勾选开始，勾选下次自动登录", "自动勾选记住密码"),
+    ("单独取消下次自动登录", "记住密码保持勾选"),
+    ("提交登录，再关闭并重开同一测试副本", "回填账号和掩码密码，仅勾选记住密码，等待手动登录"),
+)
 def test_auto_login_and_remember_password_checkbox_linkage(login_memory):
     """自动登录会勾选记住密码，单独取消自动登录仍记住密码。"""
     case = login_memory
@@ -76,6 +96,11 @@ def test_auto_login_and_remember_password_checkbox_linkage(login_memory):
         actual="已验证账号和密码回填、密码保持掩码、记住密码已勾选，且等待手动登录")
 
 
+@pytest.mark.case_flow(
+    ("勾选记住密码登录，再关闭并重开同一测试副本", "回填原账号和掩码密码"),
+    ("勾选下次自动登录，再取消记住密码", "两个选项均取消，密码清空"),
+    ("不重新登录，直接关闭并重开同一测试副本", "保留账号，密码仍为空，两项均未勾选，等待手动登录"),
+)
 def test_forget_password_clears_saved_password_and_auto_login(login_memory):
     """取消记住密码后清空密码并关闭自动登录，重开后密码仍为空。"""
     case = login_memory
@@ -99,6 +124,11 @@ def test_forget_password_clears_saved_password_and_auto_login(login_memory):
         actual="取消记住密码后未重新登录，重开后已验证密码为空、两项均未勾选，并等待手动登录")
 
 
+@pytest.mark.case_flow(
+    ("勾选下次自动登录并登录", "进入工作台"),
+    ("主动点击退出", "返回登录页，保留账号及掩码密码，仅记住密码保持勾选"),
+    ("关闭并重开同一测试副本", "仍停留在登录页，回填状态与退出后相同"),
+)
 def test_explicit_logout_disables_auto_login_but_keeps_password(login_memory):
     """主动退出后关闭自动登录并保留记住密码，重开不再自动登录。"""
     case = login_memory
@@ -114,6 +144,11 @@ def test_explicit_logout_disables_auto_login_but_keeps_password(login_memory):
         actual="已验证账号和密码回填、密码掩码、自动登录未勾选，并仍停留在登录页")
 
 
+@pytest.mark.case_flow(
+    ("勾选记住密码登录，再关闭并重开同一测试副本", "回填原账号和掩码密码"),
+    ("把账号改成其他账号", "密码框清空"),
+    ("切回原测试账号", "回填原账号的掩码密码，等待手动登录"),
+)
 def test_changing_account_does_not_reuse_saved_password(login_memory):
     """修改已记住密码的账号时密码清空，切回原账号才能回填。"""
     case = login_memory

@@ -13,6 +13,12 @@ from testbench.workspace import local_config
 pytestmark = pytest.mark.case_group("基础登录")
 
 
+@pytest.mark.case_flow(
+    ("准备有效的测试账号并打开登录页", "登录表单可操作"),
+    ("输入正确的账号和密码", "账号栏显示输入的账号，登录按钮可点击"),
+    ("点击登录", "登录页消失，进入配置工作台"),
+    ("检查工作台顶部", "显示已登录账号和「退出」入口"),
+)
 def test_valid_account_enters_workspace(desktop):
     """正确账号密码登录成功并进入配置工作台。"""
     mark = PlatformLoginPage.target

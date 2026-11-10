@@ -150,3 +150,10 @@
 .update-panel p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .update-candidate { display: grid; justify-items: start; gap: 8px; min-width: 0; }
 .update-candidate p { max-height: 180px; overflow: auto; }
+
+.case-flow { margin: 0; padding-inline-start: 24px; }
+.case-flow li { padding: 8px 0 12px 4px; border-bottom: 1px solid #edf1f6; line-height: 1.7; }
+.case-flow li:last-child { border-bottom: 0; }
+.case-flow li::marker { color: #4677e4; font-weight: 600; }
+.case-flow p { color: #53647d; margin-top: 4px; }
+.case-flow p span { margin-inline-end: 8px; font-weight: 600; }

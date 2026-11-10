@@ -148,6 +148,12 @@ def rtu(request):
                 capture_failure(simulator)
 
 
+@pytest.mark.case_flow(
+    ("从上位机业务界面保存 RTU 连接和点表", "连接和点表保存成功"),
+    ("重新读取连接和点表", "重读结果与保存内容一致"),
+    ("观察对应的 slaveSim 点位", "设备站号和寄存器与点表映射一致"),
+    blocked="当前缺少符合端到端测试边界的在线保存入口。以下为待验证流程。",
+)
 def test_rtu_configuration_saved_on_both_pages(request):
     """RTU连接与点表保存后重新读取一致，模拟器点位身份正确。"""
     fail_e2e_prerequisite(
@@ -158,12 +164,22 @@ def test_rtu_configuration_saved_on_both_pages(request):
     )
 
 
+@pytest.mark.case_flow(
+    ("在上位机打开预置 RTU 连接", "串口和站号与预置链路一致"),
+    ("读取 slaveSim 对应寄存器的已生效值", "原始值为 1234，两端对应同一专用链路"),
+    ("检查上位机初始采集", "显示 1234，品质正常，采集时间有效"),
+)
 def test_rtu_initial_acquisition_matches_simulator(rtu):
     """RTU初始采集值与slaveSim已生效原始值一致。"""
     rtu.use_prepared_connection()
     rtu.verify(0, 1234)
 
 
+@pytest.mark.case_flow(
+    ("选择预置连接，核对上位机和 slaveSim 初始值", "两端均为 1234，上位机品质正常，采集时间有效"),
+    ("等待用例外预先安排的数值变化", "slaveSim 原始值更新为 2345"),
+    ("再次读取上位机采集点", "显示 2345，品质正常，采集时间与前次不同"),
+)
 def test_rtu_source_change_updates_value_and_time(rtu):
     """slaveSim数值变化后RTU实时值与采集时间同步更新。"""
     rtu.use_prepared_connection()
@@ -171,6 +187,11 @@ def test_rtu_source_change_updates_value_and_time(rtu):
     rtu.verify(0, 2345, previous_timestamp=first["timestamp"])
 
 
+@pytest.mark.case_flow(
+    ("选择预置倍率 0.1、偏移 2 的采集点", "slaveSim 原始值为 1234，上位机显示 125.4，品质正常"),
+    ("等待用例外预先安排的数值变化", "slaveSim 原始值更新为 2345"),
+    ("再次读取上位机采集点", "显示 236.5，品质正常，采集时间与前次不同"),
+)
 def test_rtu_scale_and_offset_match_fixed_expectations(rtu):
     """RTU倍率0.1偏移2将两组原始值换算为125.4和236.5。"""
     rtu.use_prepared_connection(scaled=True)
@@ -178,6 +199,11 @@ def test_rtu_scale_and_offset_match_fixed_expectations(rtu):
     rtu.verify(0, 2345, previous_timestamp=first["timestamp"])
 
 
+@pytest.mark.case_flow(
+    ("打开同一 RTU 总线上的两条预置连接", "两条连接对应不同站号"),
+    ("逐站核对初始值", "第一站为 1234，第二站为 4321，两端一致且品质正常"),
+    ("等待预先安排的第一站数值变化，再逐站复查", "第一站为 2345，第二站仍为 4321，两站仍正常更新采集时间"),
+)
 def test_rtu_two_stations_do_not_cross_values(rtu):
     """同一RTU总线两站数值独立，改变第一站不改变第二站。"""
     rtu.use_prepared_connection(0)
