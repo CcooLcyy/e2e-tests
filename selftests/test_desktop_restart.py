@@ -135,3 +135,41 @@ def test_launch_reuses_runtime_appends_log_and_records_each_process(tmp_path, mo
     assert drivers[0]["log_output"] != drivers[1]["log_output"]
     assert all(item["service_args"] == ["--log-level=OFF"] for item in drivers)
     assert (app.artifacts / "application.log").read_bytes().count(b"application-output") == 2
+
+
+@pytest.mark.parametrize("actual_version", ["157.0.4341.46", "160.0.4444.22"])
+def test_private_webview_environment_and_actual_version_are_checked_before_attach(tmp_path, monkeypatch, actual_version):
+    import desktop_demo
+
+    fixed_runtime = tmp_path / "157.0.4341.46" / "msedgewebview2.exe"
+    fixed_runtime.parent.mkdir()
+    fixed_runtime.touch()
+    fixed_driver = fixed_runtime.parent / "msedgedriver.exe"
+    fixed_driver.touch()
+    app = ReleaseDesktop(Path(sys.executable), None, tmp_path / "artifacts", 1,
+                         private_webview_pair=(fixed_runtime, fixed_driver))
+    app.artifacts.mkdir()
+    launches, services = [], []
+    monkeypatch.delenv("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", raising=False)
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs:
+                        launches.append(kwargs) or SimpleNamespace(pid=101, poll=lambda: None))
+    response = {"webSocketDebuggerUrl": "test", "Browser": f"Edg/{actual_version}"}
+    monkeypatch.setattr(desktop_demo, "build_opener", lambda *args:
+                        SimpleNamespace(open=lambda *args, **kwargs: io.BytesIO(json.dumps(response).encode())))
+    monkeypatch.setattr(desktop_demo, "Service", lambda **kwargs: services.append(kwargs) or kwargs)
+    monkeypatch.setattr(desktop_demo.webdriver, "Edge", lambda **kwargs: SimpleNamespace())
+    try:
+        if actual_version == fixed_runtime.parent.name:
+            app._launch()
+            assert services[0]["executable_path"] == str(fixed_driver)
+            assert "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER" not in services[0]["env"]
+        else:
+            with pytest.raises(RuntimeError, match="预期私有版本"):
+                app._launch()
+            assert services == []
+        assert app.driver_path is None
+        assert launches[0]["env"]["WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"] == str(fixed_runtime.parent)
+        assert launches[0]["env"]["WEBVIEW2_USER_DATA_FOLDER"] == str(app.runtime / "webview-fixed-157.0.4341.46")
+        assert app.metadata["WebView2版本"] == actual_version
+    finally:
+        app.application_log.close()

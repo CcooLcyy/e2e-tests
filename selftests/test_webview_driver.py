@@ -1,5 +1,9 @@
+from io import BytesIO
 from pathlib import Path
 import subprocess
+from urllib.error import HTTPError, URLError
+
+import pytest
 
 from testbench.bridge import TestbenchBridge
 from testbench import webview_driver
@@ -62,3 +66,53 @@ def test_installed_bridge_uses_new_matching_driver_and_preserves_manual_path(tmp
     manual = create_file(tmp_path / "manual/msedgedriver.exe")
     bridge.handle("save_environment", {"environment": {"app_path": str(app), "driver_path": str(manual)}})
     assert bridge.handle("get_environment")["driver_path"] == str(manual)
+
+
+@pytest.mark.parametrize("latest,expected", [(None, True), ("155.0.4283.70", False), ("155.0.9999.70", False)])
+def test_missing_exact_driver_checks_microsoft_release_listing(monkeypatch, latest, expected):
+    def open_microsoft(request, **kwargs):
+        if isinstance(request, str) and latest:
+            assert request.endswith("LATEST_RELEASE_155_WINDOWS")
+            return BytesIO(latest.encode("utf-16"))
+        url = request if isinstance(request, str) else request.full_url
+        if url.endswith("155.0.4283.70/edgedriver_win64.zip"):
+            return BytesIO()
+        raise HTTPError(url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(webview_driver, "urlopen", open_microsoft)
+    assert webview_driver.system_driver_unavailable("155.0.4283.62") is expected
+
+
+@pytest.mark.parametrize("failure", [None, "network", "runtime"])
+def test_installer_activates_only_a_complete_private_pair(tmp_path, monkeypatch, failure):
+    system = tmp_path / "155.0.4283.62/msedgewebview2.exe"
+    cache = tmp_path / ".tools"
+    monkeypatch.setattr(webview_driver, "installed_runtime", lambda: system)
+
+    def check_availability(version):
+        if failure == "network":
+            raise URLError("offline")
+        return True
+
+    def prepare_driver(directory, runtime):
+        if runtime == system:
+            return 1
+        create_file(directory / "msedgedriver/win64" / webview_driver.FIXED_VERSION / "msedgedriver.exe")
+        return 0
+
+    def prepare_runtime(directory, runtime):
+        if failure == "runtime":
+            raise ValueError("bad CAB")
+        create_file(runtime)
+
+    monkeypatch.setattr(webview_driver, "system_driver_unavailable", check_availability)
+    monkeypatch.setattr(webview_driver, "_prepare_driver", prepare_driver)
+    monkeypatch.setattr(webview_driver, "_prepare_fixed_runtime", prepare_runtime)
+    assert webview_driver.install_driver(cache) == (1 if failure else 0)
+    pair = webview_driver.private_webview(cache, system)
+    if failure:
+        assert pair is None
+    else:
+        assert pair and all(item.is_file() for item in pair)
+        changed_system = tmp_path / "156.0.4314.58/msedgewebview2.exe"
+        assert webview_driver.private_webview(cache, changed_system) is None

@@ -18,10 +18,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 class ReleaseDesktop:
-    def __init__(self, app_path: Path, driver_path: Path, artifacts_dir: Path, timeout: float,
-                 mode="fresh", workspace_path="", baseline_path="", close_app=True, annotation_enabled=True):
+    def __init__(self, app_path: Path, driver_path: Path | None, artifacts_dir: Path, timeout: float,
+                 mode="fresh", workspace_path="", baseline_path="", close_app=True, annotation_enabled=True,
+                 *, private_webview_pair=None):
         self.source = app_path.resolve(strict=True)
-        self.driver_path = driver_path.resolve(strict=True)
+        self.driver_path = driver_path.resolve(strict=True) if driver_path is not None else None
         self.artifacts = artifacts_dir.resolve()
         self.timeout = timeout
         self.mode, self.baseline_path, self.close_app = mode, baseline_path, close_app
@@ -36,6 +37,18 @@ class ReleaseDesktop:
         self.runtime = Path(workspace_path).resolve() if mode == "workspace" else self.artifacts / "runtime"
         self.copied_app = self.runtime / self.source.name
         self.metadata = {"源程序": str(self.source), "开始时间": self.started}
+        self._dsp_driver_path = self.driver_path
+        self._private_webview_runtime = None
+        self._private_webview_version = ""
+        self._webview_profile = self.runtime / "webview"
+        if private_webview_pair is not None:
+            runtime, driver = private_webview_pair
+            self._dsp_driver_path = driver.resolve(strict=True)
+            self._private_webview_runtime = runtime.resolve(strict=True)
+            self._private_webview_version = runtime.parent.name
+            # 固定版本使用独立配置目录，避免用较低版本打开系统 WebView2 已写入的数据。
+            self._webview_profile = self.runtime / f"webview-fixed-{self._private_webview_version}"
+            self.metadata["私有 WebView2 预期版本"] = self._private_webview_version
         self._debug_port = None
         self._launch_count = 0
         self.screenshots = []
@@ -61,7 +74,7 @@ class ReleaseDesktop:
                 self.metadata["SHA256"] = source_hash
                 self.metadata["测试副本"] = str(self.copied_app)
                 with self.step("准备 WebView2 与临时目录"):
-                    (self.runtime / "webview").mkdir(exist_ok=True)
+                    self._webview_profile.mkdir(exist_ok=True)
                     (self.artifacts / "temp").mkdir(exist_ok=True)
 
             self._launch()
@@ -81,15 +94,18 @@ class ReleaseDesktop:
             self._debug_port = port
             child_env = dict(os.environ)
             child_env.update({
-                "WEBVIEW2_USER_DATA_FOLDER": str(self.runtime / "webview"),
+                "WEBVIEW2_USER_DATA_FOLDER": str(self._webview_profile),
                 "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": f"--remote-debugging-port={port}",
                 "TEMP": str(self.artifacts / "temp"),
                 "TMP": str(self.artifacts / "temp"),
             })
             self.application_log = (self.artifacts / "application.log").open("ab")
             with self.step("运行上位机测试副本进程"):
+                app_env = child_env.copy()
+                if self._private_webview_runtime is not None:
+                    app_env["WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"] = str(self._private_webview_runtime.parent)
                 self.process = subprocess.Popen(
-                    [str(self.copied_app)], cwd=self.copied_app.parent, env=child_env,
+                    [str(self.copied_app)], cwd=self.copied_app.parent, env=app_env,
                     stdout=self.application_log, stderr=subprocess.STDOUT,
                 )
             self.metadata["测试进程PID"] = self.process.pid
@@ -105,6 +121,14 @@ class ReleaseDesktop:
                         with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
                             version = json.load(response)
                         if version.get("webSocketDebuggerUrl"):
+                            if self._private_webview_runtime is not None:
+                                browser = version.get("Browser", "")
+                                actual = browser.rpartition("/")[2] if isinstance(browser, str) else ""
+                                self.metadata["启动历史"][-1]["调试端口 WebView2 版本"] = actual
+                                self.metadata["WebView2版本"] = actual
+                                if actual != self._private_webview_version:
+                                    raise RuntimeError(f"DSP 测试副本 WebView2 实际版本为 {actual or '未知'}，"
+                                                       f"预期私有版本为 {self._private_webview_version}")
                             break
                     except OSError:
                         pass
@@ -117,7 +141,7 @@ class ReleaseDesktop:
             options.use_webview = True
             options.debugger_address = f"127.0.0.1:{port}"
             service = Service(
-                executable_path=str(self.driver_path),
+                executable_path=str(self._dsp_driver_path),
                 env=child_env,
                 # 驱动默认日志包含密码输入及回填响应，关闭驱动命令日志以保护凭据。
                 service_args=["--log-level=OFF"],
@@ -125,7 +149,8 @@ class ReleaseDesktop:
             )
             self.driver = webdriver.Edge(service=service, options=options)
             self.wait = CancellableWait(self.driver, self.timeout)
-            self.metadata["WebView2版本"] = self.driver.capabilities.get("browserVersion")
+            if self._private_webview_runtime is None:
+                self.metadata["WebView2版本"] = self.driver.capabilities.get("browserVersion")
 
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_value is not None:

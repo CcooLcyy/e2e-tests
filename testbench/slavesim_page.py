@@ -45,6 +45,8 @@ class SlaveSimPage:
     def __enter__(self):
         try:
             with self._step("打开独立管理页面"):
+                if not self.desktop.driver_path:
+                    raise ValueError("slaveSim 管理页需要匹配本机 Edge 的 EdgeDriver，请在测试环境中指定驱动路径")
                 profile = self.desktop.artifacts / "slavesim-edge-profile"
                 profile.mkdir(parents=True, exist_ok=True)
                 options = webdriver.EdgeOptions()

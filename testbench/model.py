@@ -58,14 +58,19 @@ class Environment:
     def from_dict(cls, data):
         return cls(**{key: deepcopy(value) for key, value in data.items() if key in cls.__dataclass_fields__})
 
-    def validate(self):
+    def validate(self, *, private_webview_pair=None):
         self.validate_master104()
         if not isinstance(self.annotation_enabled, bool):
             raise ValueError("截图标注开关必须为布尔值")
         self.slavesim_url = validate_slavesim_url(self.slavesim_url)
         if not self.name.strip():
             raise ValueError("环境名称不能为空")
-        for label, value in (("上位机", self.app_path), ("驱动", self.driver_path)):
+        driver = self.driver_path
+        if private_webview_pair is not None:
+            runtime, driver = private_webview_pair
+            if runtime.name.casefold() != "msedgewebview2.exe" or not runtime.is_file():
+                raise ValueError("DSP 私有 WebView2 已不可用，请重新安装测试上位机")
+        for label, value in (("上位机", self.app_path), ("驱动", driver)):
             if not value or not Path(value).is_file() or Path(value).suffix.lower() != ".exe":
                 raise ValueError(f"{label}必须选择已有的 exe 文件")
         if self.mode not in ("fresh", "workspace"):
@@ -139,8 +144,8 @@ class CaseInfo:
     opt_in: bool = False
 
 
-def save_environment(path, environment):
-    environment.validate()
+def save_environment(path, environment, *, private_webview_pair=None):
+    environment.validate(private_webview_pair=private_webview_pair)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".pending")

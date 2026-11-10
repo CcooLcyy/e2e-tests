@@ -25,12 +25,17 @@ def desktop(request):
                    "baseline_path": environment["baseline_path"],
                    "annotation_enabled": environment.get("annotation_enabled", True),
                    "close_app": environment["close_app"] or request.node.nodeid != task["case_ids"][-1]}
-    for option in ("--app-path", "--driver-path", "--artifacts-dir"):
+        if private_webview := task.get("private_webview"):
+            options["private_webview_pair"] = (Path(private_webview["runtime_path"]), Path(private_webview["driver_path"]))
+    driver_path = request.config.getoption("--driver-path")
+    if not driver_path and "private_webview_pair" not in options:
+        pytest.fail("运行桌面用例需要指定 --driver-path")
+    for option in ("--app-path", "--artifacts-dir"):
         if not request.config.getoption(option):
             pytest.fail(f"运行桌面用例需要指定 {option}")
     app = ReleaseDesktop(
         app_path=Path(request.config.getoption("--app-path")),
-        driver_path=Path(request.config.getoption("--driver-path")),
+        driver_path=Path(driver_path) if driver_path else None,
         artifacts_dir=Path(getattr(request.node, "_bench_artifacts", request.config.getoption("--artifacts-dir"))),
         timeout=float(request.config.getoption("--ui-timeout")), **options,
     )
@@ -58,6 +63,7 @@ def master104(request):
     task = json.loads(Path(task_path).read_text(encoding="utf-8"))
     environment = Environment.from_dict(task["environment"])
     environment.validate_master104(required=True)
+    environment.validate_master104_driver()
     directory = getattr(request.node, "_bench_artifacts", request.config.getoption("--artifacts-dir"))
     if not directory:
         pytest.fail("104主站会话需要本例证据目录")

@@ -20,7 +20,7 @@ from .catalog import discover_cases
 from .controller import TaskController
 from .model import Environment, load_environment, save_environment, validate_slavesim_url
 from .reporting import STATUS_LABELS, business_case
-from .webview_driver import installed_runtime, matching_cached_driver
+from .webview_driver import installed_runtime, matching_cached_driver, private_webview
 from .workspace import import_workspace
 
 
@@ -42,8 +42,11 @@ class TestbenchBridge:
         if not isinstance(payload, dict):
             raise ValueError("请求参数必须是对象")
         if method == "bootstrap":
+            webview = self._installed_webview()
+            private_pair = webview[1]
             return {"root": str(self.data_root), "installed": self.installed,
-                    "version": os.environ.get("TESTBENCH_VERSION", ""), "environment": self._environment(),
+                    "version": os.environ.get("TESTBENCH_VERSION", ""), "environment": self._environment(webview),
+                    "private_webview_version": private_pair[0].parent.name if private_pair else "",
                     "cases": self._discover(), "history": self._history()}
         if method == "update_ready":
             return {"ready": not self.controller.active and self._master104_check is None}
@@ -69,6 +72,7 @@ class TestbenchBridge:
                 raise ValueError("104 主站环境参数必须是对象")
             env = Environment.from_dict(data)
             env.validate_master104(required=True)
+            self._select_webview(env, self._installed_webview())
             env.validate_master104_driver()
             future = Future()
             self._master104_check = future
@@ -124,10 +128,12 @@ class TestbenchBridge:
                 raise ValueError("测试运行期间不能更改环境")
             if method == "load_environment":
                 env = load_environment(Path(payload["path"]))
-                env.validate()
+                pair = self._select_webview(env, self._installed_webview())
+                env.validate(private_webview_pair=pair)
             else:
                 env = Environment.from_dict(payload["environment"])
-                save_environment(self.environment_path, env)
+                pair = self._select_webview(env, self._installed_webview())
+                save_environment(self.environment_path, env, private_webview_pair=pair)
             return env.to_dict()
         if method == "start":
             if self._master104_check is not None:
@@ -135,7 +141,8 @@ class TestbenchBridge:
             if self.controller.active:
                 raise ValueError("已有测试任务正在运行")
             env = Environment.from_dict(payload["environment"])
-            env.validate()
+            pair = self._select_webview(env, self._installed_webview())
+            env.validate(private_webview_pair=pair)
             ids = payload.get("case_ids")
             if not isinstance(ids, list) or not ids or not all(isinstance(item, str) for item in ids):
                 raise ValueError("请选择需要执行的用例")
@@ -143,8 +150,8 @@ class TestbenchBridge:
             available = {case.id for case in discover_cases(self.root)}
             if not set(ids).issubset(available):
                 raise ValueError("所选用例已经变化，请刷新用例列表后重试")
-            save_environment(self.environment_path, env)
-            return {"run_dir": str(self.controller.start(env, ids))}
+            save_environment(self.environment_path, env, private_webview_pair=pair)
+            return {"run_dir": str(self.controller.start(env, ids, private_webview_pair=pair))}
         if method == "poll":
             events = self.controller.poll()
             return {"active": self.controller.active,
@@ -230,7 +237,27 @@ class TestbenchBridge:
     def _discover(self):
         return [asdict(case) for case in discover_cases(self.root)]
 
-    def _environment(self):
+    def _installed_webview(self):
+        if not self.installed:
+            return None, None
+        cache = self.data_root / ".tools"
+        runtime = installed_runtime()
+        driver = matching_cached_driver(cache, runtime)
+        return driver, None if driver else private_webview(cache, runtime)
+
+    def _select_webview(self, env, webview):
+        """刷新安装版自动选择，私有组合独立于环境中的共用驱动。"""
+        if not self.installed:
+            return None
+        cache = self.data_root / ".tools"
+        if env.driver_path and not (isinstance(env.driver_path, str) and
+                                    Path(env.driver_path).is_relative_to(cache / "msedgedriver")):
+            return None
+        driver, pair = webview
+        env.driver_path = str(driver) if driver else ""
+        return pair
+
+    def _environment(self, webview=None):
         cache = self.data_root / ".tools"
         workspace = str(self.data_root / "local" / "workspaces" / "default")
         if self.environment_path.is_file():
@@ -240,10 +267,7 @@ class TestbenchBridge:
         else:
             env = Environment(name="本机测试环境", workspace_path=workspace)
         if self.installed:
-            if not env.driver_path or (isinstance(env.driver_path, str) and
-                                       Path(env.driver_path).is_relative_to(cache / "msedgedriver")):
-                driver = matching_cached_driver(cache, installed_runtime())
-                env.driver_path = str(driver) if driver else ""
+            self._select_webview(env, self._installed_webview() if webview is None else webview)
             return env.to_dict()
         candidates = list((cache / "msedgedriver").glob("**/msedgedriver.exe"))
         def version(path):

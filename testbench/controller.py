@@ -37,10 +37,13 @@ class TaskController:
         self._cleanup_reason = None
         self._cleanup_error_reported = False
 
-    def start(self, environment, case_ids):
+    def start(self, environment, case_ids, *, private_webview_pair=None):
         if self.active:
             raise ValueError("已有测试任务正在执行")
-        environment.validate()
+        if private_webview_pair is None:
+            environment.validate()
+        else:
+            environment.validate(private_webview_pair=private_webview_pair)
         if not case_ids:
             raise ValueError("请至少选择一个测试用例")
         # nodeid 必须来自真实用例目录，避免把用户输入解释为 pytest 参数。
@@ -57,13 +60,18 @@ class TaskController:
         self.run_dir = self.data_root / "artifacts" / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
         self.run_dir.mkdir(parents=True)
         task_path = self.run_dir / "task.json"
-        task_path.write_text(json.dumps({"root": str(self.root), "data_root": str(self.data_root),
-                                        "testbench_version": os.environ.get("TESTBENCH_VERSION", ""),
-                                        "environment": environment.to_dict(),
-                                        "case_ids": case_ids,
-                                        "case_names": {case.id: getattr(case, "name", "测试用例") for case in discovered if case.id in requested},
-                                        "started_at": datetime.now().astimezone().isoformat(timespec="seconds")},
-                                       ensure_ascii=False, indent=2), encoding="utf-8")
+        task = {"root": str(self.root), "data_root": str(self.data_root),
+                "testbench_version": os.environ.get("TESTBENCH_VERSION", ""),
+                "environment": environment.to_dict(),
+                "case_ids": case_ids,
+                "case_names": {case.id: getattr(case, "name", "测试用例") for case in discovered if case.id in requested},
+                "started_at": datetime.now().astimezone().isoformat(timespec="seconds")}
+        if private_webview_pair is not None:
+            runtime, driver = private_webview_pair
+            task["private_webview"] = {"runtime_path": str(runtime), "driver_path": str(driver),
+                                       "version": runtime.parent.name}
+            logging.getLogger(__name__).info("DSP 测试副本将使用私有 WebView2 %s", runtime.parent.name)
+        task_path.write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
         worker = Path(__file__).resolve().with_name("worker.py")
         command = [sys.executable, "-X", "utf8", "-B", str(worker), "--task", str(task_path)]
         if sys.platform == "win32" and ctypes.windll.shell32.IsUserAnAdmin():

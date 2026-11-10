@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from testbench.bridge import TestbenchBridge
+from testbench.model import CaseInfo
 from testbench.workspace import local_config
 
 
@@ -33,6 +34,45 @@ def test_installed_bridge_uses_editable_data_separately(tmp_path, monkeypatch):
     assert bridge.controller.root == resources
     assert bridge.controller.data_root == data
     assert not resources.exists()
+
+
+def test_private_webview_is_only_selected_for_installed_dsp_task(tmp_path, monkeypatch):
+    bridge = TestbenchBridge(tmp_path / "resources", tmp_path / "app-data")
+    system_runtime = tmp_path / "160.0.4444.22" / "msedgewebview2.exe"
+    fixed_runtime = bridge.data_root / ".tools/fixed-webview2/157.0.4341.46/msedgewebview2.exe"
+    fixed_driver = bridge.data_root / ".tools/msedgedriver/win64/157.0.4341.46/msedgedriver.exe"
+    app, manual = tmp_path / "mskdsp-upper.exe", tmp_path / "msedgedriver.exe"
+    for file in (fixed_runtime, fixed_driver, app, manual):
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.touch()
+    monkeypatch.setattr("testbench.bridge.installed_runtime", lambda: system_runtime)
+    monkeypatch.setattr("testbench.bridge.private_webview", lambda cache, runtime: (fixed_runtime, fixed_driver))
+    case_id = "tests/test_example.py::test_example"
+    monkeypatch.setattr("testbench.bridge.discover_cases", lambda root: [CaseInfo(case_id, "示例")])
+    selected = []
+    monkeypatch.setattr(bridge.controller, "start", lambda env, ids, *, private_webview_pair:
+                        selected.append((env.driver_path, private_webview_pair)))
+    environment = {"app_path": str(app), "driver_path": "", "private_webview_pair": ["invalid", "invalid"]}
+    bootstrap = bridge.handle("bootstrap")
+    assert bootstrap["private_webview_version"] == fixed_runtime.parent.name
+    assert bootstrap["environment"]["driver_path"] == ""
+    saved = bridge.handle("save_environment", {"environment": environment})
+    assert saved["driver_path"] == "" and "private_webview_pair" not in saved
+    assert bridge.handle("load_environment", {"path": str(bridge.environment_path)}) == saved
+    bridge.handle("start", {"environment": environment, "case_ids": [case_id]})
+    bridge.handle("start", {"environment": {**environment, "driver_path": str(manual)}, "case_ids": [case_id]})
+
+    system_driver = fixed_driver.parent.parent / system_runtime.parent.name / fixed_driver.name
+    system_driver.parent.mkdir()
+    system_driver.touch()
+    assert bridge.handle("bootstrap")["private_webview_version"] == ""
+    bridge.handle("start", {"environment": environment, "case_ids": [case_id]})
+    assert selected == [("", (fixed_runtime, fixed_driver)), (str(manual), None), (str(system_driver), None)]
+
+    source = TestbenchBridge(tmp_path / "resources")
+    assert source.handle("bootstrap")["private_webview_version"] == ""
+    with pytest.raises(ValueError, match="驱动必须选择"):
+        source.handle("save_environment", {"environment": environment})
 
 
 def test_workspace_import_preserves_existing_data_and_raw_evidence(tmp_path):
