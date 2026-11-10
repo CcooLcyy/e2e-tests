@@ -67,8 +67,9 @@ class PlatformLoginPage:
         """公共操作只声明定位与含义，截图时由框架读取当前可见区域。"""
         return [{"locator": locator, "label": label}]
 
-    def option_locator(self, option):
-        return (By.XPATH, f'//label[.//span[normalize-space(.)="{self.LABELS[option]}"]]')
+    @classmethod
+    def option_locator(cls, option):
+        return (By.XPATH, f'//label[.//span[normalize-space(.)="{cls.LABELS[option]}"]]')
 
     def option_label(self, option):
         return self.driver.find_element(*self.option_locator(option))
@@ -139,14 +140,20 @@ class PlatformLoginPage:
                 self.desktop.wait.until(lambda _: self.username_input().get_attribute("value") == account.username)
             password = self.password_input()
             with self.desktop.step("输入测试密码", targets=self.target(self.PASSWORD, "输入密码，保持掩码")):
-                try:
-                    self.replace_text(password, account.password)
-                except WebDriverException:
-                    # 必须在步骤捕获异常前清理驱动载荷，避免密码进入截图说明。
-                    raise RuntimeError("密码输入失败，请检查本次测试驱动和窗口状态") from None
+                self._replace_password(password, account.password)
             self.desktop.check("登录账号", self.username_input().get_attribute("value"), account.username,
                                targets=self.target(self.USERNAME, "检查登录账号"))
             self.check_password(account.password)
+
+    def enter_test_password(self, password):
+        self._replace_password(self.password_input(), password)
+
+    def _replace_password(self, element, password):
+        try:
+            self.replace_text(element, password)
+        except WebDriverException:
+            # 必须在步骤捕获异常前清理驱动载荷，避免密码进入截图说明。
+            raise RuntimeError("密码输入失败，请检查本次测试驱动和窗口状态") from None
 
     def check_password(self, expected):
         actual_matches = self.password_input().get_attribute("value") == expected
@@ -198,27 +205,33 @@ class PlatformLoginPage:
             with self.desktop.step("等待账号、密码回填和登录选项同步",
                                    targets=self.target(self.USERNAME, "检查账号回填")
                                    + self.target(self.PASSWORD, "检查密码回填，保持掩码")):
-                self.desktop.wait.until(lambda _: (
-                    self.username_input().get_attribute("value") == account.username
-                    and self.password_input().get_attribute("value") == expected_password
-                    and self.selected("remember_password") == remember
-                    and self.selected("auto_login") == auto
-                ), message="重开后的账号、密码回填或登录选项不符合预期")
+                self.wait_for_form_values(account.username, expected_password, remember, auto)
             self.desktop.check("回填账号", self.username_input().get_attribute("value"), account.username,
                                targets=self.target(self.USERNAME, "检查回填账号"))
             self.check_password(expected_password)
             self.desktop.check("密码保持掩码显示", self.password_input().get_attribute("type"), "password",
                                targets=self.target(self.PASSWORD, "检查密码掩码显示"))
             self.check_options(remember, auto)
-            deadline = time.monotonic() + 1
-
-            def remains_signed_out(driver):
-                if not driver.find_element(*self.SCREEN).is_displayed() or driver.find_elements(*self.LOGOUT):
-                    raise AssertionError("应等待手动登录，但程序进入了工作台")
-                return time.monotonic() >= deadline
-
             with self.desktop.step("持续确认仍等待手动登录", targets=self.target(self.SCREEN, "检查仍停留在登录页")):
-                self.desktop.wait.until(remains_signed_out)
+                self.wait_signed_out()
+
+    def wait_for_form_values(self, username, password, remember, auto):
+        self.desktop.wait.until(lambda _: (
+            self.username_input().get_attribute("value") == username
+            and self.password_input().get_attribute("value") == password
+            and self.selected("remember_password") == remember
+            and self.selected("auto_login") == auto
+        ), message="重开后的账号、密码回填或登录选项不符合预期")
+
+    def wait_signed_out(self):
+        deadline = time.monotonic() + 1
+
+        def remains_signed_out(driver):
+            if not driver.find_element(*self.SCREEN).is_displayed() or driver.find_elements(*self.LOGOUT):
+                raise AssertionError("应等待手动登录，但程序进入了工作台")
+            return time.monotonic() >= deadline
+
+        self.desktop.wait.until(remains_signed_out)
 
     def logout(self):
         with self.desktop.step("主动退出平台账号并确认"):

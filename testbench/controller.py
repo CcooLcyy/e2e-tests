@@ -31,6 +31,7 @@ class TaskController:
         self._current = None
         self._selected = []
         self._finished = {}
+        self._plan_steps = {}
         self._finalized = False
         self._cleanup = None
         self._pending_finish = None
@@ -65,6 +66,8 @@ class TaskController:
                 "environment": environment.to_dict(),
                 "case_ids": case_ids,
                 "case_names": {case.id: getattr(case, "name", "测试用例") for case in discovered if case.id in requested},
+                "case_flows": {case.id: case.flow for case in discovered
+                               if case.id in requested and getattr(case, "executable_flow", False)},
                 "started_at": datetime.now().astimezone().isoformat(timespec="seconds")}
         if private_webview_pair is not None:
             runtime, driver = private_webview_pair
@@ -83,6 +86,7 @@ class TaskController:
         self._started = time.monotonic()
         self._last_progress = self._started
         self._selected, self._finished, self._current = list(case_ids), {}, None
+        self._plan_steps = {}
         # 无进展保护覆盖界面、主站及所选RTU采集等待；持续推进的长流程不受总墙钟截断。
         operation_timeout = max(float(environment.timeout),
                                 float(environment.master104_timeout) if environment.master104_enabled else 0,
@@ -104,7 +108,7 @@ class TaskController:
         events = self._read_events()
         outgoing = []
         for event in events:
-            if event["type"] in ("case_started", "case_finished", "step") and event.get("case_id") in self._selected:
+            if event["type"] in ("case_started", "case_finished", "step", "plan_step") and event.get("case_id") in self._selected:
                 self._last_progress = time.monotonic()
             if event["type"] == "case_started":
                 self._current = event["case_id"]
@@ -113,6 +117,8 @@ class TaskController:
                 if self._current == event["case_id"]:
                     self._current = None
                 event = {"type": "case_finished", **self._finished.get(event["case_id"], event)}
+            elif event["type"] == "plan_step":
+                self._remember_plan_step(event)
             elif event["type"] == "task_finished":
                 if self._stop_at:
                     event["status"] = "cancelled"
@@ -208,6 +214,14 @@ class TaskController:
         cases = summary.get("cases")
         return [case for case in cases if isinstance(case, dict)] if isinstance(cases, list) else []
 
+    def _remember_plan_step(self, event):
+        case_id = event.get("case_id")
+        step_id = event.get("plan_step_id")
+        status = event.get("status")
+        if (case_id in self._selected and isinstance(step_id, str) and step_id
+                and status in ("running", "passed", "failed", "cancelled", "skipped")):
+            self._plan_steps.setdefault(case_id, {})[step_id] = status
+
     def _persist_summary(self, status, message=""):
         task = self._read_object(self.run_dir / "task.json")
         summary = self._read_object(self.run_dir / "summary.json")
@@ -218,8 +232,13 @@ class TaskController:
             if case_id not in self._finished:
                 self._finished[case_id] = {"case_id": case_id, "status": "skipped", "message": "未执行",
                                            "duration": 0, "artifacts_dir": ""}
-        summary.update(status=status, run_dir=str(self.run_dir),
-                       cases=[self._finished[case] for case in self._selected if case in self._finished],
+        cases = []
+        for case_id in self._selected:
+            case = self._finished[case_id]
+            if case_id in task.get("case_flows", {}):
+                case = {**case, "plan_steps": self._plan_steps.get(case_id, {})}
+            cases.append(case)
+        summary.update(status=status, run_dir=str(self.run_dir), cases=cases,
                        started_at=task.get("started_at", summary.get("started_at", "")),
                        ended_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                        environment_name=task.get("environment", {}).get("name", summary.get("environment_name", "未记录")))
@@ -313,6 +332,9 @@ class TaskController:
                 self._remember_finished(event)
                 if self._current == case_id:
                     self._current = None
+            elif event["type"] == "plan_step" and case_id in self._selected:
+                self._remember_plan_step(event)
+                events.append(event)
         stored = self._read_object(self.run_dir / "summary.json")
         for event in self._case_records(stored):
             if isinstance(event, dict) and (event.get("case_id") not in self._finished or event.get("status") == "failed"):

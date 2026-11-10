@@ -1,7 +1,7 @@
 export type Status = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'cancelled';
 export interface Step { name: string; status: string; step_id?: number | string; expected?: unknown; actual?: unknown; duration?: number }
-export interface CaseRecord { status: Status; steps: Step[]; duration?: number; message?: string; artifacts_dir?: string }
-export interface BenchEvent { type: string; case_id?: string; status?: string; step_id?: number | string; name?: string; expected?: unknown; actual?: unknown; duration?: number; message?: string; artifacts_dir?: string; time?: string }
+export interface CaseRecord { status: Status; steps: Step[]; duration?: number; message?: string; artifacts_dir?: string; plan_steps?: Record<string, string> }
+export interface BenchEvent { type: string; case_id?: string; status?: string; step_id?: number | string; plan_step_id?: string; name?: string; expected?: unknown; actual?: unknown; duration?: number; message?: string; artifacts_dir?: string; time?: string }
 export function initialRecords(ids: string[]): Record<string, CaseRecord> { return Object.fromEntries(ids.map(id => [id, {status: 'pending', steps: []}])); }
 export function applyEvents(records: Record<string, CaseRecord>, events: BenchEvent[]): Record<string, CaseRecord> {
   const next = Object.fromEntries(Object.entries(records).map(([id, record]) => [id, { ...record, steps: [...record.steps] }]));
@@ -10,6 +10,9 @@ export function applyEvents(records: Record<string, CaseRecord>, events: BenchEv
     if (row) {
       if (event.type === 'case_started') row.status = 'running';
       if (event.type === 'case_finished') Object.assign(row, event, { status: event.status as Status });
+      if (event.type === 'plan_step' && event.plan_step_id && event.status) {
+        row.plan_steps = { ...row.plan_steps, [event.plan_step_id]: event.status };
+      }
       if (event.type === 'step') {
         const step: Step = {name: event.name || '执行步骤', status: event.status || 'running', step_id: event.step_id, expected: event.expected, actual: event.actual, duration: event.duration};
         // 新事件用序号定位，避免同名嵌套或重复完成事件关联到其他步骤。

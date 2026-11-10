@@ -97,12 +97,21 @@ def test_wrong_password_business_case_declares_error_target_without_changing_ass
     ("test_login_success.py", ["填写正确平台账号", "填写正确密码", "点击登录按钮", "工作台显示已登录账号", "successful-login-workspace"]),
 ])
 def test_direct_login_cases_declare_targets_for_operations_and_business_evidence(filename, names):
-    """未封装为公共操作的登录用例也只声明目标，原有动作与检查保持不变。"""
+    """计划步骤和公共提交操作都提供截图目标。"""
     source = Path(__file__).resolve().parents[1] / "tests" / filename
     tree = ast.parse(source.read_text(encoding="utf-8"))
     calls = {node.args[0].value: node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
              and node.func.attr in ("step", "check", "capture") and node.args
              and isinstance(node.args[0], ast.Constant)}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id in ("desktop_action", "desktop_check") and isinstance(node.args[1], ast.Constant):
+            calls[node.args[1].value] = node
+        if node.func.id == "submit_steps":
+            for keyword in node.keywords:
+                if keyword.arg == "click_name" and isinstance(keyword.value, ast.Constant):
+                    calls[keyword.value.value] = node
     for name in names:
         assert any(keyword.arg == "targets" for keyword in calls[name].keywords)

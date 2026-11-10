@@ -111,7 +111,8 @@ export default function App() {
         const result=await call<Poll>('poll');setActive(result.active);
         if(result.run_dir) setRunDir(result.run_dir);
         if(result.events.length) {
-          setRecords(old=>applyEvents(old,result.events));setLogs(old=>[...old,...result.events].slice(-1000));
+          setRecords(old=>applyEvents(old,result.events));
+          setLogs(old=>[...old,...result.events.filter(event=>event.type!=='plan_step')].slice(-1000));
           for(const event of result.events) {
             if(event.type==='case_started' && event.case_id) setFocused(event.case_id);
             if(event.type==='task_finished') {setTaskStatus(event.status || 'failed');setStopping(false);void refreshHistory().catch(e=>setError(String(e)));}
@@ -224,6 +225,8 @@ export default function App() {
     if(taskIds.length)console.info('本次任务通过率：',passRate,'通过：',stats.passed,'失败：',stats.failed);
   },[passRate,stats.passed,stats.failed,taskIds]);
   const currentCase=cases.find(c=>c.id===focused);
+  const flowFinished=!!record && (record.status!=='pending' && record.status!=='running'
+    || taskIds.includes(focused) && taskStatus!=='pending' && taskStatus!=='running');
   const visible=visibleCases(cases,'',search);
   const groups=summarizeGroups(cases,selected,records);
   const sections=groupedSections(cases,selected,records,expandedGroups,search,searchCollapsed);
@@ -296,7 +299,10 @@ export default function App() {
                 <button className={tab==='steps'?'active':''} aria-pressed={tab==='steps'} onClick={()=>setTab('steps')}><CheckCheck size={14}/>测试结果</button>
                 <button className={tab==='logs'?'active':''} aria-pressed={tab==='logs'} onClick={()=>setTab('logs')}><Terminal size={14}/>诊断记录</button>
               </div>
-              {tab==='flow'?<div className="detail-scroll" key={focused}><CaseFlow testCase={currentCase}/></div>:tab==='steps'?<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/><span><Clock3 size={13}/>{duration(record.duration)}</span></div>}<BusinessCaseDetails key={focused} detail={detail} status={record?.status} onOpen={path=>void open(path)}/></div>:<div className="log-scroll">{logs.length?logs.map((event,index)=><div className="log-line" key={index}><time>{event.time?.slice(11,19)||'--:--:--'}</time><span>{event.message||event.name||(event.type==='case_started'?'开始执行用例':event.type==='task_finished'?'任务执行结束':event.type==='case_finished'?`用例${labels[event.status||'']||'结束'}`:'准备测试任务')}{event.type==='step'&&` · ${labels[event.status||'']||''}`}</span></div>):<div className="empty"><Terminal size={26}/><span>执行日志将在任务开始后显示</span></div>}</div>}
+              {tab==='flow'?<div className="detail-scroll" key={focused}>
+                <CaseFlow testCase={currentCase} steps={record?.plan_steps}
+                  caseStatus={record?.status} finished={flowFinished}/>
+              </div>:tab==='steps'?<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/><span><Clock3 size={13}/>{duration(record.duration)}</span></div>}<BusinessCaseDetails key={focused} detail={detail} status={record?.status} onOpen={path=>void open(path)}/></div>:<div className="log-scroll">{logs.length?logs.map((event,index)=><div className="log-line" key={index}><time>{event.time?.slice(11,19)||'--:--:--'}</time><span>{event.message||event.name||(event.type==='case_started'?'开始执行用例':event.type==='task_finished'?'任务执行结束':event.type==='case_finished'?`用例${labels[event.status||'']||'结束'}`:'准备测试任务')}{event.type==='step'&&` · ${labels[event.status||'']||''}`}</span></div>):<div className="empty"><Terminal size={26}/><span>执行日志将在任务开始后显示</span></div>}</div>}
             </section>
           </div>
           <footer className="page-footer"><span><ShieldCheck size={14}/>测试在本地执行，日志与截图仅保存在本机</span><button className="text-button" disabled={!runDir} onClick={()=>void open(runDir)}><FolderOpen size={14}/>打开本次报告目录</button></footer>
@@ -358,6 +364,13 @@ undefined
               <div className="history-summary"><Status status={String(historyDetail.summary.status||'pending')}/><span>{historyDetail.cases.length} 项测试用例</span><span title="通过 ÷（通过＋失败）；跳过、停止和未执行不计入">通过率 {historyPassRate}</span></div>
               {historyDetail.cases.map((item,index)=><details key={`${historyFocus}-${index}`} className="history-case" open={index===0}>
                 <summary><Status status={String(item.status||'pending')} text={false}/><strong>{item.business?.title||cases.find(c=>c.id===item.case_id)?.name||'测试用例'}</strong><span>{duration(item.duration as number|undefined)}</span><ChevronRight size={14}/></summary>
+                <section className="history-flow" aria-label="测试流程">
+                  {item.flow?.length ? <>
+                    <h3>测试流程</h3>
+                    <CaseFlow testCase={{flow:item.flow, executable_flow:true}} steps={item.plan_steps}
+                      caseStatus={String(item.status||'pending')} finished/>
+                  </> : <p className="flow-record-note">无逐步记录</p>}
+                </section>
                 <BusinessCaseDetails detail={item} status={String(item.status||'pending')} onOpen={path=>void open(path)}/>
               </details>)}
             </div>:<div className="empty"><FileText size={30}/><strong>查看历史测试详情</strong><span>选择左侧任务，查看结果、业务检查和关键截图。</span></div>}

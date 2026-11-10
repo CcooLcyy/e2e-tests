@@ -179,6 +179,13 @@ class TestbenchBridge:
                 # 旧记录也按读取时的业务视图展示，不重写原始报告。
                 final_result = "未执行" if case.get("status") in ("pending", "not_run") or (case.get("status") == "skipped" and case.get("message") == "未执行") else STATUS_LABELS.get(case.get("status"), details["report"].get("结果", "未执行"))
                 details["business"] = business_case({"用例": name, **details["report"], "结果": final_result})
+                # 强制停止时可能没有最终用例报告，保留任务快照及已收到的步骤状态。
+                if "flow" not in details:
+                    flows = task.get("case_flows")
+                    flow = flows.get(case.get("case_id")) if isinstance(flows, dict) else None
+                    if isinstance(flow, list):
+                        steps = case.get("plan_steps")
+                        details.update({"flow": flow, "plan_steps": steps if isinstance(steps, dict) else {}})
                 cases.append({**case, **details})
             return {"summary": summary, "task": task, "cases": cases,
                     "diagnostics_path": self._diagnostics_path(directory),
@@ -410,9 +417,12 @@ class TestbenchBridge:
                 continue
             screenshots.append({**self._screenshot_description(name, {}), **image, "capture_status": "saved"})
         logging.getLogger(__name__).debug("已读取用例截图证据，共 %s 条", len(screenshots))
-        return {"report": report, "screenshots": screenshots, "business": business_case(report),
-                "diagnostics_path": self._diagnostics_path(directory),
-                "business_report_path": self._business_report_path(directory)}
+        details = {"report": report, "screenshots": screenshots, "business": business_case(report),
+                   "diagnostics_path": self._diagnostics_path(directory),
+                   "business_report_path": self._business_report_path(directory)}
+        if isinstance(report.get("flow"), list) and isinstance(report.get("plan_steps"), dict):
+            details.update({"flow": report["flow"], "plan_steps": report["plan_steps"]})
+        return details
 
     @staticmethod
     def _screenshot_description(name, record):

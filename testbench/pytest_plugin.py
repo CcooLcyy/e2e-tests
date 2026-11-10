@@ -8,6 +8,7 @@ from datetime import datetime
 import pytest
 from .events import emit
 from .case_order import order_case_ids
+from .case_plan import get_case_plan
 from .reporting import STATUS_LABELS, write_case_report
 from .session_evidence import collect_sessions, merge_session_evidence
 
@@ -60,6 +61,13 @@ def pytest_addoption(parser):
         parser.addoption(option, default=default)
 
 
+def _executable_flow(item):
+    plan = get_case_plan(getattr(item, "obj", None))
+    if plan is None:
+        return None
+    return [{"id": step.id, "action": step.action, "expected": step.expected} for step in plan]
+
+
 def pytest_collection_finish(session):
     output = os.environ.get("TESTBENCH_COLLECT")
     if output:
@@ -70,11 +78,15 @@ def pytest_collection_finish(session):
             if "[" in item.name:
                 name += " " + item.name[item.name.index("["):]
             flow = item.get_closest_marker("case_flow")
-            items.append({"id": item.nodeid, "name": name, "description": description,
-                          "group": getattr(item, "_bench_group", "未分组"),
-                          "opt_in": item.get_closest_marker("opt_in") is not None,
-                          "flow": [{"action": action, "expected": expected} for action, expected in flow.args] if flow else [],
-                          "flow_blocked": flow.kwargs.get("blocked", "") if flow else ""})
+            executable_flow = _executable_flow(item)
+            case = {"id": item.nodeid, "name": name, "description": description,
+                    "group": getattr(item, "_bench_group", "未分组"),
+                    "opt_in": item.get_closest_marker("opt_in") is not None,
+                    "flow": [{"action": action, "expected": expected} for action, expected in flow.args] if flow else [],
+                    "flow_blocked": flow.kwargs.get("blocked", "") if flow else ""}
+            if executable_flow is not None:
+                case.update({"executable_flow": True, "flow": executable_flow})
+            items.append(case)
         Path(output).write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
 
 
@@ -161,6 +173,9 @@ def pytest_runtest_makereport(item, call):
                        "结束时间": datetime.now().astimezone().isoformat(timespec="seconds")})
         if message:
             result["错误"] = message
+        executable_flow = _executable_flow(item)
+        if executable_flow is not None:
+            result.update({"flow": executable_flow, "plan_steps": getattr(item, "_bench_plan_steps", {})})
         write_case_report(directory, result)
         print(f"[报告] 已保存用例报告：{item.nodeid}（{STATUS_LABELS[status]}）", flush=True)
     event = {"type": "case_finished", "case_id": item.nodeid, "status": status,

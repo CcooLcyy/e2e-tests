@@ -172,3 +172,8 @@
 .case-flow li::marker { color: #4677e4; font-weight: 600; }
 .case-flow p { color: #53647d; margin-top: 4px; }
 .case-flow p span { margin-inline-end: 8px; font-weight: 600; }
+.flow-step-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.flow-step-heading .status { flex-shrink: 0; }
+.flow-record-note { color: #53647d; margin-bottom: 8px; font-size: 11px; }
+.history-flow { padding: 0 18px; }
+.history-flow h3 { margin-bottom: 8px; font-size: 12px; }

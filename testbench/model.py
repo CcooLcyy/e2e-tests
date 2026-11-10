@@ -144,6 +144,7 @@ class CaseInfo:
     opt_in: bool = False
     flow: list[dict[str, str]] = field(default_factory=list)
     flow_blocked: str = ""
+    executable_flow: bool = False
 
 
 def save_environment(path, environment, *, private_webview_pair=None):

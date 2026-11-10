@@ -122,6 +122,11 @@ def test_all_business_case_ui_actions_have_explicit_step_boundaries():
             if node.func.attr not in ("restart", "click", "clear", "send_keys", "replace_text", "until"):
                 continue
             statement = parents[node]
+            if isinstance(statement, ast.Lambda):
+                wrapper = parents[statement]
+                assert (isinstance(wrapper, ast.Call) and isinstance(wrapper.func, ast.Name)
+                        and wrapper.func.id == "desktop_action" and wrapper.args[3] is statement), (path.name, node.lineno)
+                continue
             assert isinstance(statement, (ast.Expr, ast.Assign)), (path.name, node.lineno)
             context = parents[statement]
             # 密码输入可在当前步骤内捕获并清理驱动异常；不能跨越其他动作或步骤。

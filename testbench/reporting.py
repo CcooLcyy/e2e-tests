@@ -10,6 +10,19 @@ from urllib.parse import quote
 STATUS_LABELS = {"passed": "通过", "failed": "失败", "skipped": "跳过", "cancelled": "已停止", "unknown": "未判定"}
 
 
+def _plan_table(result):
+    flow = _records(result, "flow")
+    states = result.get("plan_steps")
+    if not flow or not isinstance(states, dict):
+        return []
+    labels = {**STATUS_LABELS, "skipped": "条件不满足", "running": "已中断"}
+    lines = ["", "## 测试流程", "", "| 序号 | 步骤 | 状态 | 预期结果 |", "| --- | --- | --- | --- |"]
+    for index, step in enumerate(flow, 1):
+        status = states.get(step.get("id", ""))
+        lines.append(f"| {index} | {_cell(step.get('action', ''))} | {labels.get(status, '未执行')} | {_cell(step.get('expected', ''))} |")
+    return lines
+
+
 def _write_case_diagnostics(directory, result):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -30,7 +43,8 @@ def _write_case_diagnostics(directory, result):
         copy = annotated_name(shot)
         return f"[查看截图]({copy or shot['name']})" + (f" · [查看原图]({shot['name']})" if copy else "")
     lines = ["# 用例诊断资料", "", f"结果：**{result['结果']}**", ""]
-    lines.extend(f"- {key}：{value}" for key, value in result.items() if key not in ("步骤", "截图", "错误"))
+    lines.extend(f"- {key}：{value}" for key, value in result.items() if key not in ("步骤", "截图", "错误", "flow", "plan_steps"))
+    lines.extend(_plan_table(result))
     lines.extend(["", "| 序号 | 步骤 | 结果 | 预期 | 实际 | 耗时（秒） | 截图 |", "| --- | --- | --- | --- | --- | --- | --- |"])
     for step in result.get("步骤", []):
         shots = [shot for shot in result.get("截图", [])
@@ -197,6 +211,7 @@ def write_case_report(directory, result):
     view = business_case(result)
     lines = [f"# {_cell(view['title'])}", "", f"结果：**{view['result']}**", "",
              f"测试目标：{_cell(view['goal'])}", "", _cell(view["summary"])]
+    lines.extend(_plan_table(result))
     if view["checks"]:
         lines.extend(["", "## 检查结果", "", "| 检查内容 | 结果 | 预期表现 | 实际表现 |", "| --- | --- | --- | --- |"])
         for check in view["checks"]:

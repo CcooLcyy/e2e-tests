@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import ExitStack, contextmanager
 import json
 import os
 from types import SimpleNamespace
@@ -6,6 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from desktop_demo import ReleaseDesktop
+from testbench.case_plan import (
+    DESKTOP_FINISH, DESKTOP_START, LOGIN_CLEANUP, LOGIN_GUARD, LOGIN_PREPARE, track_fixture_step,
+)
 from testbench.workspace import local_config
 
 
@@ -16,6 +20,18 @@ pytest_plugins = ("testbench.pytest_plugin",)
 @pytest.fixture
 def desktop(request):
     """仅创建和管理本次测试的桌面实例。"""
+    with ExitStack() as stack:
+        with track_fixture_step(request, DESKTOP_START):
+            app = stack.enter_context(_desktop_session(request))
+        try:
+            yield app
+        finally:
+            with track_fixture_step(request, DESKTOP_FINISH):
+                stack.close()
+
+
+@contextmanager
+def _desktop_session(request):
     options = {}
     task_path = os.environ.get("TESTBENCH_TASK")
     if task_path:
@@ -86,15 +102,17 @@ def login_memory(request):
     from testbench.login_page import load_login_account, require_fresh_login_environment, PlatformLoginPage
     from testbench.login_credentials import WindowsCredentialGuard, cleanup_login_credentials
 
-    require_fresh_login_environment(os.environ.get("TESTBENCH_TASK"))
-    account = load_login_account(local_config("login-account.json"))
+    with track_fixture_step(request, LOGIN_PREPARE):
+        require_fresh_login_environment(os.environ.get("TESTBENCH_TASK"))
+        account = load_login_account(local_config("login-account.json"))
     app = request.getfixturevalue("desktop")
     page = PlatformLoginPage(app)
-    with app.step("确认专用测试账号没有已有保存凭据"):
+    with track_fixture_step(request, LOGIN_GUARD), app.step("确认专用测试账号没有已有保存凭据"):
         guard = WindowsCredentialGuard(page.endpoint(), account.username)
         guard.__enter__()
     try:
         yield SimpleNamespace(desktop=app, page=page, account=account)
     finally:
         # 先停止可能仍在保存密码的请求，再删凭据；清理不能被取消标记跳过。
-        cleanup_login_credentials(app, guard)
+        with track_fixture_step(request, LOGIN_CLEANUP):
+            cleanup_login_credentials(app, guard)
