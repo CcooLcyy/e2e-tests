@@ -1,6 +1,4 @@
 """通过 DSP 上位机正常 IEC104 页面建立本例专用的被控站链路。"""
-from urllib.parse import urlsplit
-
 from selenium.webdriver.common.by import By
 
 from .modbus_rtu_page import xpath_text
@@ -19,17 +17,6 @@ class RtuQualityIec104:
         self.requested = False
         self.confirmed = False
         self.routes = []
-
-    def visible_host(self):
-        self.upper._menu("模块运维")
-        field = self.upper._until(lambda _: self.upper._visible((By.CSS_SELECTOR, 'input[aria-label="ModuleManager 地址"]')),
-                                  "当前上位机未显示已配置的现场直连主机，无法确定 IEC104 协议对端")
-        address = field.get_attribute("value").strip()
-        endpoint = urlsplit(address if "://" in address else f"//{address}")
-        if not endpoint.hostname or endpoint.hostname in ("0.0.0.0", "::") or endpoint.username or endpoint.password:
-            raise AssertionError("当前上位机未显示明确的直连主机，无法确定 IEC104 协议对端")
-        self.upper.desktop.metadata["104主机来源"] = {"界面": "模块运维现有现场直连地址", "主机": endpoint.hostname}
-        return endpoint.hostname
 
     def _button(self, text, root, action):
         self.upper._click(self.upper._button(text, root), action)

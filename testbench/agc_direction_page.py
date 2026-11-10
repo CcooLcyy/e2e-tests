@@ -124,16 +124,8 @@ class AgcDirectionPage(ModbusRtuPage):
             timeout = min(float(timeout or self.desktop.timeout), remaining)
         return super()._until(predicate, message, timeout)
 
-    def connect_device(self, address):
-        self._menu("模块运维")
-        self._click((By.XPATH, "//*[@aria-label='连接方式']//label[normalize-space(.)='现场直连']"), "选择现场直连")
-        switch = self._button("切换至现场直连")
-        if self._visible(switch):
-            self._click(switch, "切换运行连接至现场直连")
-        with self.desktop.step("填写目标下位机 ModuleManager 地址", expected=address):
-            field = self._until(lambda _: self._visible((By.CSS_SELECTOR, 'input[aria-label="ModuleManager 地址"]')))
-            self._replace(field, address)
-        self._click(self._button("连接", "//div[contains(@class,'module-ops-connection-controls')]"), "连接专用AGC测试下位机")
+    def connect_device(self):
+        self.connect_site()
         with self.desktop.step("确认 AGC、DataCenter、IEC104 模块已运行"):
             def ready(_):
                 for name in ("AGC", "DataCenter", "IEC104"):

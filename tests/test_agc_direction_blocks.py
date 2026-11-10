@@ -2,7 +2,7 @@
 
 import pytest
 
-from testbench.blocked_control import report_blocked_control_case
+from testbench.blocked_control import SITE_CONNECTION_FLOW, report_blocked_control_case
 
 
 pytestmark = pytest.mark.case_group("AGC 增减闭锁")
@@ -19,6 +19,7 @@ def _agc_flow(prepare_kw, initial, target_kw, feedback, *, measured=False):
     if measured:
         mapping += "，以及实测功率遥测映射"
     return pytest.mark.case_flow(
+        SITE_CONNECTION_FLOW,
         ("从正常业务界面确认专用 AGC 组及专用 IEC104 从站点表",
          f"单成员组运行、投入、允许远方绝对值有功控制，上下限为 10 和 100 kW。{mapping}"),
         ("连接独立模拟 104 主站并总召", "从专用点表取得所需遥信或遥测的有效初值"),

@@ -48,6 +48,9 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
         def __init__(self, desktop):
             pass
 
+        def connect_site(self):
+            calls.append("现场直连")
+
         def open_current_links(self):
             calls.append("打开业务点表")
             raise RuntimeError("RTU 业务页面未打开")
@@ -65,7 +68,7 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
     generator = getattr(module, fixture).__wrapped__(request)
     with pytest.raises(RuntimeError, match="RTU 业务页面未打开"):
         next(generator)
-    assert calls[:2] == ["登录", "打开业务点表"]
+    assert calls[:3] == ["登录", "现场直连", "打开业务点表"]
     assert calls.index("模拟器现场") < calls.index("模拟器关闭")
     assert calls.index("DSP现场") < calls.index("模拟器关闭")
 

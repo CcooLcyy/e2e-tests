@@ -16,6 +16,8 @@ from selenium import webdriver
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 
+from testbench.workspace import SITE_MANAGER_ADDRESS, set_test_site_address
+
 
 class ReleaseDesktop:
     def __init__(self, app_path: Path, driver_path: Path | None, artifacts_dir: Path, timeout: float,
@@ -199,6 +201,8 @@ class ReleaseDesktop:
             for source in Path(self.baseline_path).glob("*.json"):
                 if source.name.casefold() != "platform-login.json":
                     shutil.copy2(source, data / source.name)
+        set_test_site_address(self.runtime)
+        self.metadata["现场直连预设地址"] = SITE_MANAGER_ADDRESS
 
     @staticmethod
     def _check_stop():

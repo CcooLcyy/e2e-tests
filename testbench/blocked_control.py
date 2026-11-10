@@ -1,6 +1,10 @@
 """从待验证流程生成控制用例的前置失败报告。"""
 
+from .case_plan import SITE_CONNECT
 from .pytest_plugin import fail_e2e_prerequisite
+
+
+SITE_CONNECTION_FLOW = (f"登录 DSP 上位机并{SITE_CONNECT.action}", SITE_CONNECT.expected)
 
 
 def report_blocked_control_case(request, *, required):

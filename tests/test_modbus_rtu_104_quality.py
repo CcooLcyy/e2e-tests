@@ -12,7 +12,7 @@ from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 
 from testbench.case_plan import (
-    DESKTOP_FINISH, DESKTOP_START, MASTER104_FINISH, MASTER104_START, SLAVESIM_BROWSER_READY,
+    DESKTOP_FINISH, DESKTOP_START, MASTER104_FINISH, MASTER104_START, SITE_CONNECT, SLAVESIM_BROWSER_READY,
     Step, case_plan, run_steps, track_fixture_context, track_fixture_step,
 )
 from testbench.login_page import PlatformLoginPage, load_login_account
@@ -57,7 +57,6 @@ def _check_environment():
 
 
 def _open_protocol(context):
-    context.profile["master_host"] = context.iec104.visible_host()
     context.rtu.open_current_links()
 
 
@@ -251,8 +250,7 @@ LOGIN = (
     Step("quality.login.account", "读取测试账号", "专用平台账号配置有效", _load_account),
     *login_steps("quality.login"),
 )
-OPEN_PROTOCOL = Step("quality.rtu.links", "读取上位机当前直连主机并打开 RTU 配置",
-                     "取得 IEC104 协议主机且可读 RTU 连接列表", _open_protocol)
+OPEN_PROTOCOL = Step("quality.rtu.links", "打开已连接设备的 RTU 配置", "可读取 RTU 连接列表", _open_protocol)
 PREPARE_SCENARIO = (
     Step("quality.sim.prepare", "新建正常参照与静默目标模拟总线",
          "实际串口路径可用于本例，参照站应答 100，目标站初始无应答", _prepare_simulator),
@@ -351,7 +349,7 @@ def _cleanup(context, request, failure):
             raise
 
 
-@case_plan(ENVIRONMENT, SLAVESIM_BROWSER_READY, DESKTOP_START, *LOGIN, OPEN_PROTOCOL, SIM_START, *PREPARE_SCENARIO,
+@case_plan(ENVIRONMENT, SLAVESIM_BROWSER_READY, DESKTOP_START, *LOGIN, SITE_CONNECT, OPEN_PROTOCOL, SIM_START, *PREPARE_SCENARIO,
            MASTER104_START, *INITIAL_SESSION, *OBSERVATIONS, VERIFY_FRAMES,
            UPPER_CLEANUP, SIM_CLEANUP, SIM_FINISH, MASTER104_FINISH, DESKTOP_FINISH)
 def test_rtu_quality_reaches_iec104_with_unchanged_value(request):
@@ -366,7 +364,11 @@ def test_rtu_quality_reaches_iec104_with_unchanged_value(request):
     context = SimpleNamespace(name=name, profile={"common_address": 1, "phase_timeout_seconds": timeout},
                               desktop=desktop, page=PlatformLoginPage(desktop), rtu=rtu,
                               iec104=RtuQualityIec104(rtu, name), rtu_points={})
-    run_steps(request, (*LOGIN, OPEN_PROTOCOL), context)
+    run_steps(request, LOGIN, context)
+    with track_fixture_step(request, SITE_CONNECT):
+        address = rtu.connect_site()
+        context.profile["master_host"] = address.rsplit(":", 1)[0]
+    run_steps(request, (OPEN_PROTOCOL,), context)
     with track_fixture_context(request, SIM_START, SIM_FINISH,
                                RtuQualitySimulator(desktop, simulator_url, name, browser=browser)) as simulator:
         context.simulator = simulator

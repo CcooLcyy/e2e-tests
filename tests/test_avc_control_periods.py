@@ -2,13 +2,14 @@
 
 import pytest
 
-from testbench.blocked_control import report_blocked_control_case
+from testbench.blocked_control import SITE_CONNECTION_FLOW, report_blocked_control_case
 
 
 pytestmark = pytest.mark.case_group("AVC 周期控制")
 
 
 @pytest.mark.case_flow(
+    SITE_CONNECTION_FLOW,
     ("在 slaveSim 准备本例初态，在 DSP 上位机核对量测并打开专用 AVC 组",
      "实测为 220 V、初始总无功为 0 kVar，可观察逐轮电压偏差和成员命令及其时间"),
     ("将该组按定压周期模式运行", "计算周期 1 秒，命令最小间隔 4 秒，比例系数 2"),
@@ -25,7 +26,8 @@ def test_avc_voltage_deviation_recalculates_without_new_input(request):
 
 
 @pytest.mark.case_flow(
-    ("登录独立的 DSP 上位机会话并打开专用 AVC 组",
+    SITE_CONNECTION_FLOW,
+    ("在 DSP 上位机打开专用 AVC 组",
      "该组按总无功模式运行，计算周期 1 秒、命令最小间隔 4 秒，可以观察成员命令及其时间"),
     ("经本例目标输入链路提交 10 kVar，记录首条成员命令的时间", "首条成员设定为 10 kVar"),
     ("首条下发后 4 秒内连续提交 20 至 49 kVar 的目标", "间隔窗口内不额外发布成员命令"),
@@ -41,7 +43,8 @@ def test_avc_burst_respects_command_interval_and_uses_latest_target(request):
 
 
 @pytest.mark.case_flow(
-    ("登录独立的 DSP 上位机会话并打开专用 AVC 组",
+    SITE_CONNECTION_FLOW,
+    ("在 DSP 上位机打开专用 AVC 组",
      "该组按总无功模式运行，计算周期 1 秒、命令间隔 30 秒，可以观察逐轮计算和成员命令及其时间"),
     ("经本例目标输入链路提交 10 kVar 并观察首条成员命令", "首条成员设定为 10 kVar"),
     ("在上位机停组，经本例目标输入链路提交 20 kVar", "上位机确认停组，业务输入端确认目标提交"),

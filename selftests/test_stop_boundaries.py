@@ -39,8 +39,12 @@ def test_baseline_excludes_login_json_case_insensitively(tmp_path):
     baseline = tmp_path / "baseline"
     baseline.mkdir()
     (baseline / "Platform-Login.JSON").write_text('{"auto_login": true}', encoding="utf-8")
-    (baseline / "settings.json").write_text('{"theme": "dark"}', encoding="utf-8")
+    (baseline / "settings.json").write_text(json.dumps({"schema_version": 1, "settings": {
+        "mskdsp_app_mode": "online", "mskdsp_manager_addr": "127.0.0.1:17000",
+    }}), encoding="utf-8")
     app = ReleaseDesktop(Path(sys.executable), Path(sys.executable), tmp_path / "run", 5, baseline_path=str(baseline))
     app._prepare_runtime()
-    assert (app.runtime / "data" / "settings.json").exists()
+    settings = json.loads((app.runtime / "data" / "settings.json").read_text(encoding="utf-8"))["settings"]
+    assert settings == {"mskdsp_app_mode": "online", "mskdsp_manager_addr": "192.168.1.219:17000"}
+    assert app.metadata["现场直连预设地址"] == "192.168.1.219:17000"
     assert not (app.runtime / "data" / "platform-login.json").exists()

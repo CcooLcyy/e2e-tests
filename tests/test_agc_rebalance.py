@@ -1,13 +1,14 @@
 """通过上位机反馈和模拟设备实际收到的控制值验收 AGC 通信重分配。"""
 import pytest
 
-from testbench.blocked_control import report_blocked_control_case
+from testbench.blocked_control import SITE_CONNECTION_FLOW, report_blocked_control_case
 
 
 pytestmark = pytest.mark.case_group("AGC 通信重分配")
 
 
 @pytest.mark.case_flow(
+    SITE_CONNECTION_FLOW,
     ("在 slaveSim 准备三台专用逆变器并读取配置，在 DSP 上位机配置并核对本例 AGC 组",
      "三台额定 200 kW 的 RTU 成员均在线，组按通信状态筛选成员"),
     ("经本例已确认的业务链路提交一次 300 kW 有功总目标，并观察 slaveSim 收到的设定",

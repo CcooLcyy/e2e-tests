@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 from testbench.case_plan import (
-    ContinueAfterFailure, DESKTOP_FINISH, DESKTOP_START, SLAVESIM_BROWSER_READY, Step, case_plan,
+    ContinueAfterFailure, DESKTOP_FINISH, DESKTOP_START, SITE_CONNECT, SLAVESIM_BROWSER_READY, Step, case_plan,
     run_steps, track_fixture_context, track_fixture_step,
 )
 from testbench.huawei_fleet_run import DEVICE_EXPECTED, STAGES, HuaweiFleetRun, device_step_title
@@ -74,6 +74,8 @@ def huawei_fleet(request):
 
         try:
             run_steps(request, LOGIN_STEPS, SimpleNamespace(desktop=desktop, page=PlatformLoginPage(desktop), account=account))
+            with track_fixture_step(request, SITE_CONNECT):
+                upper.connect_site()
             with track_fixture_step(request, OPEN_LINKS):
                 upper.open_current_links()
             run_id = uuid4().hex[:16]
@@ -168,7 +170,8 @@ BUSINESS_STEPS = (
 
 
 @case_plan(
-    FLEET_PREPARE, SLAVESIM_BROWSER_READY, DESKTOP_START, SIMULATOR_START, *LOGIN_STEPS, OPEN_LINKS, SIMULATOR_CREATE,
+    FLEET_PREPARE, SLAVESIM_BROWSER_READY, DESKTOP_START, SIMULATOR_START,
+    *LOGIN_STEPS, SITE_CONNECT, OPEN_LINKS, SIMULATOR_CREATE,
     *PREPARE_STEPS, *BUSINESS_STEPS, FLEET_CLEANUP, SIMULATOR_CLEANUP, SIMULATOR_FINISH, DESKTOP_FINISH,
 )
 def test_huawei_six_buses_21_devices_match(request, huawei_fleet):

@@ -7,6 +7,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
+from .workspace import SITE_MANAGER_ADDRESS
+
 
 def xpath_text(value):
     """将外部名称作为 XPath 字面量，避免名称改变定位语义。"""
@@ -86,6 +88,48 @@ class ModbusRtuPage:
             if self._visible(offline):
                 raise RuntimeError("当前上位机处于离线工作区，无法执行在线 RTU 业务验收")
             self._rtu()
+
+    def connect_site(self):
+        """只通过上位机可见界面建立本例现场直连并等待明确结果。"""
+        back_online = self._button("切回在线", "//header")
+        if self._visible(back_online):
+            self._click(back_online, "将测试实例切回在线")
+            self._until(lambda _: not self._visible(back_online), "测试实例未切回在线")
+        self._menu("模块运维")
+        field = (By.CSS_SELECTOR, 'input[aria-label="ModuleManager 地址"]')
+        if not self._visible(field):
+            self._click((By.XPATH, "//*[@aria-label='连接方式']//label[normalize-space(.)='现场直连']"), "选择现场直连")
+        switch = self._button("切换至现场直连")
+        if self._visible(switch):
+            self._click(switch, "切换运行连接至现场直连")
+
+        def editable(_driver):
+            element = self._visible(field)
+            return element if element and element.is_enabled() else False
+
+        def address_ready(driver):
+            element = editable(driver)
+            return element and element.get_attribute("value") == SITE_MANAGER_ADDRESS
+
+        with self.desktop.step("确认现场直连地址", expected=SITE_MANAGER_ADDRESS):
+            element = self._until(editable, "ModuleManager 地址输入框未就绪")
+            if element.get_attribute("value") != SITE_MANAGER_ADDRESS:
+                self._replace(element, SITE_MANAGER_ADDRESS)
+            self._until(address_ready,
+                        f"ModuleManager 地址未更新为 {SITE_MANAGER_ADDRESS}")
+        controls = "//div[contains(@class,'module-ops-connection-controls')]"
+        self._click(self._button("连接", controls), "连接本例现场设备")
+
+        def result(_):
+            error = self._visible((By.CSS_SELECTOR, ".module-ops-page > .ant-alert-error"))
+            if error:
+                raise AssertionError(f"现场直连 {SITE_MANAGER_ADDRESS} 失败：{error.text}")
+            return self._visible((By.XPATH, "//*[contains(@class,'ant-message-success')]//*[normalize-space(.)='ModuleManager 已连接']"))
+
+        with self.desktop.step("确认现场直连成功", expected=SITE_MANAGER_ADDRESS):
+            self._until(result, f"上位机未确认连接 {SITE_MANAGER_ADDRESS}")
+        self.desktop.metadata["现场直连实际地址"] = SITE_MANAGER_ADDRESS
+        return SITE_MANAGER_ADDRESS
 
     def assert_serial_paths_available(self, paths):
         """创建连接前，只读检查目标串口是否被现有配置占用。"""

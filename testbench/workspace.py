@@ -18,6 +18,7 @@ CONFIG_FILES = (
 EVIDENCE_EXTENSIONS = {".json", ".jsonl", ".xml", ".log", ".md", ".txt", ".png", ".jpg", ".jpeg"}
 TRANSIENT_DIRECTORIES = {"runtime", "temp", "pytest-cache", "__pycache__"}
 FINAL_RESULTS = ("passed", "failed", "cancelled")
+SITE_MANAGER_ADDRESS = "192.168.1.219:17000"
 
 
 def local_config(name):
@@ -29,6 +30,28 @@ def _is_plain(path, predicate):
     if path.is_symlink() or not predicate():
         return False
     return not (getattr(path.lstat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def set_test_site_address(runtime):
+    """在独立测试实例启动前设置界面使用的现场直连地址。"""
+    data = runtime / "data"
+    data.mkdir(exist_ok=True)
+    if not _is_plain(data, data.is_dir):
+        raise ValueError("测试实例数据目录不能是链接")
+    path = data / "settings.json"
+    existing = path if path.exists() or path.is_symlink() else path.with_suffix(".json.bak")
+    document = {"schema_version": 1, "settings": {}}
+    if existing.exists() or existing.is_symlink():
+        if not _is_plain(existing, existing.is_file):
+            raise ValueError("测试实例设置必须是普通文件")
+        document = json.loads(existing.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or document.get("schema_version") != 1 or not isinstance(document.get("settings"), dict):
+            raise ValueError("测试实例 settings.json 格式无效")
+    document["settings"]["mskdsp_manager_addr"] = SITE_MANAGER_ADDRESS
+    with tempfile.TemporaryDirectory(dir=data) as directory:
+        pending = Path(directory) / path.name
+        pending.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        pending.replace(path)
 
 
 def _copy_evidence(source, destination):

@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 
 from testbench.case_plan import (
-    DESKTOP_FINISH, DESKTOP_START, SLAVESIM_BROWSER_READY, Step, case_plan, run_steps,
+    DESKTOP_FINISH, DESKTOP_START, SITE_CONNECT, SLAVESIM_BROWSER_READY, Step, case_plan, run_steps,
     track_fixture_context, track_fixture_step,
 )
 from testbench.login_page import PlatformLoginPage, load_login_account
@@ -223,7 +223,8 @@ def observation_steps(prefix, index, raw, *, scaled=False, previous=None):
 
 
 def rtu_plan(*steps):
-    return case_plan(RTU_PREPARE, SLAVESIM_BROWSER_READY, DESKTOP_START, SIMULATOR_START, *RTU_LOGIN_STEPS, RTU_OPEN, RTU_PREPARE_SIM,
+    return case_plan(RTU_PREPARE, SLAVESIM_BROWSER_READY, DESKTOP_START, SIMULATOR_START,
+                     *RTU_LOGIN_STEPS, SITE_CONNECT, RTU_OPEN, RTU_PREPARE_SIM,
                      *steps, RTU_CLEANUP, SIMULATOR_FINISH, DESKTOP_FINISH)
 
 
@@ -272,6 +273,8 @@ def _rtu_session(request, *, station_count=1):
         try:
             login = SimpleNamespace(desktop=desktop, page=PlatformLoginPage(desktop), account=account)
             run_steps(request, RTU_LOGIN_STEPS, login)
+            with track_fixture_step(request, SITE_CONNECT):
+                upper.connect_site()
             with track_fixture_step(request, RTU_OPEN):
                 upper.open_current_links()
             with track_fixture_step(request, RTU_PREPARE_SIM):
