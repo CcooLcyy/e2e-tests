@@ -246,6 +246,7 @@ export default function App() {
       <nav>{([
         ['execution','测试执行',ListChecks],['environment','测试环境',Settings2],['history','历史报告',HistoryIcon],
       ] as const).map(([id,title,Icon])=><button key={id} data-testid={`nav-${id}`} className={page===id?'nav-item selected':'nav-item'} onClick={()=>setPage(id)}><Icon size={18}/>{title}{id==='execution'&&<span className="nav-count">{cases.length}</span>}</button>)}</nav>
+      <UpdateControls locked={disabled || loading || master104Checking} onMaintenance={setMaintenance} onImport={bootstrap}/>
       <div className="sidebar-bottom"><span className={`connection-dot ${ready?'online':''}`}/><div>{ready?'本地执行内核已连接':'等待本地连接'}<small>所有测试数据保存在本机</small></div><ShieldCheck size={17}/></div>
       <div className="version">DESKTOP EDITION</div>
     </aside>
@@ -255,7 +256,6 @@ export default function App() {
         <div className="breadcrumb">工作空间 <ChevronRight size={14}/><span>{{execution:'测试执行',environment:'测试环境',history:'历史报告'}[page]}</span></div>
         <div className="topbar-right">
           <span className="local-label"><span className="tiny-dot"/>本地工作区</span>
-          <UpdateControls locked={disabled || loading || master104Checking} onMaintenance={setMaintenance} onImport={bootstrap}/>
           <span className="avatar">M</span>
         </div>
       </header>
