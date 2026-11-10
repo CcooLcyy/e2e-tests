@@ -19,9 +19,10 @@ export function CaseFlow({ testCase, steps, caseStatus, finished = false, follow
     return <div className="empty"><span>{testCase ? '此用例尚未填写测试流程' : '选择用例查看测试流程'}</span></div>;
   }
 
+  const showStepStatus = testCase.executable_flow || (testCase.flow_blocked && finished);
   return <>
     {testCase.flow_blocked && <p className="notice info">{testCase.flow_blocked}</p>}
-    {!testCase.executable_flow && finished && <p className="flow-record-note">无逐步记录</p>}
+    {!showStepStatus && finished && <p className="flow-record-note">无逐步记录</p>}
     <ol className="case-flow" aria-label="计划步骤">
       {testCase.flow.map(({id, action, expected, group}, index, flow) => {
         const recorded = id ? steps?.[id] : undefined;
@@ -34,7 +35,7 @@ export function CaseFlow({ testCase, steps, caseStatus, finished = false, follow
           {group && group !== flow[index - 1]?.group && <h4 className="flow-step-group">{group}</h4>}
           <div className="flow-step-heading">
             <strong>{action}</strong>
-            {testCase.executable_flow && <span className={`status ${status}`}><i />{label}</span>}
+            {showStepStatus && <span className={`status ${status}`}><i />{label}</span>}
           </div>
           <p><span>预期结果</span>{expected}</p>
         </li>;
