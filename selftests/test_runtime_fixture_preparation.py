@@ -46,13 +46,6 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
             calls.append("打开业务点表")
             raise RuntimeError("预置连接不可观察")
 
-    class Login:
-        def __init__(self, desktop):
-            pass
-
-        def login(self, *args, **kwargs):
-            calls.append("登录")
-
     monkeypatch.setattr("testbench.slavesim_page.SlaveSimPage", Simulator)
     monkeypatch.setattr("testbench.huawei_slavesim_page.HuaweiSlaveSimPage", Simulator)
     monkeypatch.setattr(module, "PreparedRtuPage", Upper)
@@ -60,7 +53,7 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
         monkeypatch.setattr(module, "BasicObservationProfile", SimpleNamespace(load=lambda *args: object()))
     else:
         monkeypatch.setattr(module, "FleetObservationProfile", SimpleNamespace(load=lambda *args: (object(), [])))
-    monkeypatch.setattr(module, "PlatformLoginPage", Login)
+    monkeypatch.setattr(module, "run_steps", lambda *_: calls.append("登录"))
     monkeypatch.setattr(module, "load_login_account", lambda _: object())
     request = SimpleNamespace(node=SimpleNamespace(_bench_reports=[]),
                               getfixturevalue=lambda _: desktop)

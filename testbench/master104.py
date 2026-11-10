@@ -139,20 +139,23 @@ class Master104Session:
         if actual != [str(host), str(port), str(common_address)]:
             raise AssertionError(f"104 主站连接目标与专用配置不一致：{actual!r}")
 
-    def connect_and_interrogate(self, host, port, common_address):
-        with self.step("连接专用 104 下位机并完成总召", expected=f"{host}:{port}，CA={common_address}"):
-            if self.state() != "disconnected":
-                raise RuntimeError("本次 104 主站已连接，拒绝更改会话")
-            for field, value in zip(self._connection_fields(), (host, port, common_address), strict=True):
-                self.fill(field, str(value))
-            self.verify_target(host, port, common_address)
-            self._check_stop()
-            self._button("连接").click()
-            self.wait_for(lambda: self.state() == "started", "104 主站未收到 STARTDT 确认")
-            self._check_stop()
-            self._button("总召").click()
-            self.wait_for(lambda: self._status("总召状态") == "总召已终止", "104 主站未确认总召终止")
-            self._assert_live_display()
+    def prepare_target(self, host, port, common_address):
+        if self.state() != "disconnected":
+            raise RuntimeError("本次 104 主站已连接，拒绝更改会话")
+        for field, value in zip(self._connection_fields(), (host, port, common_address), strict=True):
+            self.fill(field, str(value))
+        self.verify_target(host, port, common_address)
+
+    def connect(self):
+        self._check_stop()
+        self._button("连接").click()
+        self.wait_for(lambda: self.state() == "started", "104 主站未收到 STARTDT 确认")
+
+    def interrogate(self):
+        self._check_stop()
+        self._button("总召").click()
+        self.wait_for(lambda: self._status("总召状态") == "总召已终止", "104 主站未确认总召终止")
+        self._assert_live_display()
 
     @staticmethod
     def fill(field, value):

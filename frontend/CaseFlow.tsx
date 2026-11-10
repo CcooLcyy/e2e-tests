@@ -22,13 +22,14 @@ export function CaseFlow({ testCase, steps, caseStatus, finished = false }: {
     {testCase.flow_blocked && <p className="notice info">{testCase.flow_blocked}</p>}
     {!testCase.executable_flow && finished && <p className="flow-record-note">无逐步记录</p>}
     <ol className="case-flow" aria-label="计划步骤">
-      {testCase.flow.map(({id, action, expected}, index) => {
+      {testCase.flow.map(({id, action, expected, group}, index, flow) => {
         const recorded = id ? steps?.[id] : undefined;
         const status = recorded === 'running' && finished
           ? caseStatus === 'cancelled' ? 'cancelled' : 'incomplete'
           : recorded || (finished ? 'not_run' : 'pending');
         const label = stepLabels[status] || labels[status] || status;
         return <li key={id ?? index} aria-current={status === 'running' ? 'step' : undefined}>
+          {group && group !== flow[index - 1]?.group && <h4 className="flow-step-group">{group}</h4>}
           <div className="flow-step-heading">
             <strong>{action}</strong>
             {testCase.executable_flow && <span className={`status ${status}`}><i />{label}</span>}

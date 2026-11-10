@@ -9,11 +9,15 @@ from .case_plan import Step, desktop_action, desktop_check
 from .login_page import PlatformLoginPage as Page
 
 
+def login_visible_step(id):
+    return desktop_action(id, "等待登录页可见", "显示登录页面",
+                          lambda c: c.desktop.wait.until(EC.visibility_of_element_located(Page.SCREEN)),
+                          targets=Page.target(Page.SCREEN, "检查登录页面"))
+
+
 def ready_steps(prefix):
     return (
-        desktop_action(f"{prefix}.visible", "等待登录页可见", "显示登录页面",
-                       lambda c: c.desktop.wait.until(EC.visibility_of_element_located(Page.SCREEN)),
-                       targets=Page.target(Page.SCREEN, "检查登录页面")),
+        login_visible_step(f"{prefix}.visible"),
         desktop_action(f"{prefix}.initialized", "等待登录表单初始化或退出处理完成", "账号输入框和登录按钮可操作",
                        lambda c: c.desktop.wait.until(c.page._ready, message="登录表单未在规定时间内完成初始化或退出处理"),
                        targets=Page.target(Page.SUBMIT, "等待登录表单就绪")),

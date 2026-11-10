@@ -3,12 +3,23 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
+import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from testbench.huawei_fleet import HuaweiFleetConfig, READ_POINTS, point_expected
 from testbench.huawei_fleet_run import HuaweiFleetRun, STAGES
+
+
+def run_business_plan(scenario):
+    path = Path(__file__).resolve().parents[1] / "tests" / "test_huawei_fleet.py"
+    spec = importlib.util.spec_from_file_location("huawei_fleet_business_case", path)
+    case = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(case)
+    request = SimpleNamespace(node=SimpleNamespace(nodeid="huawei-fleet"))
+    case.test_huawei_six_buses_21_devices_match(request, scenario)
 
 
 class Desktop:
@@ -151,7 +162,7 @@ def test_one_failed_device_stage_is_retained_while_other_devices_finish(tmp_path
                 "通过": not (stage == STAGES[0] and bus["index"] == 1), "工况错误": ["保留原始失败"]}
     scenario.sample = sample
     with pytest.raises(AssertionError, match="失败1项"):
-        scenario.run()
+        run_business_plan(scenario)
     assert len(scenario.results) == 21 * len(STAGES)
     assert scenario.results[0]["通过"] is False
     assert scenario.desktop.metadata["华为验收汇总"]["全部抄通"] is False
@@ -172,7 +183,7 @@ def test_missing_screenshot_prevents_green_device_stage(tmp_path):
         return []
     scenario.sample, scenario.capture_both = sample, capture
     with pytest.raises(AssertionError, match="失败1项"):
-        scenario.run()
+        run_business_plan(scenario)
     assert scenario.results[0]["通过"] is False
     assert "双端证据缺失" in scenario.results[0]["工况错误"][0]
     assert scenario.desktop.metadata["华为验收汇总"]["全部抄通"] is False

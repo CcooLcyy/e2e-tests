@@ -1,5 +1,5 @@
 from pathlib import Path
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 import json
 import os
 from types import SimpleNamespace
@@ -8,7 +8,8 @@ import pytest
 
 from desktop_demo import ReleaseDesktop
 from testbench.case_plan import (
-    DESKTOP_FINISH, DESKTOP_START, LOGIN_CLEANUP, LOGIN_GUARD, LOGIN_PREPARE, track_fixture_step,
+    DESKTOP_FINISH, DESKTOP_START, LOGIN_CLEANUP, LOGIN_GUARD, LOGIN_PREPARE,
+    MASTER104_FINISH, MASTER104_START, track_fixture_context, track_fixture_step,
 )
 from testbench.workspace import local_config
 
@@ -20,14 +21,8 @@ pytest_plugins = ("testbench.pytest_plugin",)
 @pytest.fixture
 def desktop(request):
     """仅创建和管理本次测试的桌面实例。"""
-    with ExitStack() as stack:
-        with track_fixture_step(request, DESKTOP_START):
-            app = stack.enter_context(_desktop_session(request))
-        try:
-            yield app
-        finally:
-            with track_fixture_step(request, DESKTOP_FINISH):
-                stack.close()
+    with track_fixture_context(request, DESKTOP_START, DESKTOP_FINISH, _desktop_session(request)) as app:
+        yield app
 
 
 @contextmanager
@@ -70,6 +65,12 @@ def _desktop_session(request):
 @pytest.fixture
 def master104(request):
     """为本用例启动独立的 104 主站，由业务用例建立协议连接。"""
+    with track_fixture_context(request, MASTER104_START, MASTER104_FINISH, _master104_session(request)) as app:
+        yield app
+
+
+@contextmanager
+def _master104_session(request):
     from testbench.master104 import Master104Session
     from testbench.model import Environment
 

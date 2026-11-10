@@ -65,7 +65,13 @@ def _executable_flow(item):
     plan = get_case_plan(getattr(item, "obj", None))
     if plan is None:
         return None
-    return [{"id": step.id, "action": step.action, "expected": step.expected} for step in plan]
+    flow = []
+    for step in plan:
+        entry = {"id": step.id, "action": step.action, "expected": step.expected}
+        if step.group:
+            entry["group"] = step.group
+        flow.append(entry)
+    return flow
 
 
 def pytest_collection_finish(session):

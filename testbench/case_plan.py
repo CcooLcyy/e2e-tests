@@ -1,6 +1,6 @@
 """可执行用例步骤。步骤的说明和操作由同一份定义提供。"""
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Callable
 
@@ -14,10 +14,17 @@ class Step:
     expected: str
     run: Callable[[object], None] | None = None
     when: Callable[[object], bool] | None = None
+    group: str | None = None
+
+
+class ContinueAfterFailure(AssertionError):
+    """已保留失败证据，允许继续观察独立步骤。"""
 
 
 DESKTOP_START = Step("desktop.start", "准备并启动测试上位机", "独立测试实例启动，驱动接管窗口")
 DESKTOP_FINISH = Step("desktop.finish", "收尾并清理桌面测试资源", "按测试环境设置结束桌面会话")
+MASTER104_START = Step("master104.start", "启动独立的模拟 104 主站", "主站测试实例启动，驱动接管窗口")
+MASTER104_FINISH = Step("master104.finish", "关闭模拟 104 主站测试会话", "本次主站会话及资源已清理")
 LOGIN_PREPARE = Step("login.prepare", "检查登录环境并读取专用账号", "使用全新副本及有效的测试账号配置")
 LOGIN_GUARD = Step("login.guard", "检查专用账号的已有凭据", "专用账号没有已保存凭据")
 LOGIN_CLEANUP = Step("login.cleanup", "关闭登录测试实例并清除测试凭据", "测试实例已关闭，专用账号凭据已清除")
@@ -61,24 +68,50 @@ def _track(item, step):
 @contextmanager
 def track_fixture_step(request, step):
     item = request.node
-    if step in (get_case_plan(item.obj) or ()):
+    if step in (get_case_plan(getattr(item, "obj", None)) or ()):
         with _track(item, step):
             yield
     else:
         yield
 
 
+@contextmanager
+def track_fixture_context(request, start, finish, manager):
+    with ExitStack() as stack:
+        with track_fixture_step(request, start):
+            manager_type = type(manager)
+            session = manager_type.__enter__(manager)
+
+            @stack.push
+            def close(*exc):
+                with track_fixture_step(request, finish):
+                    return manager_type.__exit__(manager, *exc)
+
+        yield session
+
+
 def run_case_plan(request, context):
+    run_steps(request, get_case_plan(request.node.obj), context)
+
+
+def run_steps(request, steps, context):
     item = request.node
-    for step in get_case_plan(item.obj):
+    deferred_failure = None
+    for step in steps:
         if step.run is None:
             continue
         context.desktop._check_stop()
-        with _track(item, step):
-            if step.when is not None and not step.when(context):
-                _record(item, step, "skipped")
-            else:
-                step.run(context)
+        try:
+            with _track(item, step):
+                if step.when is not None and not step.when(context):
+                    _record(item, step, "skipped")
+                else:
+                    step.run(context)
+        except ContinueAfterFailure as error:
+            if deferred_failure is None:
+                deferred_failure = error
+    if deferred_failure is not None:
+        raise deferred_failure
 
 
 def desktop_action(id, action, expected, run, *, targets=(), save_as=None):

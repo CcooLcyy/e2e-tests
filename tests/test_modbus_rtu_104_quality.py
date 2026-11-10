@@ -2,12 +2,18 @@
 from decimal import Decimal
 import json
 import math
+from types import SimpleNamespace
 
 import pytest
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 
+from testbench.case_plan import (
+    DESKTOP_FINISH, DESKTOP_START, MASTER104_FINISH, MASTER104_START,
+    Step, case_plan, run_steps, track_fixture_step,
+)
 from testbench.login_page import PlatformLoginPage, load_login_account
+from testbench.login_plan import login_steps
 from testbench.modbus_rtu_page import xpath_text
 from testbench.rtu_observation import PreparedRtuPage
 from testbench.rtu_quality_frames import capture_frames, decode_frame
@@ -51,24 +57,27 @@ def _profile():
     return profile
 
 
-def _open_prepared_point(desktop, profile):
-    PlatformLoginPage(desktop).login(load_login_account(local_config("login-account.json")),
-                                     remember=False, auto=False)
-    page = PreparedRtuPage(desktop)
-    with desktop.step("打开已预配置的 RTU 点表", expected=profile["rtu_tag"]):
-        page.open_prepared_links()
-        connection = profile["rtu_connection"]
-        page._click(page._connection_locator(connection), "选择专用 RTU 连接")
-        title = (By.XPATH, "//div[contains(@class,'modbus-connection-card')]"
-                 "//div[contains(@class,'ant-card-head-title')]//span[normalize-space(.)=" + xpath_text(connection) + "]")
-        page._until(lambda _: page._visible(title), "前置条件未满足：未显示预置 RTU 连接")
-        page._until(lambda _: profile["rtu_connection"] in page.driver.find_element(
-            By.CSS_SELECTOR, ".modbus-connection-card .ant-card-head").text,
-            "前置条件缺失，未打开专用 RTU 连接")
-        page._runtime_view()
-        locator = (By.XPATH, "//div[contains(@class,'protocol-point-card')]//tr[.//td//strong[normalize-space(.)="
-                   + xpath_text(profile["rtu_tag"]) + "]]")
-        page._until(lambda _: page._visible(locator), "前置条件缺失，专用 RTU 点表未显示目标点")
+def _load_account(context):
+    context.account = load_login_account(local_config("login-account.json"))
+
+
+def _select_connection(context):
+    page = context.rtu
+    connection = context.profile["rtu_connection"]
+    page._click(page._connection_locator(connection), "选择专用 RTU 连接")
+    title = (By.XPATH, "//div[contains(@class,'modbus-connection-card')]"
+             "//div[contains(@class,'ant-card-head-title')]//span[normalize-space(.)=" + xpath_text(connection) + "]")
+    page._until(lambda _: page._visible(title), "前置条件未满足：未显示预置 RTU 连接")
+    page._until(lambda _: connection in page.driver.find_element(
+        By.CSS_SELECTOR, ".modbus-connection-card .ant-card-head").text,
+        "前置条件缺失，未打开专用 RTU 连接")
+
+
+def _wait_for_target(context):
+    page = context.rtu
+    locator = (By.XPATH, "//div[contains(@class,'protocol-point-card')]//tr[.//td//strong[normalize-space(.)="
+               + xpath_text(context.profile["rtu_tag"]) + "]]")
+    page._until(lambda _: page._visible(locator), "前置条件缺失，专用 RTU 点表未显示目标点")
 
 
 def _measurement(master, ca, ioa):
@@ -78,31 +87,34 @@ def _measurement(master, ca, ioa):
     return rows[0] if rows else None
 
 
-def _observe_phases(master, profile):
-    frame_id = 0
-    observations = []
-    master.metadata["RTU品质阶段观察"] = observations
-    for label, quality in PHASES:
+def _observation_step(index, label, quality):
+    action = f"观察{label}的自发遥测"
+    expected = f"值 100，品质 0x{quality:02X}"
+
+    def observe(context):
+        master, profile = context.master, context.profile
         last = None
 
         def match():
             nonlocal last
             last = _measurement(master, profile["common_address"], profile["target_ioa"])
-            if last is None or int(last["frame_id"] or 0) <= frame_id:
+            if last is None or int(last["frame_id"] or 0) <= context.frame_id:
                 return False
             return last if int(last["cells"][4], 16) == quality else False
 
-        with master.step(f"观察{label}的自发遥测", expected=f"值 100，品质 0x{quality:02X}") as step:
+        with master.step(action, expected=expected) as step:
             try:
                 row = master.wait_for(match, f"未看到 {label} 的新遥测", timeout=profile["phase_timeout_seconds"])
             except TimeoutException:
                 step["实际"] = last
                 raise AssertionError(f"未观察到{label}的新遥测，期望品质0x{quality:02X}，最后点表行：{last!r}") from None
             step["实际"] = row
-            observations.append(row)
+            context.observations.append(row)
             assert int(row["cells"][2]) == 36, f"目标点须为带时标短浮点遥测：{row!r}"
             assert Decimal(row["cells"][3]) == 100, f"目标值应保持 100：{row!r}"
-            frame_id = int(row["frame_id"])
+            context.frame_id = int(row["frame_id"])
+
+    return Step(f"quality.phase.{index}", action, expected, observe)
 
 
 def _save_frames(master):
@@ -164,36 +176,86 @@ def _assert_wire_sequence(frames, profile):
     return sequence
 
 
-@pytest.mark.case_flow(
-    ("打开上位机预置采集点，用模拟 104 主站观察初始总召", "参照点正常，未产生有效样本的目标点缺席"),
-    ("观察用例外预置的首次采集、超时、异常响应和恢复工况", "目标点始终为 100，新的带时标自发遥测品质依次为正常、NT、IV+NT、正常"),
-    ("核对总召及自发遥测原始报文", "总召省略目标点，两次故障沿用同一样本时标，恢复后刷新样本时标"),
-)
-def test_rtu_quality_reaches_iec104_with_unchanged_value(request):
-    """总召省略未采到的点，值保持 100 时仍依次收到正常、NT、IV+NT 与恢复。"""
-    profile = _profile()
-    desktop = request.getfixturevalue("desktop")
-    _open_prepared_point(desktop, profile)
-    master = request.getfixturevalue("master104")
-    master.metadata["RTU品质验收配置"] = profile
-    try:
-        master.connect_and_interrogate(profile["master_host"], profile["master_port"], profile["common_address"])
-        with master.step("检查总召结束时的初始点表", expected="参照点正常，目标点缺席") as step:
-            reference = _measurement(master, profile["common_address"], profile["reference_ioa"])
-            target = _measurement(master, profile["common_address"], profile["target_ioa"])
-            step["实际"] = {"参照点": reference, "目标点": target}
-            assert reference and int(reference["cells"][4], 16) == 0, "缺少正常参照点，请检查专用线路"
-            assert target is None, f"目标点已有样本或初始无应答窗口不足：{target!r}"
-        _observe_phases(master, profile)
-    except Exception:
-        try:
-            _save_frames(master)
-        except Exception as exc:
-            master.metadata["RTU品质失败现场取证错误"] = str(exc)
-        raise
+def _prepare_master_target(context):
+    profile = context.profile
+    context.master.prepare_target(profile["master_host"], profile["master_port"], profile["common_address"])
+
+
+def _check_initial_table(context):
+    master, profile = context.master, context.profile
+    with master.step("检查总召结束时的初始点表", expected="参照点正常，目标点缺席") as step:
+        reference = _measurement(master, profile["common_address"], profile["reference_ioa"])
+        target = _measurement(master, profile["common_address"], profile["target_ioa"])
+        step["实际"] = {"参照点": reference, "目标点": target}
+        assert reference and int(reference["cells"][4], 16) == 0, "缺少正常参照点，请检查专用线路"
+        assert target is None, f"目标点已有样本或初始无应答窗口不足：{target!r}"
+    context.frame_id = 0
+    context.observations = []
+    master.metadata["RTU品质阶段观察"] = context.observations
+
+
+def _verify_frames(context):
+    master, profile = context.master, context.profile
     with master.step("核对原始总召及自发遥测报文", expected="总召省略目标，随后品质依次为 00、40、C0、00") as step:
         frames = _save_frames(master)
         step["实际"] = f"已保留 {len(frames)} 条收发报文，待核对"
         sequence = _assert_wire_sequence(frames, profile)
         master.metadata["RTU品质报文序列"] = sequence
         step["实际"] = sequence
+
+
+PROFILE = Step("quality.profile", "检查 RTU 到 IEC104 品质专项配置", "预置 RTU 点位和专用 104 观察参数有效")
+LOGIN = (
+    Step("quality.login.account", "读取测试账号", "专用平台账号配置有效", _load_account),
+    *login_steps("quality.login"),
+)
+PREPARED_POINT = (
+    Step("quality.rtu.links", "打开预置 RTU 连接列表", "上位机显示 RTU 连接列表",
+         lambda context: context.rtu.open_prepared_links()),
+    Step("quality.rtu.select", "选择专用 RTU 连接", "详情显示配置指定的连接", _select_connection),
+    Step("quality.rtu.runtime", "打开 RTU 运行视图", "点表显示实时值列", lambda context: context.rtu._runtime_view()),
+    Step("quality.rtu.target", "核对预置目标点", "运行点表显示配置指定的 Tag", _wait_for_target),
+)
+INITIAL_SESSION = (
+    Step("quality.master.target", "填写并核对专用 104 连接参数", "主机、端口和公共地址与专项配置一致",
+         _prepare_master_target),
+    Step("quality.master.connect", "连接专用 104 下位机", "收到 STARTDT 确认",
+         lambda context: context.master.connect()),
+    Step("quality.gi", "在当前会话发起总召", "总召确认终止，主站实时显示正常",
+         lambda context: context.master.interrogate()),
+)
+OBSERVATIONS = (
+    Step("quality.gi.table", "检查总召结束时的初始点表", "参照点正常，目标点缺席", _check_initial_table),
+    *(_observation_step(index, label, quality) for index, (label, quality) in enumerate(PHASES, start=1)),
+)
+VERIFY_FRAMES = Step("quality.frames", "核对原始总召及自发遥测报文",
+                     "总召省略目标，品质依次为 00、40、C0、00，故障沿用样本时标且恢复后刷新", _verify_frames)
+
+
+@case_plan(PROFILE, DESKTOP_START, *LOGIN, *PREPARED_POINT, MASTER104_START, *INITIAL_SESSION, *OBSERVATIONS, VERIFY_FRAMES,
+           MASTER104_FINISH, DESKTOP_FINISH)
+def test_rtu_quality_reaches_iec104_with_unchanged_value(request):
+    """总召省略未采到的点，值保持 100 时仍依次收到正常、NT、IV+NT 与恢复。"""
+    with track_fixture_step(request, PROFILE):
+        profile = _profile()
+    desktop = request.getfixturevalue("desktop")
+    context = SimpleNamespace(profile=profile, desktop=desktop, page=PlatformLoginPage(desktop))
+    run_steps(request, LOGIN, context)
+    context.rtu = PreparedRtuPage(desktop)
+    with desktop.step("打开已预配置的 RTU 点表", expected=profile["rtu_tag"]):
+        run_steps(request, PREPARED_POINT, context)
+    master = request.getfixturevalue("master104")
+    context.master = master
+    master.metadata["RTU品质验收配置"] = profile
+    try:
+        with master.step("连接专用 104 下位机并完成总召",
+                         expected=f"{profile['master_host']}:{profile['master_port']}，CA={profile['common_address']}"):
+            run_steps(request, INITIAL_SESSION, context)
+        run_steps(request, OBSERVATIONS, context)
+    except Exception:
+        try:
+            _save_frames(master)
+        except Exception as exc:
+            master.metadata["RTU品质失败现场取证错误"] = str(exc)
+        raise
+    run_steps(request, (VERIFY_FRAMES,), context)

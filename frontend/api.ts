@@ -3,7 +3,7 @@ import type { BenchEvent } from './state';
 export interface ModbusEnvironmentFields { modbus_acquisition_timeout?: number }
 export interface Environment extends ModbusEnvironmentFields { name: string; app_path: string; driver_path: string; mode: 'fresh' | 'workspace'; workspace_path: string; baseline_path: string; timeout: number; close_app: boolean; slavesim_url: string; annotation_enabled: boolean; master104_enabled: boolean; master104_path: string; master104_timeout: number }
 export interface Master104Check { checking: boolean; message?: string; snapshot?: Record<string, unknown> }
-export interface FlowStep { id?: string; action: string; expected: string }
+export interface FlowStep { id?: string; action: string; expected: string; group?: string }
 export interface CaseInfo {
   id: string;
   name: string;

@@ -1,5 +1,6 @@
 """计划步骤中断后保留已执行状态，收尾仍独立记录。"""
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -47,3 +48,48 @@ def test_failed_step_preserves_conditional_and_cleanup_status(monkeypatch):
     assert [(event["plan_step_id"], event["status"]) for event in events if event["status"] != "running"] == [
         ("first", "passed"), ("optional", "skipped"), ("failure", "failed"), ("desktop.finish", "passed"),
     ]
+
+
+def test_recorded_failure_allows_following_step_but_preserves_failure(monkeypatch):
+    monkeypatch.setattr(plan, "emit", lambda _: None)
+
+    def fail(_context):
+        raise plan.ContinueAfterFailure("设备观测失败")
+
+    item = SimpleNamespace(nodeid="fleet")
+    context = SimpleNamespace(desktop=SimpleNamespace(_check_stop=lambda: None))
+    steps = (
+        plan.Step("device.1", "检查第一台", "点位匹配", fail),
+        plan.Step("device.2", "检查第二台", "点位匹配", lambda _: None),
+    )
+    with pytest.raises(plan.ContinueAfterFailure, match="设备观测失败"):
+        plan.run_steps(SimpleNamespace(node=item), steps, context)
+
+    assert item._bench_plan_steps == {"device.1": "failed", "device.2": "passed"}
+
+
+def test_fixture_cleanup_receives_original_exception(monkeypatch):
+    monkeypatch.setattr(plan, "emit", lambda _: None)
+    original = AssertionError("观察失败")
+    received = []
+
+    @plan.case_plan(plan.DESKTOP_START, plan.DESKTOP_FINISH)
+    def example():
+        pass
+
+    @contextmanager
+    def session():
+        try:
+            yield
+        except AssertionError as error:
+            received.append(error)
+            raise
+
+    item = SimpleNamespace(obj=example, nodeid="session")
+    with pytest.raises(AssertionError) as caught:
+        with plan.track_fixture_context(SimpleNamespace(node=item), plan.DESKTOP_START, plan.DESKTOP_FINISH, session()):
+            raise original
+
+    assert caught.value is original
+    assert received == [original]
+    assert item._bench_plan_steps == {"desktop.start": "passed", "desktop.finish": "passed"}

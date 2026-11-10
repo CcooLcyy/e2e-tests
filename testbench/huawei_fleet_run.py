@@ -11,6 +11,11 @@ from .huawei_fleet import (READ_POINTS, STATUS_VALUES, STATUS_WORD_VALUES, UNIMP
 
 LOGGER = logging.getLogger(__name__)
 STAGES = ("发电", "有功调节", "无功调节", "负无功调节", "待机", "限电停运", "恢复发电")
+DEVICE_EXPECTED = "18个采集点全部匹配，质量正常，工况符合固定目标"
+
+
+def device_step_title(stage, route, station):
+    return f"第{route}路站号{station}：{stage}双端匹配"
 
 
 class HuaweiFleetRun:
@@ -146,41 +151,41 @@ class HuaweiFleetRun:
                 LOGGER.exception("华为%s现场采集失败，保留原始业务结果", source)
         return shots
 
-    def run(self):
-        self.select_prepared_topology()
-        for stage in STAGES:
-            for bus in self.buses:
-                for device in bus["devices"]:
-                    title = f"第{bus['index']}路站号{device['station_id']}：{stage}双端匹配"
-                    last = None
-                    try:
-                        with self.desktop.step(title, expected="18个采集点全部匹配，质量正常，工况符合固定目标"):
-                            last = self.sample(stage, bus, device)
-                            prior_evidence_errors = len(self.evidence_errors)
-                            last["截图"] = self.capture_both(title)
-                            if len(self.evidence_errors) > prior_evidence_errors:
-                                last["工况错误"].extend("双端证据缺失：" + error for error in self.evidence_errors[prior_evidence_errors:])
-                                last["通过"] = False
-                            self.results.append(last)
-                            self.write_report()
-                            assert last["通过"], self.failure_description(last)
-                    except (InterruptedError, KeyboardInterrupt):
-                        self.write_report()
-                        raise
-                    except Exception as error:
-                        if last is None:
-                            last = {"工况": stage, "路号": bus["index"], "总线": bus["name"],
-                                    "站号": device["station_id"], "点位": [], "通过": False,
-                                    "工况错误": [f"操作或取数失败，未完成目标验收：{error}"],
-                                    "截图": self.capture_both(title + "失败现场")}
-                            self.results.append(last)
-                        elif last["通过"]:
-                            last["通过"] = False
-                            last["工况错误"].append(f"验收或报告处理失败：{error}")
-                        LOGGER.exception("华为设备验收失败，保留证据并继续其他设备：%s", title)
-                        if isinstance(error, OSError):
-                            raise
-                        self.write_report()
+    def observe_device(self, stage, bus, device):
+        """采集并记录单台工况，返回可继续观察其他设备的失败。"""
+        title = device_step_title(stage, bus["index"], device["station_id"])
+        last = None
+        try:
+            with self.desktop.step(title, expected=DEVICE_EXPECTED):
+                last = self.sample(stage, bus, device)
+                prior_evidence_errors = len(self.evidence_errors)
+                last["截图"] = self.capture_both(title)
+                if len(self.evidence_errors) > prior_evidence_errors:
+                    last["工况错误"].extend("双端证据缺失：" + error for error in self.evidence_errors[prior_evidence_errors:])
+                    last["通过"] = False
+                self.results.append(last)
+                self.write_report()
+                assert last["通过"], self.failure_description(last)
+        except (InterruptedError, KeyboardInterrupt):
+            self.write_report()
+            raise
+        except Exception as error:
+            if last is None:
+                last = {"工况": stage, "路号": bus["index"], "总线": bus["name"],
+                        "站号": device["station_id"], "点位": [], "通过": False,
+                        "工况错误": [f"操作或取数失败，未完成目标验收：{error}"],
+                        "截图": self.capture_both(title + "失败现场")}
+                self.results.append(last)
+            elif last["通过"]:
+                last["通过"] = False
+                last["工况错误"].append(f"验收或报告处理失败：{error}")
+            LOGGER.exception("华为设备验收失败，保留证据并继续其他设备：%s", title)
+            if isinstance(error, OSError):
+                raise
+            self.write_report()
+            return error
+
+    def assert_complete(self):
         failed = [item for item in self.results if not item["通过"]]
         expected_count = 21 * len(STAGES)
         if len(self.results) != expected_count or failed:
