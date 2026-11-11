@@ -211,6 +211,23 @@ class SlaveSimPage:
         element.send_keys(Keys.CONTROL, "a", Keys.NULL, Keys.BACKSPACE)
         element.send_keys(str(value), Keys.TAB)
 
+    def _select_register_option(self, register, label, value):
+        control = self._field(register, label)
+        options = [option.get_property("value") for option in Select(control).options]
+        if value not in options:
+            raise AssertionError(f"slaveSim 寄存器「{label}」缺少选项 {value!r}")
+        selected = control.get_property("selectedIndex")
+        if selected < 0:
+            raise AssertionError(f"slaveSim 寄存器「{label}」没有当前选项")
+        offset = options.index(value) - selected
+        if offset:
+            # 通过原生键盘选择触发配置草稿依赖的 input 事件。
+            arrow = Keys.ARROW_DOWN if offset > 0 else Keys.ARROW_UP
+            control.send_keys(arrow * abs(offset), Keys.TAB)
+        actual = control.get_property("value")
+        if actual != value:
+            raise AssertionError(f"slaveSim 寄存器「{label}」选择失败，预期 {value!r}，实际 {actual!r}")
+
     def _config_bus(self, name):
         return self._unique([node for node in self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")
                              if self._field(node, "总线名称").get_attribute("value") == name], "目标配置总线")
@@ -363,8 +380,8 @@ class SlaveSimPage:
             self._open(group)
             reg = self._unique(group.find_elements(By.CSS_SELECTOR, ":scope > details.register-editor"), "新增从站默认寄存器")
             self._open(reg)
-            Select(self._field(reg, "访问权限")).select_by_value("readwrite")
-            Select(self._field(reg, "数值来源")).select_by_value("manual")
+            self._select_register_option(reg, "访问权限", "readwrite")
+            self._select_register_option(reg, "数值来源", "manual")
 
     def prepare_basic(self, environment, *, station_count=2, check_paths=None):
         """清空现有总线并通过页面新建本例总线及手动点。"""
