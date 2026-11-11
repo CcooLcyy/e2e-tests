@@ -80,13 +80,15 @@ def pytest_collection_finish(session):
     if output:
         items = []
         for item in session.items:
-            description = (getattr(getattr(item, "obj", None), "__doc__", "") or "").strip()
+            function = getattr(item, "obj", None)
+            description = (getattr(function, "__doc__", "") or "").strip()
             name = description.splitlines()[0] if description else item.name
             if "[" in item.name:
                 name += " " + item.name[item.name.index("["):]
             flow = item.get_closest_marker("case_flow")
             executable_flow = _executable_flow(item)
             case = {"id": item.nodeid, "name": name, "description": description,
+                    "execution_logic": getattr(function, "_bench_execution_logic", ""),
                     "group": getattr(item, "_bench_group", "未分组"),
                     "opt_in": item.get_closest_marker("opt_in") is not None,
                     "requires_modbus": item.get_closest_marker("requires_modbus") is not None,

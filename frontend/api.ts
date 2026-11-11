@@ -8,6 +8,7 @@ export interface CaseInfo {
   id: string;
   name: string;
   description: string;
+  execution_logic?: string;
   group?: string;
   opt_in?: boolean;
   flow?: FlowStep[];

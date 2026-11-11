@@ -183,5 +183,20 @@
 .detail-progress progress::-webkit-progress-bar { background: #e8edf0; }
 .detail-progress progress::-webkit-progress-value { background: #219765; border-radius: 999px; }
 .detail-progress progress::-moz-progress-bar { background: #219765; border-radius: 999px; }
+
+.detail-panel .tabs {
+  column-gap: clamp(6px, 0.8vw, 20px);
+  padding-inline: 14px;
+  overflow-x: auto;
+}
+
+.case-logic {
+  display: grid;
+  gap: 8px;
+  color: #41516a;
+  font-size: 12px;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
 .history-flow { padding: 0 18px; }
 .history-flow h3 { margin-bottom: 8px; font-size: 12px; }

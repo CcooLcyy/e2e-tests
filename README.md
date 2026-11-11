@@ -105,15 +105,22 @@ RTU 到 104 品质用例在可用的专用环境中自行建立参照与目标 R
 
 ## 添加用例
 
-在 [用例仓库](https://github.com/CcooLcyy/e2e-test-cases) 的 `tests/` 中新增 `test_*.py`，编写 `test_` 开头的函数。函数第一行中文文档字符串会用作界面显示名，pytest 参数实例独立显示。用例和场景辅助代码提交到用例仓库，安装版从平台刷新。只有本体发版需要更新随附用例时，才更新这里的 `case-suite` 子模块指针。
+在用例仓库的 `tests/` 中新增 `test_*.py`，编写 `test_` 开头的函数。函数文档字符串用简短中文写明验证目标，作为用例标题。通过 `@execution_logic` 按实际顺序写明初始状态、关键操作、观察点和通过条件，显示在「执行详情 → 执行逻辑」。pytest 参数实例独立显示。用例和场景辅助代码提交到用例仓库，安装版从平台刷新。只有本体发版需要更新随附用例时，才更新这里的 `case-suite` 子模块指针。 [用例仓库](https://github.com/CcooLcyy/e2e-test-cases)
 
 登录类、启动与界面及 Modbus RTU 用例使用 `case_plan` 编排可执行步骤。执行器按清单运行，「执行详情 → 测试流程」逐项显示待执行、运行中和最终状态，历史详情保留本次步骤清单。协议用例复用公共登录流程。华为机群按工况列出每台设备的检查，点位明细和准备、清理的技术细节仍可在诊断资料中查看。
 
 其他用例使用 `@pytest.mark.case_flow(("操作一", "预期结果一"), ("操作二", "预期结果二"))` 声明计划流程。共用步骤可复用同一组元组，参数实例也可分别声明。用例当前缺少执行前置条件时，用 `blocked="缺失的前置条件"` 说明原因。实际执行结果以用例记录为准。
 
 ```python
+from case_support.case_metadata import execution_logic
+
+
+@execution_logic("""
+    1. 通过桌面测试夹具打开 DSP 上位机。
+    2. 读取当前窗口标题，确认标题为 MskDSP Upper，并保存界面截图。
+""")
 def test_expected_output(desktop):
-    """外部输入变化后上位机显示预期输出。"""
+    """工作台窗口标题"""
     with desktop.step("检查结果"):
         actual = desktop.driver.title
         desktop.check("窗口标题", actual, "MskDSP Upper")
