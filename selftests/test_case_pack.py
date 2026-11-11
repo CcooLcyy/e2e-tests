@@ -169,8 +169,9 @@ def test_downloaded_case_pack_directory_inherits_windows_access_rules(bridge):
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", """
 $ErrorActionPreference = 'Stop'
 $directory = $env:TESTBENCH_ACL_PROBE_DIRECTORY
-$acl = Get-Acl -LiteralPath $directory
-if ($acl.AreAccessRulesProtected -or -not ($acl.Access | Where-Object IsInherited)) {
+$acl = [System.IO.Directory]::GetAccessControl($directory, [System.Security.AccessControl.AccessControlSections]::Access)
+$inherited = $acl.GetAccessRules($false, $true, [System.Security.Principal.SecurityIdentifier])
+if ($acl.AreAccessRulesProtected -or $inherited.Count -eq 0) {
     throw '用例缓存目录缺少从父目录继承的访问规则'
 }
 """],
