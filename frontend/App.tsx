@@ -390,6 +390,10 @@ export default function App() {
     else setExpandedGroups(new Set(open?groups.map(item=>item.name):[]));
     console.info(open?'展开全部用例组':'折叠全部用例组');
   }
+  function showCaseFlow(caseId: string) {
+    setFocused(caseId);
+    setTab('flow');
+  }
   function chooseCases(ids: string[], checked: boolean) { setSelected(old=>toggleCases(old,ids,checked)); console.info('批量选择用例：', ids.length, checked ? '选中' : '取消'); }
 
   return <div className="app-shell">
@@ -447,7 +451,24 @@ export default function App() {
                   </button>
                 </div>
                 <div id={contentId} hidden={!section.open} data-testid="case-group-content">
-                  {section.open&&section.cases.map(item=><div key={item.id} role="button" tabIndex={0} data-testid="case-row" data-case-id={item.id} data-status={records[item.id]?.status||'pending'} className={`case-row ${focused===item.id?'focused':''}`} onClick={()=>setFocused(item.id)} onKeyDown={e=>{if(e.key==='Enter')setFocused(item.id);}}><label onClick={e=>e.stopPropagation()}><input aria-label={`选择${item.name}`} type="checkbox" disabled={disabled} checked={selected.has(item.id)} onChange={e=>chooseCases([item.id],e.target.checked)}/></label><div className="case-name"><span className="case-number">{String(cases.findIndex(entry=>entry.id===item.id)+1).padStart(2,'0')}</span><span><strong>{item.name.replace(/。$/,'')}</strong><small>{item.description===item.name?'桌面端功能验证':item.description}</small></span></div><Status status={records[item.id]?.status||'pending'}/><span className="elapsed">{duration(records[item.id]?.duration)}</span></div>)}
+                  {section.open && section.cases.map(item => (
+                    <div key={item.id} role="button" tabIndex={0} data-testid="case-row" data-case-id={item.id}
+                      data-status={records[item.id]?.status || 'pending'} className={`case-row ${focused === item.id ? 'focused' : ''}`}
+                      onClick={() => showCaseFlow(item.id)} onKeyDown={event => {
+                        if (event.key === 'Enter' && event.target === event.currentTarget) showCaseFlow(item.id);
+                      }}>
+                      <label onClick={event => event.stopPropagation()}>
+                        <input aria-label={`选择${item.name}`} type="checkbox" disabled={disabled}
+                          checked={selected.has(item.id)} onChange={event => chooseCases([item.id], event.target.checked)}/>
+                      </label>
+                      <div className="case-name">
+                        <span className="case-number">{String(cases.findIndex(entry => entry.id === item.id) + 1).padStart(2, '0')}</span>
+                        <span><strong>{item.name.replace(/。$/, '')}</strong><small>{item.description === item.name ? '桌面端功能验证' : item.description}</small></span>
+                      </div>
+                      <Status status={records[item.id]?.status || 'pending'}/>
+                      <span className="elapsed">{duration(records[item.id]?.duration)}</span>
+                    </div>
+                  ))}
                 </div>
               </section>;})}
               {!visible.length&&<div className="empty"><ListChecks size={30}/><strong>{search?'没有匹配的用例':'暂无测试用例'}</strong><span>{search?'尝试其他关键词':'在 tests 目录添加 Python 用例，然后点击刷新。'}</span></div>}</div>
