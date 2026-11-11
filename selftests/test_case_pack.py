@@ -1,7 +1,10 @@
 """案例包激活、前置条件和失败保留的 runner 回归。"""
 import hashlib
 import json
+import os
 import stat
+import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -134,3 +137,44 @@ def test_bootstrap_recovers_when_cached_pack_can_no_longer_collect(bridge, monke
     assert [case["id"] for case in bootstrap["cases"]] == ["tests/test_baseline.py::test_baseline"]
     assert restarted.handle("case_pack_status") == bootstrap["case_pack"]
     assert restarted.handle("activate_case_pack", payload)["case_pack"]["source"] == "downloaded"
+
+
+def test_old_cache_layout_is_replaced_when_same_package_is_downloaded_again(bridge, monkeypatch):
+    files = suite_files("1.2.4", "candidate", "def test_candidate(): pass\n")
+    payload = make_archive(bridge.data_root, files)
+    activated = bridge.handle("activate_case_pack", payload)
+    store = bridge.controller.case_store
+    old_root = store.current().root
+    old_pointer = json.loads(store.pointer.read_text(encoding="utf-8"))
+    old_pointer.pop("layout_version")
+    store.pointer.write_text(json.dumps(old_pointer), encoding="utf-8")
+
+    restarted = TestbenchBridge(bridge.root, bridge.data_root)
+    monkeypatch.setattr(restarted, "_installed_webview", lambda: (None, None))
+    bootstrap = restarted.handle("bootstrap")
+    assert bootstrap["case_pack"]["source"] == "bundled"
+    assert bootstrap["case_pack_warning"]
+    assert restarted.handle("activate_case_pack", payload) == activated
+    assert restarted.controller.case_store.current().root != old_root
+    assert old_root.is_dir()
+    assert TestbenchBridge(bridge.root, bridge.data_root).handle("case_pack_status") == activated["case_pack"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="验证 Windows 用例缓存目录权限继承")
+def test_downloaded_case_pack_directory_inherits_windows_access_rules(bridge):
+    files = suite_files("1.2.4", "candidate", "def test_candidate(): pass\n")
+    bridge.handle("activate_case_pack", make_archive(bridge.data_root, files))
+    pack_root = bridge.controller.case_store.current().root
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", """
+$ErrorActionPreference = 'Stop'
+$directory = $env:TESTBENCH_ACL_PROBE_DIRECTORY
+$acl = Get-Acl -LiteralPath $directory
+if ($acl.AreAccessRulesProtected -or -not ($acl.Access | Where-Object IsInherited)) {
+    throw '用例缓存目录缺少从父目录继承的访问规则'
+}
+"""],
+        env=dict(os.environ, TESTBENCH_ACL_PROBE_DIRECTORY=str(pack_root)),
+        capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr

@@ -18,6 +18,7 @@ from .workspace import _is_plain
 
 
 RUNNER_API = 1
+CACHE_LAYOUT_VERSION = 2
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 256 * 1024 * 1024
 MAX_MEMBER_BYTES = 16 * 1024 * 1024
@@ -175,6 +176,8 @@ class CasePackStore:
         if not _is_plain(self.area, self.area.is_dir):
             raise ValueError("用例包缓存目录不能是链接")
         pointer = _read_object(self.pointer)
+        if pointer.get("layout_version") != CACHE_LAYOUT_VERSION:
+            raise ValueError("旧版用例缓存需要重新下载并启用")
         name, digest = pointer.get("directory"), pointer.get("sha256")
         if not _matches(PACK_DIRECTORY, name) or not _matches(ARCHIVE_SHA, digest) or not name.startswith(digest + "-"):
             raise ValueError("当前用例包记录无效")
@@ -215,30 +218,41 @@ class CasePackStore:
         self.area.mkdir(exist_ok=True)
         if not _is_plain(self.area, self.area.is_dir):
             raise ValueError("用例包缓存目录不能是链接")
-        with tempfile.TemporaryDirectory(prefix=".pending-", dir=self.area) as temporary:
-            staging = Path(temporary)
-            extracted = staging / "suite"
-            extracted.mkdir()
-            _extract_archive(source, digest, extracted)
-            if _read_manifest(extracted) != (version, source_sha):
+        # 在最终位置建立候选目录，让 Windows 测试进程继承用户数据目录的访问权限。
+        # 收集通过前，当前启用记录仍然指向上一份用例。
+        target = self.area / (digest + "-" + uuid.uuid4().hex[:8])
+        target.mkdir()
+        selected = CasePack(target, "downloaded", version, source_sha, digest)
+        pending = None
+        try:
+            _extract_archive(source, digest, target)
+            if _read_manifest(target) != (version, source_sha):
                 raise ValueError("用例包清单与已验证的版本信息不一致")
-            target = self.area / (digest + "-" + uuid.uuid4().hex[:8])
-            selected = CasePack(target, "downloaded", version, source_sha, digest)
-            pending = staging / self.pointer.name
-            pending.write_text(json.dumps({**selected.status(), "directory": target.name}), encoding="utf-8")
-            extracted.rename(target)
+            cases = discover(target)
+            if not cases:
+                raise ValueError("用例包未收集到可执行用例")
+            if any(not case.id.startswith("tests/") for case in cases):
+                raise ValueError("用例包收集结果必须来自 tests 目录")
+            record = {**selected.status(), "directory": target.name, "layout_version": CACHE_LAYOUT_VERSION}
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", prefix=".active-", suffix=".json", dir=self.area, delete=False,
+            ) as stream:
+                pending = Path(stream.name)
+                json.dump(record, stream)
+            pending.replace(self.pointer)
+        except Exception:
+            if pending is not None:
+                try:
+                    pending.unlink(missing_ok=True)
+                except OSError as error:
+                    logging.getLogger(__name__).warning("清理未启用的用例包记录失败：%s", error)
             try:
-                cases = discover(target)
-                if not cases:
-                    raise ValueError("用例包未收集到可执行用例")
-                if any(not case.id.startswith("tests/") for case in cases):
-                    raise ValueError("用例包收集结果必须来自 tests 目录")
-                pending.replace(self.pointer)
-            except Exception:
                 shutil.rmtree(target)
-                raise
-            self._selected = selected
-            self._download_loaded = True
-            self.warning = ""
+            except OSError as error:
+                logging.getLogger(__name__).warning("清理未启用的用例包目录失败：%s", error)
+            raise
+        self._selected = selected
+        self._download_loaded = True
+        self.warning = ""
         logging.getLogger(__name__).info("已启用用例包 %s，源码提交 %s，共 %s 项用例", version, source_sha, len(cases))
         return selected, cases
