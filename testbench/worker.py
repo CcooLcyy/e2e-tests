@@ -16,9 +16,12 @@ def main():
     task_path = Path(parser.parse_args().task).resolve()
     task = json.loads(task_path.read_text(encoding="utf-8"))
     run = task_path.parent
+    case_root = task.get("case_root", task["root"])
+    sys.path.insert(1, case_root)
     os.environ.update(TESTBENCH_EVENTS=str(run / "events.jsonl"), TESTBENCH_STOP=str(run / "stop"),
                       TESTBENCH_SUMMARY=str(run / "summary.json"), TESTBENCH_TASK=str(task_path),
                       TESTBENCH_DATA_ROOT=task.get("data_root", task["root"]), PYTHONUTF8="1")
+    from testbench.catalog import pytest_root_options
     from testbench.events import emit
     from testbench.reporting import write_task_report
     status, code = "failed", 1
@@ -32,9 +35,9 @@ def main():
         (run / "worker.json").write_text(json.dumps({"pid": os.getpid(), **privileges}), encoding="utf-8")
         emit({"type": "task_started", "run_dir": str(run)})
         import pytest
-        os.chdir(task["root"])
+        os.chdir(case_root)
         env = task["environment"]
-        code = int(pytest.main([*task["case_ids"], "--rootdir", task["root"], "-q", "-s", "-p", "testbench.pytest_plugin",
+        code = int(pytest.main([*task["case_ids"], *pytest_root_options(case_root), "-q", "-s", "-p", "testbench.pytest_plugin",
                                "-o", f"cache_dir={run / 'pytest-cache'}", "--junitxml", str(run / "junit.xml"),
                                "--app-path", env["app_path"], "--driver-path", env["driver_path"],
                                "--artifacts-dir", str(run), "--ui-timeout", str(env["timeout"])]))
@@ -52,6 +55,8 @@ def main():
         summary.update(status=status, exit_code=code, run_dir=str(run), environment_name=task["environment"]["name"],
                        started_at=task.get("started_at", ""),
                        ended_at=datetime.now().astimezone().isoformat(timespec="seconds"))
+        if "case_pack" in task:
+            summary["case_pack"] = task["case_pack"]
         summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         write_task_report(run, summary, task)
         print("[报告] 已保存任务业务报告与完整诊断资料", flush=True)

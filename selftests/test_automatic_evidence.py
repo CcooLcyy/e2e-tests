@@ -240,7 +240,7 @@ def test_pytest_creates_every_report_and_captures_before_fixture_cleanup(tmp_pat
     # 子进程只收集本自测的临时用例，不能继承工作机配置或扫描其他并行任务的临时目录。
     configuration = suite / "pytest.ini"
     configuration.write_text("[pytest]\n", encoding="utf-8")
-    conftest = (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
+    conftest = (ROOT / "case-suite" / "tests" / "conftest.py").read_text(encoding="utf-8")
     conftest += '''
 @pytest.fixture(autouse=True)
 def simulated_desktop(monkeypatch):

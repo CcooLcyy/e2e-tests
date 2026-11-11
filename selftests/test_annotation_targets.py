@@ -81,7 +81,7 @@ def test_workspace_and_logout_mark_their_own_current_controls():
 
 def test_wrong_password_business_case_declares_error_target_without_changing_assertions():
     """特殊错误提示等待、语义检查及补充截图显式声明目标，继续使用既有认证断言。"""
-    source = Path(__file__).resolve().parents[1] / "tests" / "test_wrong_password.py"
+    source = Path(__file__).resolve().parents[1] / "case-suite" / "tests" / "test_wrong_password.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     calls = {node.args[0].value: node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -95,7 +95,7 @@ def test_wrong_password_business_case_declares_error_target_without_changing_ass
 
 def test_empty_login_declares_targets_for_operations_and_business_evidence():
     """空表单初始值、提交、必填提示和现场截图都提供截图目标。"""
-    source = Path(__file__).resolve().parents[1] / "tests" / "test_login_validation.py"
+    source = Path(__file__).resolve().parents[1] / "case-suite" / "tests" / "test_login_validation.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     calls = {node.args[0].value: node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -116,7 +116,7 @@ def test_empty_login_declares_targets_for_operations_and_business_evidence():
 
 def test_successful_login_plan_annotates_shared_operations_and_business_evidence():
     """成功登录用例复用的动作和该用例的工作台截图都标注对应控件。"""
-    source = Path(__file__).resolve().parents[1] / "tests" / "test_login_success.py"
+    source = Path(__file__).resolve().parents[1] / "case-suite" / "tests" / "test_login_success.py"
     spec = importlib.util.spec_from_file_location("successful_login_case", source)
     case = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(case)

@@ -1,4 +1,5 @@
 mod catalog;
+pub(crate) mod cases;
 
 use crate::shell::ShellState;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -134,31 +135,46 @@ impl Candidate {
     }
 }
 
-fn channel_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn channel_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
-        .map(|path| path.join("local/update-channel"))
+        .map(|path| path.join("local").join(name))
         .map_err(|e| format!("无法访问更新通道配置目录：{e}"))
 }
 
-fn selected_channel(app: &AppHandle) -> UpdateChannel {
+fn selected_channel(app: &AppHandle, name: &str) -> UpdateChannel {
     if !app.state::<ShellState>().installed {
         return UpdateChannel::Stable;
     }
-    channel_path(app)
+    channel_path(app, name)
         .ok()
         .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|value| UpdateChannel::parse(value.trim()).ok())
         .unwrap_or_default()
 }
 
-fn update_config(app: &AppHandle) -> Option<(Endpoint, &str)> {
+fn save_channel(app: &AppHandle, name: &str, channel: UpdateChannel) -> Result<(), String> {
+    let path = channel_path(app, name)?;
+    let dir = path.parent().ok_or("无法定位更新通道配置目录")?;
+    let save = || -> std::io::Result<()> {
+        fs::create_dir_all(dir)?;
+        let mut file = NamedTempFile::new_in(dir)?;
+        file.write_all(channel.as_str().as_bytes())?;
+        file.persist(&path)?;
+        Ok(())
+    };
+    save().map_err(|e| format!("保存更新通道失败：{e}"))
+}
+
+const APP_CHANNEL_FILE: &str = "update-channel";
+
+fn platform_config<'a>(app: &'a AppHandle, plugin: &str) -> Option<(Endpoint, &'a str)> {
     if !cfg!(all(target_os = "windows", target_arch = "x86_64"))
         || !app.state::<ShellState>().installed
     {
         return None;
     }
-    let config = app.config().plugins.0.get("testbenchUpdate")?;
+    let config = app.config().plugins.0.get(plugin)?;
     let value = config.get("endpoint")?.as_str()?;
     let authority_text = value.strip_prefix("http://")?;
     let authority = authority_text.parse::<Authority>().ok()?;
@@ -174,13 +190,17 @@ fn update_config(app: &AppHandle) -> Option<(Endpoint, &str)> {
     (!key.is_empty()).then_some((endpoint, key))
 }
 
+fn update_config(app: &AppHandle) -> Option<(Endpoint, &str)> {
+    platform_config(app, "testbenchUpdate")
+}
+
 #[tauri::command]
 pub(crate) fn update_info(app: AppHandle) -> Value {
     json!({
         "version": app.package_info().version.to_string(),
         "installed": app.state::<ShellState>().installed,
         "enabled": update_config(&app).is_some(),
-        "channel": selected_channel(&app).as_str(),
+        "channel": selected_channel(&app, APP_CHANNEL_FILE).as_str(),
     })
 }
 
@@ -193,16 +213,7 @@ pub(crate) fn set_update_channel(app: AppHandle, channel: String) -> Result<(), 
         .available
         .try_lock()
         .map_err(|_| "更新操作正在进行")?;
-    let path = channel_path(&app)?;
-    let dir = path.parent().ok_or("无法定位更新通道配置目录")?;
-    let save = || -> std::io::Result<()> {
-        fs::create_dir_all(dir)?;
-        let mut file = NamedTempFile::new_in(dir)?;
-        file.write_all(channel.as_str().as_bytes())?;
-        file.persist(&path)?;
-        Ok(())
-    };
-    save().map_err(|e| format!("保存更新通道失败：{e}"))?;
+    save_channel(&app, APP_CHANNEL_FILE, channel)?;
     *pending = None;
     Ok(())
 }
@@ -215,9 +226,9 @@ pub(crate) async fn check_update(app: AppHandle) -> Result<Option<Value>, String
         .available
         .try_lock()
         .map_err(|_| "更新操作正在进行")?;
-    let channel = selected_channel(&app);
+    let channel = selected_channel(&app, APP_CHANNEL_FILE);
     let mut catalog = Catalog::connect(endpoint).await?;
-    let mut packages = catalog.list(channel.as_str()).await?;
+    let mut packages = catalog.list(PRODUCT, channel.as_str(), PLATFORM).await?;
     // 每个通道由平台指向唯一的当前包。
     if packages.len() > 1 {
         return Err(format!("平台返回了多个 {} 更新包", channel.label()));
@@ -259,13 +270,21 @@ pub(crate) async fn download_update(app: AppHandle, id: String) -> Result<bool, 
         }
         update.candidate.clone()
     };
-    let key = decode_base64(key)
-        .and_then(|key| PublicKey::decode(&key).ok())
-        .ok_or("平台更新公钥格式不合法")?;
+    let key = decode_public_key(key)?;
     let mut catalog = Catalog::connect(endpoint).await?;
-    let installer = timeout(DOWNLOAD_TIMEOUT, download(&mut catalog, &candidate, &key))
-        .await
-        .map_err(|_| "平台更新下载超过总时限")??;
+    let temporary = Builder::new()
+        .prefix("mskdsp-testbench-update-")
+        .suffix("-setup.exe")
+        .tempfile()
+        .map_err(|e| format!("创建临时安装包失败：{e}"))?;
+    let (installer, signature) = download_verified_package(
+        &mut catalog, &candidate.id, &candidate.metadata, &key, temporary,
+    )
+    .await?;
+    let suffix = format!("_{}_x64-setup.exe", candidate.metadata.version);
+    verify_signed_identity(&signature, &candidate.metadata.version, |name| {
+        name.ends_with(&suffix)
+    })?;
     let mut pending = state.available.lock().await;
     let Some(update) = pending
         .as_mut()
@@ -285,7 +304,7 @@ pub(crate) async fn install_update(app: AppHandle, id: String) -> Result<bool, S
         .available
         .try_lock()
         .map_err(|_| "更新操作正在进行")?;
-    let channel = selected_channel(&app);
+    let channel = selected_channel(&app, APP_CHANNEL_FILE);
     let update = pending
         .as_mut()
         .filter(|update| update.candidate.channel == channel && update.candidate.id == id)
@@ -365,12 +384,31 @@ fn decode_base64(value: &str) -> Option<String> {
     String::from_utf8(STANDARD.decode(value.trim()).ok()?).ok()
 }
 
-async fn download(
+fn decode_public_key(key: &str) -> Result<PublicKey, String> {
+    decode_base64(key)
+        .and_then(|key| PublicKey::decode(&key).ok())
+        .ok_or_else(|| "平台更新公钥格式不合法".into())
+}
+
+async fn download_verified_package(
     catalog: &mut Catalog,
-    candidate: &Candidate,
+    id: &str,
+    metadata: &PackageMetadata,
     key: &PublicKey,
-) -> Result<TempPath, String> {
-    let metadata = &candidate.metadata;
+    temporary: NamedTempFile,
+) -> Result<(TempPath, Signature), String> {
+    timeout(DOWNLOAD_TIMEOUT, stream_verified_package(catalog, id, metadata, key, temporary))
+        .await
+        .map_err(|_| "平台更新下载超过总时限")?
+}
+
+async fn stream_verified_package(
+    catalog: &mut Catalog,
+    id: &str,
+    metadata: &PackageMetadata,
+    key: &PublicKey,
+    temporary: NamedTempFile,
+) -> Result<(TempPath, Signature), String> {
     let signature = decode_base64(&metadata.signature)
         .and_then(|signature| Signature::decode(&signature).ok())
         .ok_or("平台更新包签名格式不合法")?;
@@ -378,15 +416,10 @@ async fn download(
         .verify_stream(&signature)
         .map_err(|_| "平台更新包的签名算法或公钥不匹配")?;
 
-    let mut stream = timeout(STREAM_IDLE_TIMEOUT, catalog.download(candidate.id.clone()))
+    let mut stream = timeout(STREAM_IDLE_TIMEOUT, catalog.download(id.to_owned()))
         .await
         .map_err(|_| "平台更新数据流响应超时")??;
-    let (file, path) = Builder::new()
-        .prefix("mskdsp-testbench-update-")
-        .suffix("-setup.exe")
-        .tempfile()
-        .map_err(|e| format!("创建临时安装包失败：{e}"))?
-        .into_parts();
+    let (file, path) = temporary.into_parts();
     let mut file = File::from_std(file);
     let mut sha256 = Sha256::new();
     let mut offset = 0;
@@ -410,7 +443,7 @@ async fn download(
         }
         file.write_all(&chunk.data)
             .await
-            .map_err(|e| format!("写入临时安装包失败：{e}"))?;
+            .map_err(|e| format!("写入临时更新包失败：{e}"))?;
         sha256.update(&chunk.data);
         verifier.update(&chunk.data);
         offset = end;
@@ -422,14 +455,17 @@ async fn download(
     verifier
         .finalize()
         .map_err(|_| "平台更新包的 Tauri 签名校验失败")?;
-    verify_signed_identity(&signature, &metadata.version)?;
     file.flush()
         .await
-        .map_err(|e| format!("保存临时安装包失败：{e}"))?;
-    Ok(path)
+        .map_err(|e| format!("保存临时更新包失败：{e}"))?;
+    Ok((path, signature))
 }
 
-fn verify_signed_identity(signature: &Signature, version: &str) -> Result<(), String> {
+fn verify_signed_identity(
+    signature: &Signature,
+    version: &str,
+    accepts_filename: impl FnOnce(&str) -> bool,
+) -> Result<(), String> {
     let comment = signature.trusted_comment();
     let mut versions = comment
         .split('\t')
@@ -437,13 +473,12 @@ fn verify_signed_identity(signature: &Signature, version: &str) -> Result<(), St
     let mut filenames = comment
         .split('\t')
         .filter_map(|field| field.strip_prefix("file:"));
-    let suffix = format!("_{version}_x64-setup.exe");
     if versions.next() != Some(version)
         || versions.next().is_some()
-        || !filenames.next().is_some_and(|name| name.ends_with(&suffix))
+        || !filenames.next().is_some_and(accepts_filename)
         || filenames.next().is_some()
     {
-        return Err("平台更新签名中的安装包身份或版本与目录不一致".into());
+        return Err("平台更新签名中的文件名或版本与目录不一致".into());
     }
     Ok(())
 }

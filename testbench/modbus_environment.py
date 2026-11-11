@@ -17,9 +17,13 @@ RTU_OBSERVATION_CASE_IDS = BASIC_CASE_IDS | {HUAWEI_CASE_ID, RTU_104_QUALITY_CAS
 
 
 def validate_selected_modbus_cases(environment, case_ids):
-    """任务启动前仅校验外部观察入口及等待时间。"""
-    if not RTU_OBSERVATION_CASE_IDS.intersection(case_ids):
-        return
+    """按旧版用例标识校验 RTU 前置条件。"""
+    if RTU_OBSERVATION_CASE_IDS.intersection(case_ids):
+        validate_modbus_observation(environment)
+
+
+def validate_modbus_observation(environment):
+    """任务启动前校验 RTU 观察入口及采集等待时间。"""
     # 延迟导入避免环境模型与构造器之间形成循环依赖。
     from .model import validate_slavesim_url
     try:

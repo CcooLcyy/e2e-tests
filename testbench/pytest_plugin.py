@@ -35,6 +35,7 @@ def pytest_configure(config):
         config.addinivalue_line("markers", "case_group(name): 声明用例所属的一级功能分组")
     config.addinivalue_line("markers", "opt_in: 此用例需要在界面中单独勾选")
     config.addinivalue_line("markers", "case_flow(*steps, blocked=''): 声明测试流程的操作和预期结果")
+    config.addinivalue_line("markers", "requires_modbus: 运行前校验 slaveSim 地址及 RTU 采集等待时间")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -88,6 +89,7 @@ def pytest_collection_finish(session):
             case = {"id": item.nodeid, "name": name, "description": description,
                     "group": getattr(item, "_bench_group", "未分组"),
                     "opt_in": item.get_closest_marker("opt_in") is not None,
+                    "requires_modbus": item.get_closest_marker("requires_modbus") is not None,
                     "flow": [{"action": action, "expected": expected} for action, expected in flow.args] if flow else [],
                     "flow_blocked": flow.kwargs.get("blocked", "") if flow else ""}
             if executable_flow is not None:

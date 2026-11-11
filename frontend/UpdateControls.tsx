@@ -2,19 +2,26 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowDownToLine, Settings, X } from 'lucide-react';
 import { call, choose, desktop } from './api';
+import type { CasePackStatus, UpdateChannel } from './api';
 
-type UpdateChannel = 'stable' | 'ci';
 type UpdateInfo = { version: string; installed: boolean; enabled: boolean; channel: UpdateChannel };
+type CasePackUpdateInfo = { enabled: boolean; channel: UpdateChannel };
 type Candidate = { id: string; version: string; notes: string | null; ready: boolean; downloadError?: string };
 const channelLabels = { stable: 'Stable', ci: 'CI' };
+const casePackSources = { downloaded: '平台下载', bundled: '安装包内置', checkout: '源码', legacy: '安装包内置' };
 const updateCheckInterval = 60 * 1000;
 
-export function UpdateControls({ locked, onMaintenance, onImport }: {
+export function UpdateControls({ locked, onMaintenance, onImport, casePack, casePackWorking }: {
   locked: boolean;
   onMaintenance: (active: boolean) => void;
   onImport: () => Promise<void>;
+  casePack?: CasePackStatus;
+  casePackWorking: boolean;
 }) {
   const [info, setInfo] = useState<UpdateInfo>();
+  const [casePackInfo, setCasePackInfo] = useState<CasePackUpdateInfo>();
+  const [savingCasePackChannel, setSavingCasePackChannel] = useState(false);
+  const [casePackSettingsStatus, setCasePackSettingsStatus] = useState('');
   const [candidate, setCandidate] = useState<Candidate | null>(null);
   const [open, setOpen] = useState(false);
   const [operation, setOperation] = useState('');
@@ -29,8 +36,12 @@ export function UpdateControls({ locked, onMaintenance, onImport }: {
   const enabled = info?.installed && info.enabled;
 
   useEffect(() => {
-    if (desktop) void invoke<UpdateInfo>('update_info').then(setInfo).catch(error => {
+    if (!desktop) return;
+    void invoke<UpdateInfo>('update_info').then(setInfo).catch(error => {
       console.error('读取测试上位机版本失败', error);
+    });
+    void invoke<CasePackUpdateInfo>('case_pack_update_info').then(setCasePackInfo).catch(error => {
+      console.error('读取用例包更新频道失败', error);
     });
   }, []);
 
@@ -97,6 +108,22 @@ export function UpdateControls({ locked, onMaintenance, onImport }: {
     } finally {
       updating.current = false;
       setOperation('');
+    }
+  }
+
+  async function selectCasePackChannel(channel: string) {
+    if (!casePackInfo?.enabled || casePackWorking || savingCasePackChannel ||
+      (channel !== 'stable' && channel !== 'ci') || channel === casePackInfo.channel) return;
+    setSavingCasePackChannel(true);
+    setCasePackSettingsStatus('');
+    try {
+      await invoke('set_case_pack_update_channel', { channel });
+      setCasePackInfo({ ...casePackInfo, channel });
+      setCasePackSettingsStatus(`已选择 ${channelLabels[channel]}。点击「刷新用例」检查该频道。`);
+    } catch (error) {
+      setCasePackSettingsStatus(String(error));
+    } finally {
+      setSavingCasePackChannel(false);
     }
   }
 
@@ -169,7 +196,7 @@ export function UpdateControls({ locked, onMaintenance, onImport }: {
       <p>当前版本 v{info.version}{!info.installed && ' · 开发版'}</p>
       {info.installed && <>
         <label className="field">
-          <span>更新频道</span>
+          <span>程序更新频道</span>
           <select value={info.channel} disabled={!enabled || !!operation}
             onChange={event => void selectChannel(event.currentTarget.value)}>
             <option value="stable">Stable（正式版）</option>
@@ -192,6 +219,17 @@ export function UpdateControls({ locked, onMaintenance, onImport }: {
         </div>
         {!enabled && <p>当前版本未配置平台更新。</p>}
         {(operation || settingsStatus) && <p role="status">{operation || settingsStatus}</p>}
+        {casePack && <p>当前用例包{casePack.version && ` v${casePack.version}`} · {casePackSources[casePack.source]}</p>}
+        {casePackInfo && <label className="field">
+          <span>用例包更新频道</span>
+          <select value={casePackInfo.channel} disabled={!casePackInfo.enabled || locked || casePackWorking || savingCasePackChannel}
+            onChange={event => void selectCasePackChannel(event.currentTarget.value)}>
+            <option value="stable">Stable（正式用例包）</option>
+            <option value="ci">CI（持续集成用例包）</option>
+          </select>
+        </label>}
+        {casePackInfo && !casePackInfo.enabled && <p>当前版本未配置平台用例更新。</p>}
+        {casePackSettingsStatus && <p role="status">{casePackSettingsStatus}</p>}
       </>}
     </dialog>
   </div>;

@@ -1,7 +1,7 @@
 """华为行为页面的拓扑、原始值和会话边界，不启动浏览器。"""
 import pytest
 
-from testbench.huawei_slavesim_page import HuaweiSlaveSimPage, decode_register, validate_fleet
+from case_support.huawei_slavesim_page import HuaweiSlaveSimPage, decode_register, validate_fleet
 
 
 def fleet():

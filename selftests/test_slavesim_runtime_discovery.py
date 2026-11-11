@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from testbench.slavesim_runtime import basic_candidate, fleet_candidates, validate_fleet_capacity, validate_topology
-from testbench.slavesim_page import SlaveSimPage
-from testbench.huawei_slavesim_page import HuaweiSlaveSimPage
-from testbench.huawei_fleet import HuaweiFleetConfig, build_fleet
+from case_support.slavesim_runtime import basic_candidate, fleet_candidates, validate_fleet_capacity, validate_topology
+from case_support.slavesim_page import SlaveSimPage
+from case_support.huawei_slavesim_page import HuaweiSlaveSimPage
+from case_support.huawei_fleet import HuaweiFleetConfig, build_fleet
 
 
 def manual(station, address):

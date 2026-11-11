@@ -82,7 +82,8 @@ def import_workspace(source, destination):
     destination = Path(destination).resolve()
     if (source.is_relative_to(destination) or destination.is_relative_to(source)
             or not (source / "testbench" / "bridge.py").is_file()
-            or not (source / "tests" / "case-order.json").is_file()):
+            or not any((source / relative).is_file() for relative in
+                       ("tests/case-order.json", "case-suite/tests/case-order.json"))):
         raise ValueError("请选择旧测试上位机源代码目录")
     destination.mkdir(parents=True, exist_ok=True)
     source_local = source / "local"

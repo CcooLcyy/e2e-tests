@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, Clock3, FileText, FolderOpen, History as HistoryIcon, Layers3, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
 import { call, choose, desktop, openArtifact } from './api';
-import type { Bootstrap, CaseInfo, Detail, Environment, History, Master104Check, Poll } from './api';
+import type { Bootstrap, CaseInfo, CasePackActivation, CasePackStatus, Detail, Environment, History, Master104Check, Poll, PreparedCasePack } from './api';
 import { applyEvents, counts, initialRecords, labels, planProgress } from './state';
 import type { BenchEvent, CaseRecord } from './state';
 import { BusinessCaseDetails } from './BusinessCaseDetails';
@@ -13,6 +14,7 @@ import { withModbusDefaults } from './modbus-environment';
 import { caseGroup, summarizeGroups, visibleCases, toggleCases, selectionState, selectedCaseIds, reconcileSelection, groupedSections, toggleExpandedGroup } from './case-groups';
 
 type Page = 'execution' | 'environment' | 'history';
+type ReadyCasePack = Extract<PreparedCasePack, { status: 'ready' }>;
 const environmentSections = [
   ['environment-basics','基础信息','程序与驱动'],
   ['environment-isolation','运行与隔离','工作区与等待时间'],
@@ -45,6 +47,11 @@ export default function App() {
   const [environment,setEnvironment] = useState<Environment>(emptyEnvironment);
   const [privateWebViewVersion,setPrivateWebViewVersion] = useState('');
   const [cases,setCases] = useState<CaseInfo[]>([]);
+  const [installed,setInstalled] = useState(false);
+  const [casePack,setCasePack] = useState<CasePackStatus>();
+  const [pendingCasePack,setPendingCasePack] = useState<ReadyCasePack>();
+  const [casePackWorking,setCasePackWorking] = useState(false);
+  const [casePackMessage,setCasePackMessage] = useState('');
   const [history,setHistory] = useState<History[]>([]);
   const [records,setRecords] = useState<Record<string,CaseRecord>>({});
   const [selected,setSelected] = useState<Set<string>>(new Set());
@@ -69,12 +76,18 @@ export default function App() {
   const [historyDetail,setHistoryDetail] = useState<{summary: Record<string,unknown>; task: {environment?:Environment}; cases: Array<Record<string,unknown> & Partial<Detail>>; diagnostics_path?: string; business_report_path?: string}|null>(null);
   const polling = useRef(false);
   const starting = useRef(false);
+  const checkingCases = useRef(false);
+  const applyingCases = useRef(false);
+  const runnerLocked = useRef(false);
   const checkingMaster104 = useRef(false);
   const master104Polling = useRef(false);
   const flowScroll = useRef<HTMLDivElement>(null);
   const logScroll = useRef<HTMLDivElement>(null);
   const disabled = active || busy || maintenance;
   const slavesimCheckResult = slavesimCheck?.url===environment.slavesim_url.trim()?slavesimCheck:null;
+  useLayoutEffect(() => {
+    runnerLocked.current = disabled || master104Checking;
+  }, [disabled, master104Checking]);
 
   function goToEnvironment(id:string) {
     setPage('environment');
@@ -100,10 +113,26 @@ export default function App() {
   async function bootstrap() {
     if (!desktop) return;
     setLoading(true); setError('');
-    try { const data = await call<Bootstrap>('bootstrap'); setEnvironment(withModbusDefaults({...emptyEnvironment,...data.environment}));setPrivateWebViewVersion(data.private_webview_version ?? '');setCases(data.cases);setHistory(data.history);setRecords(initialRecords(data.cases.map(c=>c.id)));setSelected(reconcileSelection([],data.cases,new Set()));setFocused(data.cases[0]?.id || '');setReady(true); }
+    try {
+      const data = await call<Bootstrap>('bootstrap');
+      setEnvironment(withModbusDefaults({...emptyEnvironment,...data.environment}));
+      setPrivateWebViewVersion(data.private_webview_version ?? '');
+      setInstalled(data.installed === true);
+      setCasePack(data.case_pack);
+      setCasePackMessage(data.case_pack_warning ?? '');
+      setCases(data.cases);
+      setHistory(data.history);
+      setRecords(initialRecords(data.cases.map(c=>c.id)));
+      setSelected(reconcileSelection([],data.cases,new Set()));
+      setFocused(data.cases[0]?.id || '');
+      setReady(true);
+    }
     catch(e) {setError(String(e));} finally {setLoading(false);}
   }
   useEffect(()=>{void bootstrap();},[]);
+  useEffect(() => {
+    if (ready && installed) void refreshCases(true);
+  }, [ready, installed]);
   useEffect(()=>{
     if (!ready || maintenance) return;
     const timer=setInterval(async()=>{
@@ -146,9 +175,108 @@ export default function App() {
     return()=>{valid=false;};
   },[historyFocus]);
 
-  async function refreshCases(){setLoading(true);try{const list=await call<CaseInfo[]>('discover');setSelected(old=>reconcileSelection(cases,list,old));setCases(list);setExpandedGroups(old=>new Set(list.map(caseGroup).filter(name=>old.has(name))));setSearchCollapsed(new Set());setRecords(initialRecords(list.map(c=>c.id)));setTaskIds([]);setTaskStatus('pending');setFocused(list[0]?.id||'');}catch(e){setError(String(e));}finally{setLoading(false);}}
+  function applyCaseList(list: CaseInfo[], preserveRun: boolean) {
+    setSelected(old => reconcileSelection(cases, list, old));
+    setCases(list);
+    setExpandedGroups(old => new Set(list.map(caseGroup).filter(name => old.has(name))));
+    setSearchCollapsed(new Set());
+    if (preserveRun) {
+      setRecords(old => ({ ...initialRecords(list.map(c => c.id)), ...old }));
+      setFocused(old => list.some(item => item.id === old) ? old : list[0]?.id || '');
+    } else {
+      setRecords(initialRecords(list.map(c => c.id)));
+      setTaskIds([]);
+      setTaskStatus('pending');
+      setFocused(list[0]?.id || '');
+    }
+  }
+
+  async function activateCasePack(pack: ReadyCasePack, preserveRun: boolean) {
+    applyingCases.current = true;
+    setLoading(true);
+    const result = await invoke<CasePackActivation>('activate_case_pack_update', { id: pack.id });
+    if (result.status === 'deferred') return false;
+    setCasePack(result.data.case_pack);
+    applyCaseList(result.data.cases, preserveRun);
+    const previousRun = preserveRun && taskIds.length ? '本次任务仍显示执行时的结果。' : '';
+    setCasePackMessage(`已启用用例包 v${pack.version}。${previousRun}`);
+    return true;
+  }
+
+  useEffect(() => {
+    if (!pendingCasePack || disabled || master104Checking) return;
+    let retry: number | undefined;
+    let cancelled = false;
+    const pack = pendingCasePack;
+    async function activateWhenIdle() {
+      if (checkingCases.current || runnerLocked.current || starting.current) return;
+      checkingCases.current = true;
+      setCasePackWorking(true);
+      try {
+        if (await activateCasePack(pack, true)) setPendingCasePack(undefined);
+        else if (!cancelled) retry = window.setTimeout(() => void activateWhenIdle(), 1000);
+      } catch (e) {
+        setPendingCasePack(undefined);
+        setCasePackMessage(`用例包更新失败，继续使用当前用例。${String(e)}`);
+      } finally {
+        applyingCases.current = false;
+        checkingCases.current = false;
+        setLoading(false);
+        setCasePackWorking(false);
+      }
+    }
+    void activateWhenIdle();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retry);
+    };
+  }, [pendingCasePack, disabled, master104Checking]);
+
+  async function refreshCases(automatic = false) {
+    if (pendingCasePack || checkingCases.current || runnerLocked.current || starting.current) return;
+    checkingCases.current = true;
+    setCasePackWorking(true);
+    if (!automatic) {
+      setCasePackMessage('');
+      applyingCases.current = true;
+      setLoading(true);
+    }
+    try {
+      if (installed) {
+        try {
+          const prepared = await invoke<PreparedCasePack>('prepare_case_pack_update');
+          if (prepared.status === 'ready') {
+            const waitForIdle = runnerLocked.current || starting.current;
+            if (automatic || waitForIdle || !(await activateCasePack(prepared, false))) {
+              setPendingCasePack(prepared);
+              if (waitForIdle) {
+                setCasePackMessage(`用例包 v${prepared.version} 已下载，将在当前操作结束后启用。`);
+              }
+            }
+            return;
+          }
+          if (!automatic && prepared.status === 'unavailable') {
+            setCasePackMessage('所选频道暂无已发布的用例包，继续使用当前用例。');
+          } else if (!automatic && prepared.status === 'current') {
+            setCasePackMessage('所选频道暂无更新版本，继续使用当前用例。');
+          }
+        } catch (e) {
+          setCasePackMessage(`用例包更新失败，继续使用当前用例。${String(e)}`);
+        }
+      }
+      if (!automatic) applyCaseList(await call<CaseInfo[]>('discover'), false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      if (applyingCases.current) setLoading(false);
+      applyingCases.current = false;
+      checkingCases.current = false;
+      setCasePackWorking(false);
+    }
+  }
+
   async function start(){
-    if(disabled || !selected.size)return;
+    if(disabled || loading || applyingCases.current || starting.current || !selected.size)return;
     setBusy(true);starting.current=true;setError('');setNotice('');
     const ids=selectedCaseIds(cases,selected);
     try{await call('save_environment',{environment});const result=await call<{run_dir:string}>('start',{environment,case_ids:ids});setRecords(initialRecords(cases.map(c=>c.id)));setLogs([]);setDetail(null);setTaskIds(ids);setRunDir(result.run_dir);setTaskStatus('running');setActive(true);setStopping(false);setPage('execution');}
@@ -192,7 +320,7 @@ export default function App() {
     }
   }
   async function checkMaster104() {
-    if(disabled || checkingMaster104.current || !environment.master104_enabled)return;
+    if(disabled || applyingCases.current || checkingMaster104.current || !environment.master104_enabled)return;
     checkingMaster104.current=true;setBusy(true);setMaster104Snapshot(null);setError('');setNotice('');
     try {
       await call<Master104Check>('check_master104',{environment});
@@ -271,7 +399,8 @@ export default function App() {
       <nav>{([
         ['execution','测试执行',ListChecks],['environment','测试环境',Settings2],['history','历史报告',HistoryIcon],
       ] as const).map(([id,title,Icon])=><button key={id} data-testid={`nav-${id}`} className={page===id?'nav-item selected':'nav-item'} onClick={()=>setPage(id)}><Icon size={18}/>{title}{id==='execution'&&<span className="nav-count">{cases.length}</span>}</button>)}</nav>
-      <UpdateControls locked={disabled || loading || master104Checking} onMaintenance={setMaintenance} onImport={bootstrap}/>
+      <UpdateControls locked={disabled || loading || master104Checking} onMaintenance={setMaintenance} onImport={bootstrap}
+        casePack={casePack} casePackWorking={casePackWorking || !!pendingCasePack}/>
       <div className="sidebar-bottom"><span className={`connection-dot ${ready?'online':''}`}/><div>{ready?'本地执行内核已连接':'等待本地连接'}<small>所有测试数据保存在本机</small></div><ShieldCheck size={17}/></div>
       <div className="version">DESKTOP EDITION</div>
     </aside>
@@ -285,13 +414,23 @@ export default function App() {
         </div>
       </header>
       <div className={page==='environment'?'page-scroll environment-page-scroll':'page-scroll'}>
-        <section className="page-title"><div><div className="eyebrow">{page==='execution'?'TEST RUNNER':page==='environment'?'ENVIRONMENT':'REPORTS'}</div><h1>{{execution:'测试执行',environment:'测试环境',history:'历史报告'}[page]}</h1><p>{{execution:'选择测试用例，验证系统的每一个关键流程。',environment:'管理上位机运行环境，保持每次测试可控、可重复。',history:'回溯每次测试结果，查看执行记录与问题证据。'}[page]}</p></div>{page==='execution'&&<div className="title-actions"><button className="button" disabled={!ready||disabled||loading} onClick={()=>void refreshCases()} data-testid="cases-refresh"><RefreshCw size={15} className={loading?'spin':''}/>刷新用例</button>{active?<button className="button danger" data-testid="run-stop" disabled={stopping} onClick={()=>void stop()}>{stopping?<LoaderCircle size={15} className="spin"/>:<Square size={13}/>} {stopping?'正在停止…':'停止测试'}</button>:<button className="button primary" data-testid="run-start" disabled={!ready||disabled||loading||!selected.size} onClick={()=>void start()}>{busy?<LoaderCircle size={16} className="spin"/>:<Play size={15} fill="currentColor"/>}开始测试<span className="button-count">{selected.size}</span></button>}</div>}</section>
+        <section className="page-title">
+          <div><div className="eyebrow">{page==='execution'?'TEST RUNNER':page==='environment'?'ENVIRONMENT':'REPORTS'}</div><h1>{{execution:'测试执行',environment:'测试环境',history:'历史报告'}[page]}</h1><p>{{execution:'选择测试用例，验证系统的每一个关键流程。',environment:'管理上位机运行环境，保持每次测试可控、可重复。',history:'回溯每次测试结果，查看执行记录与问题证据。'}[page]}</p></div>
+          {page==='execution'&&<div className="title-actions">
+            <button className="button" disabled={!ready || disabled || loading || casePackWorking || !!pendingCasePack}
+              onClick={() => void refreshCases()} data-testid="cases-refresh">
+              <RefreshCw size={15} className={loading || casePackWorking ? 'spin' : ''}/>刷新用例
+            </button>
+            {active?<button className="button danger" data-testid="run-stop" disabled={stopping} onClick={()=>void stop()}>{stopping?<LoaderCircle size={15} className="spin"/>:<Square size={13}/>} {stopping?'正在停止…':'停止测试'}</button>:<button className="button primary" data-testid="run-start" disabled={!ready||disabled||loading||!selected.size} onClick={()=>void start()}>{busy?<LoaderCircle size={16} className="spin"/>:<Play size={15} fill="currentColor"/>}开始测试<span className="button-count">{selected.size}</span></button>}
+          </div>}
+        </section>
         {!desktop&&<div className="notice info"><CircleHelp size={18}/><div><strong>请使用桌面版测试上位机</strong><p>浏览器仅用于界面开发。连接测试内核、执行用例和选择本机文件需要通过 Tauri 桌面窗口。</p></div></div>}
         {error&&<div className="notice error" role="alert" data-testid="error-message"><Activity size={17}/><div className="notice-content"><strong>操作未完成</strong><p>{error}</p></div><button onClick={()=>setError('')} aria-label="关闭错误提示"><X size={16}/></button></div>}
         {notice&&<div className="notice success" role="status"><CheckCheck size={17}/><span>{notice}</span><button onClick={()=>setNotice('')} aria-label="关闭提示"><X size={16}/></button></div>}
         {loading&&!ready&&<div className="loading-state"><LoaderCircle className="spin"/>正在连接本地测试内核并发现用例…</div>}
 
         {page==='execution'&&<>
+          {casePackMessage && <div className="notice info" role="status"><CircleHelp size={17}/><span>{casePackMessage}</span><button onClick={() => setCasePackMessage('')} aria-label="关闭用例更新提示"><X size={16}/></button></div>}
           <div className="environment-strip"><div className="environment-icon"><Layers3 size={20}/></div><div className="strip-name"><span>当前测试环境</span><strong>{environment.name}</strong></div><span className="soft-tag">{environment.mode==='fresh'?'全新独立副本':'固定测试工作区'}</span><div className="strip-divider"/><span className="strip-hint"><Clock3 size={14}/>等待 {environment.timeout} 秒</span><button className="text-button" onClick={()=>setPage('environment')}>环境设置<ArrowRight size={14}/></button></div>
           <div className="stat-grid"><Stat label="用例总数" value={stats.total} icon={<ListChecks size={18}/>} hint="本次测试范围"/><Stat label="已完成" value={stats.done} icon={<Activity size={18}/>} hint={`${progress}% 已完成`} accent="blue"/><Stat label="通过" value={stats.passed} icon={<CheckCheck size={18}/>} hint="符合预期结果" accent="green"/><Stat label="失败" value={stats.failed} icon={<X size={18}/>} hint="需要进一步检查" accent="red"/><Stat label="通过率" value={passRate} unit="" icon={<CheckCheck size={18}/>} hint="通过 ÷（通过＋失败）" accent="blue"/></div>
           <div className="execution-grid">

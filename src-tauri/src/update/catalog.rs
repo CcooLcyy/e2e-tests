@@ -25,11 +25,16 @@ impl Catalog {
         Ok(Self(Grpc::new(channel)))
     }
 
-    pub(super) async fn list(&mut self, channel: &str) -> Result<Vec<Package>, String> {
+    pub(super) async fn list(
+        &mut self,
+        product: &str,
+        channel: &str,
+        platform: &str,
+    ) -> Result<Vec<Package>, String> {
         let request = ListPackagesRequest {
-            product: PRODUCT.into(),
+            product: product.into(),
             channel: channel.into(),
-            platform: PLATFORM.into(),
+            platform: platform.into(),
         };
         let response: ListPackagesResponse = self
             .query(
@@ -166,6 +171,8 @@ pub(super) struct PackageMetadata {
     pub signature: String,
     #[prost(string, tag = "8")]
     pub notes: String,
+    #[prost(string, tag = "13")]
+    pub source_sha: String,
     #[prost(string, tag = "15")]
     pub channel: String,
 }

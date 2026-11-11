@@ -145,6 +145,7 @@ class CaseInfo:
     flow: list[dict[str, str]] = field(default_factory=list)
     flow_blocked: str = ""
     executable_flow: bool = False
+    requires_modbus: bool = False
 
 
 def save_environment(path, environment, *, private_webview_pair=None):

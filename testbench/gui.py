@@ -314,7 +314,7 @@ class TestbenchApp:
         def work():
             try:
                 from testbench.catalog import discover_cases
-                self.messages.put(("catalog", discover_cases(self.root)))
+                self.messages.put(("catalog", discover_cases(self.controller.case_store.current().root)))
             except Exception as error:
                 self.messages.put(("catalog_error", str(error)))
         threading.Thread(target=work, daemon=True).start()

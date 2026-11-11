@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from testbench.agc_direction_scenario import AgcDirectionProfile, AgcDirectionScenario
+from case_support.agc_direction_scenario import AgcDirectionProfile, AgcDirectionScenario
 
 
 def profile_data():

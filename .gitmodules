@@ -1,0 +1,3 @@
+[submodule "case-suite"]
+	path = case-suite
+	url = https://github.com/CcooLcyy/e2e-test-cases.git

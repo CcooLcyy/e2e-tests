@@ -10,12 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from testbench.huawei_fleet import HuaweiFleetConfig, READ_POINTS, point_expected
-from testbench.huawei_fleet_run import HuaweiFleetRun, STAGES
+from case_support.huawei_fleet import HuaweiFleetConfig, READ_POINTS, point_expected
+from case_support.huawei_fleet_run import HuaweiFleetRun, STAGES
 
 
 def load_business_case():
-    path = Path(__file__).resolve().parents[1] / "tests" / "test_huawei_fleet.py"
+    path = Path(__file__).resolve().parents[1] / "case-suite" / "tests" / "test_huawei_fleet.py"
     spec = importlib.util.spec_from_file_location("huawei_fleet_business_case", path)
     case = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(case)
@@ -142,7 +142,7 @@ def test_late_matching_observation_cannot_pass_deadline(tmp_path, monkeypatch):
     """数值完全匹配但一轮页面取数耗时31秒，仍违反30秒验收时限。"""
     scenario, bus, device, _, _ = sample_run(tmp_path)
     ticks = iter((0, 31, 31))
-    monkeypatch.setattr("testbench.huawei_fleet_run.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("case_support.huawei_fleet_run.time.monotonic", lambda: next(ticks))
     result = scenario.sample("发电", bus, device)
     assert not result["通过"]
     assert all(point["通过"] for point in result["点位"])
@@ -239,7 +239,7 @@ def test_fleet_cleanup_failure_captures_both_pages_and_still_clears_buses(tmp_pa
 
     upper = SimpleNamespace(creation_started=True, connect_site=lambda: None, open_current_links=lambda: None,
                             assert_serial_paths_available=None, cleanup=cleanup_upper)
-    monkeypatch.setattr("testbench.huawei_slavesim_page.HuaweiSlaveSimPage", Simulator)
+    monkeypatch.setattr("case_support.huawei_slavesim_page.HuaweiSlaveSimPage", Simulator)
     monkeypatch.setattr(case, "HuaweiRtuPage", lambda _: upper)
     monkeypatch.setattr(case, "load_login_account", lambda _: object())
     monkeypatch.setattr(case, "run_steps", lambda *_: None)

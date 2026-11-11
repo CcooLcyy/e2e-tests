@@ -1,8 +1,8 @@
 """六路21台拓扑与逐点换算规则，不运行真实浏览器。"""
 import pytest
 
-from testbench.huawei_fleet import HuaweiFleetConfig, READ_POINTS, build_fleet, compare_point
-from testbench.slavesim_runtime import validate_fleet_capacity
+from case_support.huawei_fleet import HuaweiFleetConfig, READ_POINTS, build_fleet, compare_point
+from case_support.slavesim_runtime import validate_fleet_capacity
 
 
 def configuration():

@@ -52,6 +52,9 @@ def configure(channel):
     # Tauri CLI needs this key to generate the NSIS updater signature.
     plugins["updater"] = {"pubkey": key}
     plugins["testbenchUpdate"] = {"endpoint": endpoint, "pubkey": key}
+    if case_key := os.environ.get("CASE_PACK_PUBLIC_KEY", "").strip():
+        minisign_key_id(case_key, 42)
+        plugins["testbenchCasesUpdate"] = {"endpoint": endpoint, "pubkey": case_key}
     config_path().write_text(json.dumps(config), encoding="utf-8")
 
 
@@ -214,7 +217,7 @@ def transfer(archive, expected, endpoint, token):
                 if current.state == "uploading" and current.received_bytes < expected.size:
                     progress = publisher.UploadPackage(chunks(current.received_bytes), metadata=auth, timeout=480).upload
                     if progress.id != upload_id or progress.received_bytes != expected.size:
-                        raise ReleaseError("Platform did not confirm all installer bytes")
+                        raise ReleaseError("Platform did not confirm all package bytes")
                 if current.state == "completed" and (current.received_bytes != expected.size or not current.package_id):
                     raise ReleaseError("Completed upload has an invalid identity")
                 # CompleteUpload is idempotent and returns the package even after an interrupted response.
@@ -233,7 +236,7 @@ def transfer(archive, expected, endpoint, token):
         ).package
         if released.id != package.id or released.metadata != expected or release_channel not in released.channels:
             raise ReleaseError(f"Platform did not confirm publication to {release_channel}")
-        print(f"Platform {release_channel} publication confirmed by RPC for {PRODUCT} {expected.version}, package {package.id}", flush=True)
+        print(f"Platform {release_channel} publication confirmed by RPC for {expected.product} {expected.version}, package {package.id}", flush=True)
         confirm_catalog(SoftwareCatalogServiceStub(channel), expected, package.id)
 
 
@@ -241,11 +244,11 @@ def confirm_catalog(catalog, expected, package_id):
     import software_pb2 as messages
 
     packages = catalog.ListPackages(messages.ListPackagesRequest(
-        product=PRODUCT, platform=PLATFORM, channel=expected.channel,
+        product=expected.product, platform=expected.platform, channel=expected.channel,
     ), timeout=30).packages
     if (len(packages) != 1 or packages[0].id != package_id or packages[0].metadata != expected
             or expected.channel not in packages[0].channels):
-        raise ReleaseError("Catalog entry differs from the published installer identity")
+        raise ReleaseError("Catalog entry differs from the published package identity")
 
     stream = catalog.DownloadPackage(messages.DownloadPackageRequest(package_id=package_id), timeout=480)
     digest = hashlib.sha256()
@@ -255,12 +258,12 @@ def confirm_catalog(catalog, expected, package_id):
         if (eof or chunk.offset != received or chunk.total_size != expected.size
                 or chunk.sha256 != expected.sha256 or not chunk.data
                 or received + len(chunk.data) > expected.size):
-            raise ReleaseError("Installer download has an invalid chunk identity")
+            raise ReleaseError("Package download has an invalid chunk identity")
         digest.update(chunk.data)
         received += len(chunk.data)
         eof = chunk.eof
     if not eof or received != expected.size or digest.hexdigest() != expected.sha256:
-        raise ReleaseError("Installer download differs from the published installer bytes")
+        raise ReleaseError("Package download differs from the published package bytes")
 
 
 def publish(channel):

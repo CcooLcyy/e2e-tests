@@ -85,28 +85,38 @@ def test_reversed_request_task_record_and_real_worker_follow_same_group_order():
     """真实独立工作进程按清单执行，逆序及重复请求不能打乱任务记录和清理末项。"""
     root = Path(__file__).resolve().parents[1] / "artifacts" / ("case-order-" + uuid.uuid4().hex)
     root.mkdir(parents=True)
+    suite = root / "case-suite"
+    suite.mkdir()
+    (suite / "VERSION").write_text("1.2.3\n", encoding="utf-8")
+    (suite / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     ids = {name: "tests/test_flow.py::test_" + name for name in ("a1", "a2", "b")}
-    policy(root, [{"name": "乙", "cases": [ids["b"]]}, {"name": "甲", "cases": [ids["a2"], ids["a1"]]}])
-    source = 'import pytest\nfrom pathlib import Path\n'
+    policy(suite, [{"name": "乙", "cases": [ids["b"]]}, {"name": "甲", "cases": [ids["a2"], ids["a1"]]}])
+    (suite / "case_data.py").write_text("OBSERVED = 'observed.txt'\n", encoding="utf-8")
+    source = 'import pytest\nfrom pathlib import Path\nfrom case_data import OBSERVED\n'
     for name, group in (("a1", "甲"), ("b", "乙"), ("a2", "甲")):
-        source += f'@pytest.mark.case_group({group!r})\ndef test_{name}():\n    with Path("observed.txt").open("a",encoding="utf-8") as stream: stream.write({name!r}+"\\n")\n'
-    (root / "tests/test_flow.py").write_text(source, encoding="utf-8")
+        source += f'@pytest.mark.case_group({group!r})\ndef test_{name}():\n    with Path(OBSERVED).open("a",encoding="utf-8") as stream: stream.write({name!r}+"\\n")\n'
+    (suite / "tests/test_flow.py").write_text(source, encoding="utf-8")
     controller = TaskController(root)
     environment = Environment(app_path=sys.executable, driver_path=sys.executable, timeout=5)
     run = controller.start(environment, [ids["a1"], ids["b"], ids["a2"], ids["a1"]])
     expected = [ids["b"], ids["a2"], ids["a1"]]
     events = []
     try:
-        assert json.loads((run / "task.json").read_text(encoding="utf-8"))["case_ids"] == expected
+        task = json.loads((run / "task.json").read_text(encoding="utf-8"))
+        assert task["case_ids"] == expected
+        assert task["root"] == str(root) and task["case_root"] == str(suite)
+        assert task["case_pack"]["version"] == "1.2.3"
         assert controller._selected == expected
         deadline = time.monotonic() + 30
         while controller.active and time.monotonic() < deadline:
             events.extend(controller.poll())
             time.sleep(0.1)
         assert not controller.active
-        assert (root / "observed.txt").read_text(encoding="utf-8").splitlines() == ["b", "a2", "a1"]
+        assert (suite / "observed.txt").read_text(encoding="utf-8").splitlines() == ["b", "a2", "a1"]
         assert [event["case_id"] for event in events if event["type"] == "case_finished"] == expected
-        assert json.loads((run / "summary.json").read_text(encoding="utf-8"))["status"] == "passed"
+        summary = json.loads((run / "summary.json").read_text(encoding="utf-8"))
+        assert summary["status"] == "passed" and summary["case_pack"] == task["case_pack"]
+        assert "用例包版本 1.2.3" in (run / "report.md").read_text(encoding="utf-8")
     finally:
         if controller.active:
             controller.stop()

@@ -1,4 +1,4 @@
-use crate::update::{self, PendingUpdate};
+use crate::update::{self, cases, PendingUpdate};
 use serde_json::{json, Value};
 use std::{
     fs::{self, OpenOptions},
@@ -185,10 +185,11 @@ pub(crate) struct ShellState {
 }
 
 impl ShellState {
+    pub(crate) fn data_root(&self) -> &Path {
+        &self.data_root
+    }
+
     fn call(&self, method: &str, payload: Value) -> Result<Value, String> {
-        if !allowed_method(method) {
-            return Err("不支持的测试操作".into());
-        }
         let mut bridge = self.bridge.lock().map_err(|_| "内核状态锁不可用")?;
         if self.closing.load(Ordering::SeqCst) && method != "shutdown" {
             return Err("测试上位机正在退出".into());
@@ -206,6 +207,22 @@ impl ShellState {
             )?);
         }
         bridge.as_mut().unwrap().call(method, payload)
+    }
+
+    pub(crate) fn case_pack_status(&self) -> Result<Value, String> {
+        self.call("case_pack_status", json!({}))
+    }
+
+    pub(crate) fn activate_case_pack(&self, payload: Value) -> Result<Option<Value>, String> {
+        let mut bridge = self.bridge.lock().map_err(|_| "内核状态锁不可用")?;
+        if self.closing.load(Ordering::SeqCst) {
+            return Err("测试上位机正在退出".into());
+        }
+        let process = bridge.as_mut().ok_or("测试内核未启动，请重新刷新用例")?;
+        if process.call("update_ready", json!({}))?["ready"] != true {
+            return Ok(None);
+        }
+        process.call("activate_case_pack", payload).map(Some)
     }
 
     pub(crate) fn with_update_shutdown(
@@ -298,6 +315,9 @@ async fn bridge_call(
     method: String,
     payload: Option<Value>,
 ) -> Result<Value, String> {
+    if !allowed_method(&method) {
+        return Err("不支持的测试操作".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<ShellState>()
             .call(&method, payload.unwrap_or_else(|| json!({})))
@@ -369,6 +389,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(PendingUpdate::default())
+        .manage(cases::PendingCasePack::default())
         .setup(|app| {
             let installed = app.config().bundle.active;
             let (root, data_root, python) = if installed {
@@ -401,7 +422,11 @@ pub fn run() {
             update::set_update_channel,
             update::check_update,
             update::download_update,
-            update::install_update
+            update::install_update,
+            cases::case_pack_update_info,
+            cases::set_case_pack_update_channel,
+            cases::prepare_case_pack_update,
+            cases::activate_case_pack_update
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

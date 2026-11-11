@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def quality_case():
-    path = Path(__file__).resolve().parents[1] / "tests" / "test_modbus_rtu_104_quality.py"
+    path = Path(__file__).resolve().parents[1] / "case-suite" / "tests" / "test_modbus_rtu_104_quality.py"
     spec = importlib.util.spec_from_file_location("rtu_quality_case", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

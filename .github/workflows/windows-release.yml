@@ -29,6 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          submodules: true
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -75,6 +76,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          submodules: true
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -103,6 +105,7 @@ jobs:
         env:
           PLATFORM_GRPC_ENDPOINT: ${{ vars.PLATFORM_GRPC_ENDPOINT }}
           TESTBENCH_UPDATER_PUBLIC_KEY: ${{ vars.TESTBENCH_UPDATER_PUBLIC_KEY }}
+          CASE_PACK_PUBLIC_KEY: ${{ vars.CASE_PACK_PUBLIC_KEY }}
         run: python scripts/windows_release.py configure $env:RELEASE_CHANNEL
       - name: Build and sign the platform NSIS installer
         env:

@@ -11,7 +11,7 @@ from testbench.modbus_rtu_config import RtuStation
 
 
 def business_cases():
-    path = Path(__file__).resolve().parents[1] / "tests" / "test_modbus_rtu.py"
+    path = Path(__file__).resolve().parents[1] / "case-suite" / "tests" / "test_modbus_rtu.py"
     spec = importlib.util.spec_from_file_location("rtu_business_cases", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

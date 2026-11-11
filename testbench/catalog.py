@@ -8,15 +8,29 @@ import tempfile
 from .model import CaseInfo
 
 
+def pytest_root_options(root):
+    root = Path(root)
+    ini = root / "pytest.ini"
+    options = ["--rootdir", str(root)]
+    if ini.is_file():
+        options.extend(["-c", str(ini)])
+    return options
+
+
 def discover_cases(root: Path):
     root = Path(root).resolve()
+    if (root / "case-suite" / "tests").is_dir():
+        root = root / "case-suite"
     source = str(Path(__file__).resolve().parent.parent)
     with tempfile.TemporaryDirectory(prefix="mskdsp-collect-") as temporary:
         output = Path(temporary) / "cases.json"
-        env = dict(os.environ, PYTHONUTF8="1", PYTHONPATH=source + os.pathsep + os.environ.get("PYTHONPATH", ""),
-                   TESTBENCH_COLLECT=str(output))
+        env = dict(os.environ, PYTHONUTF8="1", TESTBENCH_COLLECT=str(output))
+        # Windows 嵌入式 Python 忽略 PYTHONPATH，显式添加 runner 与用例目录。
+        command = ("import sys; sys.path[:0] = sys.argv[1:3]; "
+                   "import pytest; raise SystemExit(pytest.main(sys.argv[3:]))")
         result = subprocess.run(
-            [sys.executable, "-X", "utf8", "-B", "-m", "pytest", "tests", "--rootdir", str(root), "--collect-only", "-q", "-p", "testbench.pytest_plugin",
+            [sys.executable, "-X", "utf8", "-B", "-c", command, source, str(root), "tests",
+             *pytest_root_options(root), "--collect-only", "-q", "-p", "testbench.pytest_plugin",
              "-p", "no:cacheprovider"], cwd=root, env=env, capture_output=True, encoding="utf-8",
             errors="replace", timeout=60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )

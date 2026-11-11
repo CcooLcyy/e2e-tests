@@ -48,7 +48,7 @@ def test_corrupt_or_missing_account_has_actionable_error(tmp_path):
 
 def test_fresh_desktop_ignores_fixed_workspace_without_losing_baseline(tmp_path, monkeypatch):
     """需要干净状态的场景不用全局固定工作区，但仍使用显式基线。"""
-    source = Path(__file__).resolve().parents[1] / "tests" / "conftest.py"
+    source = Path(__file__).resolve().parents[1] / "case-suite" / "tests" / "conftest.py"
     spec = importlib.util.spec_from_file_location("login_desktop_fixtures", source)
     fixtures = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixtures)

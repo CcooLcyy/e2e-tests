@@ -112,7 +112,7 @@ def test_readiness_waits_have_separate_completion_boundaries():
 
 def test_all_business_case_ui_actions_have_explicit_step_boundaries():
     """所有业务文件中的直接界面动作、重开和等待都置于独立步骤内。"""
-    root = Path(__file__).resolve().parents[1] / "tests"
+    root = Path(__file__).resolve().parents[1] / "case-suite" / "tests"
     for path in root.glob("test_*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}

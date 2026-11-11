@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from testbench.huawei_rtu_page import HuaweiRtuPage, normalize_point, parse_visible_value
+from case_support.huawei_rtu_page import HuaweiRtuPage, normalize_point, parse_visible_value
 
 
 @dataclass(frozen=True)

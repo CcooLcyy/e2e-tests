@@ -9,6 +9,7 @@ GitHub Actions 的 `Testbench Windows x64` 工作流在 Windows x64 上执行 Py
 | 位置 | 名称 | 用途 |
 | --- | --- | --- |
 | 仓库变量 | `TESTBENCH_UPDATER_PUBLIC_KEY` | 测试上位机专用 Tauri 更新公钥 |
+| 仓库变量 | `CASE_PACK_PUBLIC_KEY` | 独立用例 ZIP 的签名公钥，与用例仓库对应变量一致 |
 | 仓库变量 | `PLATFORM_GRPC_ENDPOINT` | 发布作业与安装版共用的明文 gRPC 地址，填写 `http://host:port`，当前为 `http://60.208.15.90:50000` |
 | 仓库变量 | `TESTBENCH_CI_PUBLISH_ENABLED` | 平台部署 CI 通道并配置令牌后设为 `true`。关闭时，`main` 推送仍保留签名 CI 安装包产物 |
 | `testbench-signing` 环境 Secret | `TESTBENCH_TAURI_SIGNING_PRIVATE_KEY` | 与公钥配对的 Tauri 更新私钥内容 |
@@ -17,6 +18,8 @@ GitHub Actions 的 `Testbench Windows x64` 工作流在 Windows x64 上执行 Py
 | `testbench-stable` 环境 Secret | `TESTBENCH_PUBLISHER_TOKEN` | Stable 发布令牌，平台配置其 SHA256 到 `testbench_publisher_token_sha256` |
 
 发布作业和桌面客户端通过同一个明文 gRPC 入口连接平台，发布作业关闭 gRPC HTTP 代理。平台需部署支持测试上位机对应发布通道的软件仓库，且该入口需对发布 Runner 和桌面客户端可达。安装包构建时写入 gRPC 地址和更新公钥，客户端按所选通道匿名查询和下载，安装前验证更新签名与签名中的应用版本。CI 与 Stable 使用不同的令牌，各自限于对应环境及发布通道。
+
+本体构建按 `case-suite` 子模块固定提交打入离线用例，日常用例提交直接走 [用例仓库发布流程](https://github.com/CcooLcyy/e2e-test-cases)。平台部署用例包支持后，按用例仓库的配置说明设置独立发布凭据。安装版按用例频道单独拉取签名包。
 
 ## CI 发布
 

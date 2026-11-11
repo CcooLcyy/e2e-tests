@@ -89,7 +89,8 @@ def run_pytest(args, artifacts, root):
                  "--app-path", str(args.app.resolve()), "--driver-path", str(args.driver.resolve()),
                  "--artifacts-dir", str(artifacts), "--ui-timeout", str(args.timeout),
                  "--junitxml", str(artifacts / "junit.xml")],
-                cwd=root, env=dict(os.environ, PYTHONUTF8="1"), stdout=log, stderr=subprocess.STDOUT,
+                cwd=root / "case-suite", env=dict(os.environ, PYTHONUTF8="1", PYTHONPATH=str(root),
+                                                 TESTBENCH_DATA_ROOT=str(root)), stdout=log, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             ).returncode
         except Exception as error:

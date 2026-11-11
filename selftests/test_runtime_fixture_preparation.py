@@ -12,7 +12,7 @@ import pytest
 ])
 def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch, filename, fixture):
     """上位机入口失败时不进入任何环境配置，保留原错误与两端现场。"""
-    source = Path(__file__).resolve().parents[1] / "tests" / filename
+    source = Path(__file__).resolve().parents[1] / "case-suite" / "tests" / filename
     spec = importlib.util.spec_from_file_location("runtime_fixture_contract", source)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -55,8 +55,8 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
             calls.append("打开业务点表")
             raise RuntimeError("RTU 业务页面未打开")
 
-    monkeypatch.setattr("testbench.slavesim_page.SlaveSimPage", Simulator)
-    monkeypatch.setattr("testbench.huawei_slavesim_page.HuaweiSlaveSimPage", Simulator)
+    monkeypatch.setattr("case_support.slavesim_page.SlaveSimPage", Simulator)
+    monkeypatch.setattr("case_support.huawei_slavesim_page.HuaweiSlaveSimPage", Simulator)
     if fixture == "independent_rtu":
         monkeypatch.setattr(module, "ModbusRtuPage", Upper)
     else:
@@ -75,8 +75,8 @@ def test_runtime_preparation_failure_preserves_both_pages(tmp_path, monkeypatch,
 
 def test_huawei_scenario_uses_prepared_actual_bus_names(tmp_path):
     """业务场景保留模拟器实际名称，不重新生成与现场不对应的总线名。"""
-    from testbench.huawei_fleet import HuaweiFleetConfig, build_fleet
-    from testbench.huawei_fleet_run import HuaweiFleetRun
+    from case_support.huawei_fleet import HuaweiFleetConfig, build_fleet
+    from case_support.huawei_fleet_run import HuaweiFleetRun
 
     config = HuaweiFleetConfig(tuple(f"/srv/serial-sim/tty{i}" for i in range(6)))
     buses = build_fleet(config, "original")

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 
-source = Path(__file__).resolve().parents[1] / "tests" / "test_wrong_password.py"
+source = Path(__file__).resolve().parents[1] / "case-suite" / "tests" / "test_wrong_password.py"
 spec = importlib.util.spec_from_file_location("wrong_password_case", source)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)

@@ -11,15 +11,17 @@ import subprocess
 import sys
 import time
 import uuid
+from .case_pack import CasePackStore
 from .catalog import discover_cases
 from .reporting import write_task_report
-from .modbus_environment import RTU_OBSERVATION_CASE_IDS
+from .modbus_environment import RTU_OBSERVATION_CASE_IDS, validate_modbus_observation
 
 
 class TaskController:
     def __init__(self, root: Path, data_root: Path | None = None):
         self.root = Path(root).resolve()
         self.data_root = Path(data_root).resolve() if data_root is not None else self.root
+        self.case_store = CasePackStore(self.root, self.data_root)
         self.run_dir = None
         self.active = False
         self._offset = 0
@@ -50,24 +52,31 @@ class TaskController:
         # nodeid 必须来自真实用例目录，避免把用户输入解释为 pytest 参数。
         if any(not case.startswith("tests/") or ".." in Path(case.split("::")[0]).parts for case in case_ids):
             raise ValueError("用例标识必须来自 tests 目录")
-        discovered = discover_cases(self.root)
+        pack = self.case_store.current()
+        discovered = discover_cases(pack.root)
         available = [case.id for case in discovered]
         requested = set(case_ids)
         if not requested.issubset(available):
             raise ValueError("所选用例已经变化，请刷新用例列表后重试")
-        case_ids = [case_id for case_id in available if case_id in requested]
-        environment.validate_for_cases(case_ids)
+        selected = [case for case in discovered if case.id in requested]
+        case_ids = [case.id for case in selected]
+        requires_modbus = any(getattr(case, "requires_modbus", False) for case in selected)
+        if requires_modbus:
+            validate_modbus_observation(environment.to_dict())
+        elif pack.source == "legacy":
+            environment.validate_for_cases(case_ids)
+            requires_modbus = bool(RTU_OBSERVATION_CASE_IDS.intersection(case_ids))
         logging.getLogger(__name__).info("按分组及组内顺序准备执行 %s 项用例", len(case_ids))
         self.run_dir = self.data_root / "artifacts" / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
         self.run_dir.mkdir(parents=True)
         task_path = self.run_dir / "task.json"
-        task = {"root": str(self.root), "data_root": str(self.data_root),
+        task = {"root": str(self.root), "data_root": str(self.data_root), "case_root": str(pack.root),
+                "case_pack": pack.status(),
                 "testbench_version": os.environ.get("TESTBENCH_VERSION", ""),
                 "environment": environment.to_dict(),
                 "case_ids": case_ids,
-                "case_names": {case.id: getattr(case, "name", "测试用例") for case in discovered if case.id in requested},
-                "case_flows": {case.id: case.flow for case in discovered
-                               if case.id in requested and getattr(case, "executable_flow", False)},
+                "case_names": {case.id: getattr(case, "name", "测试用例") for case in selected},
+                "case_flows": {case.id: case.flow for case in selected if getattr(case, "executable_flow", False)},
                 "started_at": datetime.now().astimezone().isoformat(timespec="seconds")}
         if private_webview_pair is not None:
             runtime, driver = private_webview_pair
@@ -91,7 +100,7 @@ class TaskController:
         operation_timeout = max(float(environment.timeout),
                                 float(environment.master104_timeout) if environment.master104_enabled else 0,
                                 float(environment.modbus_acquisition_timeout)
-                                if RTU_OBSERVATION_CASE_IDS.intersection(case_ids) else 0)
+                                if requires_modbus else 0)
         self._timeout = operation_timeout * max(len(case_ids), 1) * 10 + 120
         logging.getLogger(__name__).info("界面单次等待%s秒，采集等待%s秒，无进展保护%s秒",
                                          environment.timeout, environment.modbus_acquisition_timeout, self._timeout)
@@ -242,6 +251,8 @@ class TaskController:
                        started_at=task.get("started_at", summary.get("started_at", "")),
                        ended_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                        environment_name=task.get("environment", {}).get("name", summary.get("environment_name", "未记录")))
+        if "case_pack" in task:
+            summary["case_pack"] = task["case_pack"]
         if message:
             summary["message"] = message
         (self.run_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

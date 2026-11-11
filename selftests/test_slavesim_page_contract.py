@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from testbench.slavesim_page import SlaveSimPage
+from case_support.slavesim_page import SlaveSimPage
 
 
 class MemoryDesktop:

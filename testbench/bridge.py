@@ -44,12 +44,22 @@ class TestbenchBridge:
         if method == "bootstrap":
             webview = self._installed_webview()
             private_pair = webview[1]
+            cases = self._startup_cases()
             return {"root": str(self.data_root), "installed": self.installed,
                     "version": os.environ.get("TESTBENCH_VERSION", ""), "environment": self._environment(webview),
                     "private_webview_version": private_pair[0].parent.name if private_pair else "",
-                    "cases": self._discover(), "history": self._history()}
+                    "case_pack": self.controller.case_store.current().status(),
+                    "case_pack_warning": self.controller.case_store.warning,
+                    "cases": cases, "history": self._history()}
         if method == "update_ready":
             return {"ready": not self.controller.active and self._master104_check is None}
+        if method == "case_pack_status":
+            return self.controller.case_store.current().status()
+        if method == "activate_case_pack":
+            if self.controller.active or self._master104_check is not None:
+                raise ValueError("测试任务或 104 主站检查结束后才能启用新用例包")
+            pack, cases = self.controller.case_store.activate(payload, discover_cases)
+            return {"case_pack": pack.status(), "cases": [asdict(case) for case in cases]}
         if method == "migrate_workspace":
             if not self.installed:
                 raise ValueError("请在安装版中导入旧工作区")
@@ -147,7 +157,7 @@ class TestbenchBridge:
             if not isinstance(ids, list) or not ids or not all(isinstance(item, str) for item in ids):
                 raise ValueError("请选择需要执行的用例")
             # 只启动真实发现的用例，防止过期或任意 nodeid 产生混淆结果。
-            available = {case.id for case in discover_cases(self.root)}
+            available = {case.id for case in discover_cases(self.controller.case_store.current().root)}
             if not set(ids).issubset(available):
                 raise ValueError("所选用例已经变化，请刷新用例列表后重试")
             save_environment(self.environment_path, env, private_webview_pair=pair)
@@ -242,7 +252,21 @@ class TestbenchBridge:
         return {"url": url, "message": "slaveSim 管理页和状态接口均可访问；此检查仅确认连通，尚未验证业务效果"}
 
     def _discover(self):
-        return [asdict(case) for case in discover_cases(self.root)]
+        return [asdict(case) for case in discover_cases(self.controller.case_store.current().root)]
+
+    def _startup_cases(self):
+        store = self.controller.case_store
+        pack = store.current()
+        if pack.source != "downloaded" or self.controller.active:
+            return self._discover()
+        try:
+            cases = self._discover()
+            if not cases:
+                raise ValueError("已启用用例包未收集到可执行用例")
+            return cases
+        except Exception as error:
+            store.use_bundled(error)
+            return self._discover()
 
     def _installed_webview(self):
         if not self.installed:

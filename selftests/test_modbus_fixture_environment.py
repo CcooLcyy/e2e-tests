@@ -16,7 +16,7 @@ class DesktopBoundary(Exception):
     ("test_huawei_fleet.py", "huawei_fleet"),
 ])
 def test_fixture_uses_supplied_entries_without_a_topology_profile(tmp_path, monkeypatch, filename, fixture):
-    source = Path(__file__).resolve().parents[1] / "tests" / filename
+    source = Path(__file__).resolve().parents[1] / "case-suite" / "tests" / filename
     spec = importlib.util.spec_from_file_location("fixture_environment_contract", source)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

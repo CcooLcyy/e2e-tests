@@ -258,6 +258,11 @@ def write_task_report(directory, summary, task):
              " · ".join(f"{name} {count}" for name, count in counts.items())]
     if version := _business_text(task.get("testbench_version"), ""):
         lines.extend(["", f"测试上位机版本 {_cell(version)}"])
+    pack = task.get("case_pack")
+    if isinstance(pack, dict):
+        for label, key in (("用例包版本", "version"), ("用例源码提交", "source_sha")):
+            if value := _business_text(pack.get(key), ""):
+                lines.extend(["", f"{label} {_cell(value)}"])
     for label, key in (("开始时间", "started_at"), ("结束时间", "finished_at")):
         text = _business_text(summary.get(key, summary.get("ended_at") if key == "finished_at" else task.get(key)), "")
         if text:

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from testbench.agc_direction_page import (
+from case_support.agc_direction_page import (
     AgcDirectionPage, parse_bool, parse_decimal, parse_member_snapshot, select_bus_row, unique_match,
 )
 
@@ -121,8 +121,8 @@ def test_snapshot_acceptance_distinguishes_display_age_from_business_quality(mon
     page.read_direction_point = lambda tag: dict(value=tag == "AGC增闭锁", quality=quality,
                                                  issues=issues, timestamp="2026/11/5 12:00:02")
     clock = iter((0.0, 0.01, 0.02, 0.2))
-    monkeypatch.setattr("testbench.agc_direction_page.time.monotonic", lambda: next(clock, 1.0))
-    monkeypatch.setattr("testbench.agc_direction_page.time.sleep", lambda *_: None)
+    monkeypatch.setattr("case_support.agc_direction_page.time.monotonic", lambda: next(clock, 1.0))
+    monkeypatch.setattr("case_support.agc_direction_page.time.sleep", lambda *_: None)
     profile = dict(group_name="专用组", member_name="成员", lower_kw="10", upper_kw="100")
     if passes:
         assert page.wait_snapshot(profile, "100", True, False, 0.1)["increase"] is True

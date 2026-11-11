@@ -39,20 +39,24 @@ try {
         'python313.zip', '.', '..\suite', 'Lib\site-packages'
     )
 
-    foreach ($directory in @('testbench', 'tests')) {
-        $destination = Join-Path $suiteRoot $directory
-        New-Item -ItemType Directory -Path $destination | Out-Null
-        Get-ChildItem -LiteralPath (Join-Path $repoRoot $directory) -File -Filter '*.py' |
-            Copy-Item -Destination $destination
+    $runnerRoot = Join-Path $suiteRoot 'testbench'
+    New-Item -ItemType Directory -Path $runnerRoot | Out-Null
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'testbench') -File -Filter '*.py' |
+        Copy-Item -Destination $runnerRoot
+    foreach ($relativePath in @('desktop_demo.py', 'windows_privileges.py', 'requirements.txt')) {
+        Copy-Item -LiteralPath (Join-Path $repoRoot $relativePath) -Destination $suiteRoot
     }
-    foreach ($relativePath in @(
-        'desktop_demo.py', 'windows_privileges.py', 'pytest.ini', 'requirements.txt',
-        'tests/case-order.json', 'docs/examples/agc-direction-block.json'
-    )) {
-        $destination = Join-Path $suiteRoot $relativePath
-        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $repoRoot $relativePath) -Destination $destination
+
+    # 离线基线从子模块的固定提交生成，使用与平台发布一致的用例布局。
+    $caseBuilder = Join-Path $repoRoot 'case-suite/scripts/package_cases.py'
+    if (-not (Test-Path -LiteralPath $caseBuilder -PathType Leaf)) {
+        throw '缺少用例子模块，请先执行 git submodule update --init'
     }
+    $caseArchive = & python $caseBuilder bundled (Join-Path $staging 'cases')
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $caseArchive -PathType Leaf)) {
+        throw '生成随安装包交付的用例基线失败'
+    }
+    Expand-Archive -LiteralPath $caseArchive -DestinationPath (Join-Path $suiteRoot 'case-suite')
 
     $bundledPython = Join-Path $pythonRoot 'python.exe'
     $smokeData = Join-Path $staging 'smoke-data'
