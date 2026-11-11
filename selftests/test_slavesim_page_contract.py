@@ -1,14 +1,11 @@
 """模拟器会话清理与失败取证契约，不启动浏览器或连接设备。"""
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from testbench.slavesim_page import SlaveSimPage
-
-
-POINT_A = ("专用测试总线", 1, "0x03", 10)
-POINT_B = ("专用测试总线", 2, "0x03", 10)
 
 
 class MemoryDesktop:
@@ -47,8 +44,9 @@ class MemoryDesktop:
 
 
 class ScreenshotDriver:
-    def __init__(self, *, fail_capture=False):
+    def __init__(self, *, fail_capture=False, fail_close=False):
         self.fail_capture = fail_capture
+        self.fail_close = fail_close
         self.closed = False
 
     def save_screenshot(self, target):
@@ -59,65 +57,106 @@ class ScreenshotDriver:
 
     def quit(self):
         self.closed = True
+        if self.fail_close:
+            raise RuntimeError("浏览器关闭失败")
 
 
 class MemoryPage(SlaveSimPage):
-    """替换外部设值边界，仍经过真实会话步骤、等待、截图与清理逻辑。"""
+    """替换页面配置边界，仍经过真实会话步骤、等待、截图与清理逻辑。"""
 
-    def __init__(self, desktop, *, fail_points=(), fail_capture=False):
+    def __init__(self, desktop, *, buses=(), fail_capture=False, fail_close=False):
         super().__init__(desktop, "http://127.0.0.1:16000")
-        self.driver = ScreenshotDriver(fail_capture=fail_capture)
-        self.values = {POINT_A: 1234, POINT_B: 2345}
+        self.driver = ScreenshotDriver(fail_capture=fail_capture, fail_close=fail_close)
+        self.driver.find_element = self._element
+        self.driver.find_elements = lambda *_: self.draft
+        self.buses = [{"name": name, "link": f"/srv/live/tty{index}"} for index, name in enumerate(buses)]
+        self.draft = []
         self.calls = []
-        self.fail_points = set(fail_points)
 
     def __enter__(self):
         return self
 
-    def set_value(self, bus, station_id, function, address, value):
-        key = (bus, station_id, function, address)
-        self.calls.append((key, value))
-        with self._step("外部页面设置原值", expected=value):
-            self._wait(lambda _: True, "模拟页面未响应")
-            if key in self.fail_points:
-                raise RuntimeError(f"站号 {station_id} 恢复失败")
-            self.values[key] = value
+    def _element(self, _, name):
+        assert name == "delete-all-buses"
+
+        def delete():
+            assert self.draft
+            self.calls.append("批量删除草稿")
+            self.draft.clear()
+
+        return SimpleNamespace(click=delete)
+
+    def _read_configuration(self, label):
+        self.calls.append("读配置")
+        self.draft = list(self.buses)
+        return list(self.buses)
+
+    def _save_configuration(self, label, *, before, owned_names, removed_names):
+        assert not owned_names and not self.draft
+        assert before == self.buses
+        assert removed_names == tuple(bus["name"] for bus in before)
+        self.calls.append("保存清空配置")
+        self.buses = list(self.draft)
+        return self._read_configuration(label)
 
 
-def test_restore_all_completes_after_cancellation(tmp_path):
-    """取消阻止新业务，却不阻止恢复两站原值，也不清除取消状态。"""
+@pytest.mark.parametrize("buses", [(), ("旧总线", "本例总线")])
+def test_clear_all_completes_after_cancellation(tmp_path, buses):
+    """停止后仍清空所有已保存总线，空配置无需再保存。"""
     desktop = MemoryDesktop(tmp_path)
-    page = MemoryPage(desktop)
-    page._originals = {POINT_A: 11, POINT_B: 22}
+    page = MemoryPage(desktop, buses=buses, fail_capture=True)
     desktop.stopped = True
     with pytest.raises(InterruptedError):
         with page._step("不得执行的新业务"):
             pytest.fail("取消后执行了新业务")
     checks_before = desktop.stop_checks
-    page.restore_all()
-    assert page.values == {POINT_A: 11, POINT_B: 22}
-    assert page._originals == {}
+    page.clear_all_buses()
+    assert page.buses == []
+    assert page.calls == (["读配置", "批量删除草稿", "保存清空配置", "读配置"] if buses else ["读配置"])
+    assert desktop.metadata["slaveSim总线清理"] == {"清理前总线数": len(buses), "清理后总线数": 0}
     assert desktop.stopped and desktop.stop_checks == checks_before
     assert page._restoring is False
 
 
-def test_restore_failure_keeps_failed_point_and_attempts_other_station(tmp_path):
-    """一站恢复失败不截断另一站清理，未恢复点保留供诊断。"""
-    page = MemoryPage(MemoryDesktop(tmp_path), fail_points={POINT_A})
-    page._originals = {POINT_A: 11, POINT_B: 22}
-    with pytest.raises(RuntimeError, match="站号 1 恢复失败"):
-        page.restore_all()
-    assert page.calls == [(POINT_A, 11), (POINT_B, 22)]
-    assert page.values == {POINT_A: 1234, POINT_B: 22}
-    assert page._originals == {POINT_A: 11}
-    assert page._restoring is False
+def test_prepare_clears_only_the_draft_and_remembers_the_shared_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("TESTBENCH_DATA_ROOT", str(tmp_path))
+    page = MemoryPage(MemoryDesktop(tmp_path), buses=("旧总线一", "旧总线二"))
+    before = page._prepare_empty_configuration("准备新总线前")
+    assert before == page.buses and len(before) == 2
+    assert page.draft == []
+    assert page.calls == ["读配置", "批量删除草稿"]
+    next_page = SlaveSimPage(page.desktop, page.url)
+    assert str(next_page._serial_directory("/srv/serial-sim/tty0")) == "/srv/live"
+    other_page = SlaveSimPage(page.desktop, "http://127.0.0.1:17000")
+    assert str(other_page._serial_directory("/srv/serial-sim/tty0")) == "/srv/serial-sim"
 
 
-def test_context_cleanup_failure_preserves_original_business_exception(tmp_path):
-    """恢复失败记录独立诊断并关闭自有浏览器，原业务断言对象仍传播。"""
+def test_cleanup_reload_confirms_discard_of_an_unsaved_draft(tmp_path):
     desktop = MemoryDesktop(tmp_path)
-    page = MemoryPage(desktop, fail_points={POINT_A})
-    page._originals = {POINT_A: 11}
+    page = SlaveSimPage(desktop, "http://127.0.0.1:16000")
+    page.driver = ScreenshotDriver()
+    calls = []
+    alert = SimpleNamespace(text="重新读取会丢弃尚未保存的配置修改，是否继续？",
+                            accept=lambda: calls.append("丢弃未保存草稿"))
+    page.driver.switch_to = SimpleNamespace(alert=alert)
+    nodes = {
+        "show-config": SimpleNamespace(click=lambda: calls.append("打开配置")),
+        "config-fields": SimpleNamespace(is_enabled=lambda: True),
+        "reload-config": SimpleNamespace(click=lambda: calls.append("重新读取")),
+        "config-status": SimpleNamespace(text="已读取当前配置"),
+    }
+    page.driver.find_element = lambda _, name: nodes[name]
+    page._configuration_snapshot = lambda _: [{"name": "已保存的总线"}]
+    page._restoring = True
+
+    assert page._read_configuration("清理前重读") == [{"name": "已保存的总线"}]
+    assert calls == ["打开配置", "重新读取", "丢弃未保存草稿"]
+
+
+def test_context_close_failure_preserves_original_business_exception(tmp_path):
+    """关闭浏览器失败记录独立诊断，原业务断言对象仍传播。"""
+    desktop = MemoryDesktop(tmp_path)
+    page = MemoryPage(desktop, fail_close=True)
     driver = page.driver
     original = AssertionError("双端实际值不一致")
     desktop.failure = str(original)
@@ -126,18 +165,17 @@ def test_context_cleanup_failure_preserves_original_business_exception(tmp_path)
             raise original
     assert caught.value is original
     assert desktop.failure == str(original)
-    assert "恢复失败" in desktop.cleanup_failure
-    assert "slaveSim清理错误" in desktop.metadata
+    assert "浏览器清理失败" in desktop.cleanup_failure
+    assert "slaveSim浏览器清理错误" in desktop.metadata
     assert driver.closed and page.driver is None
 
 
-def test_context_success_does_not_hide_cleanup_failure(tmp_path):
-    """业务未抛错时恢复故障仍使上下文失败，不能报告假通过。"""
+def test_context_success_does_not_hide_close_failure(tmp_path):
+    """业务未抛错时关闭故障仍使上下文失败。"""
     desktop = MemoryDesktop(tmp_path)
-    page = MemoryPage(desktop, fail_points={POINT_A})
-    page._originals = {POINT_A: 11}
+    page = MemoryPage(desktop, fail_close=True)
     driver = page.driver
-    with pytest.raises(RuntimeError, match="slaveSim 原值恢复失败"):
+    with pytest.raises(RuntimeError, match="slaveSim 浏览器清理失败"):
         with page:
             pass
     assert desktop.cleanup_failure

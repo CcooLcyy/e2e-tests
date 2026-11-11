@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,11 +14,16 @@ from testbench.huawei_fleet import HuaweiFleetConfig, READ_POINTS, point_expecte
 from testbench.huawei_fleet_run import HuaweiFleetRun, STAGES
 
 
-def run_business_plan(scenario):
+def load_business_case():
     path = Path(__file__).resolve().parents[1] / "tests" / "test_huawei_fleet.py"
     spec = importlib.util.spec_from_file_location("huawei_fleet_business_case", path)
     case = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(case)
+    return case
+
+
+def run_business_plan(scenario):
+    case = load_business_case()
     request = SimpleNamespace(node=SimpleNamespace(nodeid="huawei-fleet"))
     case.run_steps(request, case.BUSINESS_STEPS, scenario)
 
@@ -193,3 +199,69 @@ def test_missing_screenshot_prevents_green_device_stage(tmp_path):
     assert scenario.results[0]["通过"] is False
     assert "双端证据缺失" in scenario.results[0]["工况错误"][0]
     assert scenario.desktop.metadata["华为验收汇总"]["全部抄通"] is False
+
+
+@pytest.mark.parametrize("business_result", ["passed", "failed", "cancelled"])
+def test_fleet_cleanup_failure_captures_both_pages_and_still_clears_buses(tmp_path, monkeypatch, business_result):
+    case = load_business_case()
+    task = tmp_path / "task.json"
+    task.write_text(json.dumps({"environment": {"slavesim_url": "http://localhost:16000"}}), encoding="utf-8")
+    monkeypatch.setenv("TESTBENCH_TASK", str(task))
+    monkeypatch.delenv("TESTBENCH_STOP", raising=False)
+    calls = []
+    upper_error = RuntimeError("上位机连接清理失败")
+    desktop = SimpleNamespace(artifacts=tmp_path, metadata={}, screenshots=[], failure=None,
+                              capture=lambda *args, **kwargs: calls.append("上位机现场"))
+
+    class Simulator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            calls.append("关闭浏览器")
+
+        def prepare_owned_fleet(self, *_args, **_kwargs):
+            return None, []
+
+        def capture(self, *_args, **_kwargs):
+            calls.append("模拟器现场")
+
+        def clear_all_buses(self):
+            calls.append("清空总线")
+            raise RuntimeError("模拟器清理失败")
+
+    def cleanup_upper():
+        calls.append("清理上位机")
+        raise upper_error
+
+    upper = SimpleNamespace(creation_started=True, connect_site=lambda: None, open_current_links=lambda: None,
+                            assert_serial_paths_available=None, cleanup=cleanup_upper)
+    monkeypatch.setattr("testbench.huawei_slavesim_page.HuaweiSlaveSimPage", Simulator)
+    monkeypatch.setattr(case, "HuaweiRtuPage", lambda _: upper)
+    monkeypatch.setattr(case, "load_login_account", lambda _: object())
+    monkeypatch.setattr(case, "run_steps", lambda *_: None)
+    fixtures = {"slavesim_browser": object(), "fresh_desktop": desktop}
+    request = SimpleNamespace(node=SimpleNamespace(_bench_reports=[]), getfixturevalue=fixtures.__getitem__)
+    generator = case.huawei_fleet.__wrapped__(request)
+    next(generator)
+
+    if business_result == "cancelled":
+        stop = tmp_path / "stop"
+        stop.touch()
+        monkeypatch.setenv("TESTBENCH_STOP", str(stop))
+    request.node._bench_reports.append(SimpleNamespace(failed=business_result == "failed"))
+    if business_result == "passed":
+        with pytest.raises(RuntimeError) as caught:
+            next(generator)
+        assert caught.value is upper_error
+    else:
+        with pytest.raises(StopIteration):
+            next(generator)
+
+    prior_evidence = ["模拟器现场", "上位机现场"] if business_result != "passed" else []
+    assert calls == prior_evidence + ["清理上位机", "模拟器现场", "上位机现场", "清空总线", "关闭浏览器"]
+    assert desktop.metadata["华为连接清理错误"] == str(upper_error)
+    assert desktop.metadata["华为模拟器清理错误"] == "模拟器清理失败"

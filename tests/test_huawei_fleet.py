@@ -28,10 +28,10 @@ FLEET_PREPARE = Step("fleet.prepare", "检查 slaveSim 入口并读取测试账�
 SIMULATOR_START = Step("fleet.simulator.open", "打开 slaveSim 观察会话", "运行页面显示新的状态刷新")
 SIMULATOR_FINISH = Step("fleet.simulator.close", "关闭 slaveSim 观察会话", "释放本次浏览器资源")
 OPEN_LINKS = Step("fleet.links.open", "打开上位机当前目标的 RTU 配置", "当前设备的 RTU 连接列表可用")
-SIMULATOR_CREATE = Step("fleet.simulator.create", "在 slaveSim 创建本例六路 21 台华为机群",
-                        "读回本例总线、实际串口和站号，确认串口可用于上位机")
+SIMULATOR_CREATE = Step("fleet.simulator.create", "读取并替换 slaveSim 全部总线，创建六路 21 台华为机群",
+                        "一次保存并应用，读回六路总线、实际串口和站号，确认串口可用于上位机")
 FLEET_CLEANUP = Step("fleet.links.cleanup", "停止并删除本次机群连接", "本次创建的连接均已清理")
-SIMULATOR_CLEANUP = Step("fleet.simulator.cleanup", "删除本次创建的 slaveSim 总线", "只移除已确认属于本例的六路机群")
+SIMULATOR_CLEANUP = Step("fleet.simulator.cleanup", "清空 slaveSim 全部总线", "读取配置确认没有剩余总线")
 LOGIN_STEPS = login_steps("login")
 
 
@@ -59,6 +59,7 @@ def huawei_fleet(request):
                                HuaweiSlaveSimPage(desktop, url, browser=browser)) as simulator:
         scenario = None
         setup_failed = False
+        simulator_preparation_started = False
 
         def capture_failure(description):
             if scenario is not None:
@@ -80,6 +81,7 @@ def huawei_fleet(request):
                 upper.open_current_links()
             run_id = uuid4().hex[:16]
             with track_fixture_step(request, SIMULATOR_CREATE):
+                simulator_preparation_started = True
                 config, buses = simulator.prepare_owned_fleet(timeout, run_id, check_paths=upper.assert_serial_paths_available)
             scenario = HuaweiFleetRun(desktop, simulator, upper, config, run_id, buses=buses)
             desktop.metadata["华为验收阶段"] = "准备本例连接并驱动模拟器工况"
@@ -90,36 +92,42 @@ def huawei_fleet(request):
             capture_failure("前置阶段失败，保留两端现场")
             raise
         finally:
-            if not setup_failed and any(report.failed for report in getattr(request.node, "_bench_reports", [])):
-                capture_failure("机群验收失败，关闭浏览器前现场")
-            had_failure = setup_failed or sys.exc_info()[0] is not None or any(
-                report.failed for report in getattr(request.node, "_bench_reports", []))
+            business_failed = any(report.failed for report in getattr(request.node, "_bench_reports", []))
+            stop_path = os.environ.get("TESTBENCH_STOP")
+            case_stopped = bool(stop_path and Path(stop_path).exists())
+            had_failure = setup_failed or sys.exc_info()[0] is not None or business_failed or case_stopped
             try:
+                if not setup_failed and (business_failed or case_stopped):
+                    capture_failure("机群验收失败或中断，清理前保留两端现场")
                 if scenario is not None:
-                    scenario.write_report()
-            except Exception as error:
-                desktop.metadata["华为报告写入错误"] = str(error)
-                logging.getLogger(__name__).exception("华为汇总报告写入失败，保留原始业务错误")
-                if not had_failure:
-                    raise
+                    try:
+                        scenario.write_report()
+                    except Exception as error:
+                        desktop.metadata["华为报告写入错误"] = str(error)
+                        logging.getLogger(__name__).exception("华为汇总报告写入失败")
+                        if not had_failure:
+                            raise
             finally:
                 cleanup_failure = None
-                if upper.creation_started:
-                    try:
+                try:
+                    if upper.creation_started:
                         with track_fixture_step(request, FLEET_CLEANUP):
                             upper.cleanup()
-                    except Exception as error:
-                        cleanup_failure = error
-                        desktop.metadata["华为连接清理错误"] = str(error)
-                        logging.getLogger(__name__).exception("华为连接清理失败，保留对应模拟器资源")
-                if cleanup_failure is None and simulator.owned_fleet:
-                    try:
-                        with track_fixture_step(request, SIMULATOR_CLEANUP):
-                            simulator.cleanup_owned_fleet()
-                    except Exception as error:
-                        cleanup_failure = error
-                        desktop.metadata["华为模拟器清理错误"] = str(error)
-                        logging.getLogger(__name__).exception("华为模拟器资源清理失败")
+                except Exception as error:
+                    cleanup_failure = error
+                    desktop.metadata["华为连接清理错误"] = str(error)
+                    logging.getLogger(__name__).exception("华为连接清理失败")
+                    capture_failure("上位机连接清理失败，清空模拟器前保留两端现场")
+                finally:
+                    if simulator_preparation_started:
+                        try:
+                            with track_fixture_step(request, SIMULATOR_CLEANUP):
+                                simulator.clear_all_buses()
+                        except Exception as error:
+                            if cleanup_failure is None:
+                                cleanup_failure = error
+                            desktop.metadata["华为模拟器清理错误"] = str(error)
+                            logging.getLogger(__name__).exception("华为模拟器资源清理失败")
                 if cleanup_failure is not None and not (had_failure or sys.exc_info()[0] is not None):
                     raise cleanup_failure
 

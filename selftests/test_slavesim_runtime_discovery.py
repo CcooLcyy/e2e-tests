@@ -77,56 +77,57 @@ def environment():
         "serial_devices": [f"/dev/old{i}" for i in range(6)]}, "modbus_baud_rate": 12345}
 
 
-def test_basic_prepare_uses_live_topology_without_saving_or_manual_mapping(tmp_path):
-    page = SlaveSimPage(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
-    page.driver = ReadOnlyDriver()
-    page._read_configuration = lambda _: [{"name": "实际", "link": "/srv/live/tty9",
-                                           "slaves": [manual(9, 10), manual(28, 17)]}]
-    page._save_configuration = lambda _: pytest.fail("存在合适资源时不应保存整份配置")
+@pytest.fixture
+def basic_draft(tmp_path):
+    page = simulator_page(tmp_path, SlaveSimPage)
+    previous = [{"name": "旧总线", "link": "/srv/live/tty9", "slaves": [manual(1, 0)]}]
+    link = "/srv/live/new-tty"
+    draft = {"name": "页面默认总线", "link": link, "slaves": []}
+    page._prepare_empty_configuration = lambda _: previous
+    page._add_default_bus = lambda *, replace_before: (draft["name"], link)
+    page._config_bus = lambda _: draft
+    page._field = lambda card, label: card
+    page._replace = lambda card, name: card.update(name=name)
+    page._add_basic_stations = lambda name, count: draft["slaves"].extend([manual(9, 10), manual(28, 17)][:count])
+    return page, previous, draft
+
+
+def test_basic_prepare_uses_new_topology_and_saved_actual_mapping(basic_draft):
+    page, previous, draft = basic_draft
     calls = []
-    page.observe = lambda *args: calls.append(args) or {"link_path": "/srv/live/tty9"}
-    checked = []
-    def check_paths(paths):
-        assert calls == []
-        checked.append(paths)
-    config = page.prepare_basic(environment(), check_paths=check_paths)
-    assert config.serial_device == "/srv/live/tty9" and config.bus == "实际"
+
+    def save(label, *, before, owned_names, removed_names):
+        assert before == previous
+        assert owned_names == (draft["name"],) and removed_names == ("旧总线",)
+        calls.append(("保存", draft["name"]))
+        return [draft]
+
+    page._save_configuration = save
+    page.observe = lambda *args: calls.append(args) or {"link_path": draft["link"]}
+    config = page.prepare_basic(environment(), check_paths=lambda paths: calls.append(paths))
+    assert config.serial_device == draft["link"] and config.bus == draft["name"]
     assert [(station.station_id, station.address) for station in config.stations] == [(9, 10), (28, 17)]
     assert config.baud_rate == 9600
-    assert checked == [("/srv/live/tty9",)]
-    assert calls == [("实际", 9, "0x03", 10), ("实际", 28, "0x03", 17)]
+    assert calls == [(draft["link"],), ("保存", draft["name"]),
+                     (draft["name"], 9, "0x03", 10), (draft["name"], 28, "0x03", 17)]
 
 
-def test_basic_runtime_path_mismatch_keeps_failure(tmp_path):
-    page = SlaveSimPage(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
-    page.driver = ReadOnlyDriver()
-    page._read_configuration = lambda _: [{"name": "实际", "link": "/srv/live/tty9",
-                                           "slaves": [manual(1, 0), manual(2, 0)]}]
+def test_basic_runtime_path_mismatch_keeps_failure(basic_draft):
+    page, _, draft = basic_draft
+    page._save_configuration = lambda *args, **kwargs: [draft]
     page.observe = lambda *_: {"link_path": "/srv/another/tty9"}
     with pytest.raises(AssertionError, match="运行路径"):
         page.prepare_basic(environment())
 
 
-def test_basic_path_conflict_prevents_observation_and_modification(tmp_path):
-    page = SlaveSimPage(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
-    page._read_configuration = lambda _: [{"name": "实际", "link": "/srv/live/tty9",
-                                           "slaves": [manual(1, 0), manual(2, 0)]}]
+def test_basic_path_conflict_prevents_preparation_save_and_observation(basic_draft):
+    page, _, _ = basic_draft
     page.observe = lambda *_: pytest.fail("路径占用时不得设置或读取测试点")
-    page._save_configuration = lambda _: pytest.fail("路径占用时不得保存配置")
+    page._save_configuration = lambda *args, **kwargs: pytest.fail("路径占用时不得保存准备配置")
     def conflict(_):
         raise AssertionError("DSP串口路径已占用")
     with pytest.raises(AssertionError, match="已占用"):
         page.prepare_basic(environment(), check_paths=conflict)
-
-
-def test_basic_does_not_rebuild_unrelated_running_devices(tmp_path):
-    page = SlaveSimPage(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
-    page.driver = ReadOnlyDriver()
-    unrelated = {"name": "现有", "link": "/srv/live/tty9", "slaves": [manual(1, 0)]}
-    page._read_configuration = lambda _: [unrelated]
-    page._add_default_bus = lambda: pytest.fail("不应改变含无关运行资源的配置")
-    with pytest.raises(RuntimeError, match="重置既有设备运行状态"):
-        page.prepare_basic(environment(), station_count=2)
 
 
 @pytest.mark.parametrize("marker", [None, "false", "true"])
@@ -141,8 +142,8 @@ def test_only_explicit_preservation_capability_allows_unrelated_running_devices(
             page._assert_save_safe(before, ("本例",))
 
 
-def fleet_page(tmp_path):
-    page = HuaweiSlaveSimPage(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
+def simulator_page(tmp_path, page_type=HuaweiSlaveSimPage):
+    page = page_type(SimpleNamespace(metadata={}, artifacts=tmp_path), "http://localhost:16000")
     page.driver = ReadOnlyDriver()
 
     @contextmanager
@@ -153,27 +154,17 @@ def fleet_page(tmp_path):
     return page
 
 
-def test_fleet_does_not_save_over_other_simulator_buses(tmp_path):
-    page = fleet_page(tmp_path)
-    page._read_configuration = lambda _: [{"name": "既有", "link": "/srv/existing", "slaves": []}]
-    page._save_configuration = lambda _: pytest.fail("已有其他资源时不得保存")
-    with pytest.raises(RuntimeError, match="重置既有设备运行状态"):
-        page.prepare_owned_fleet(30, "本次", check_paths=lambda _: pytest.fail("不应分配串口"))
-    assert page.owned_fleet is None
-
-
 def test_fleet_uses_created_configuration_readback(tmp_path):
-    page = fleet_page(tmp_path)
+    page = simulator_page(tmp_path)
     checked = []
 
     def create(buses, *, check_paths):
         paths = tuple(f"/srv/actual/tty{index}" for index in range(6))
         check_paths(paths)
-        page.owned_fleet = {bus["name"]: {
+        return [{
             "name": bus["name"], "link": path,
             "slaves": [{"station_id": device["station_id"]} for device in bus["devices"]],
-        } for bus, path in zip(buses, paths, strict=True)}
-        return deepcopy(list(page.owned_fleet.values()))
+        } for bus, path in zip(buses, paths, strict=True)]
 
     page.create_fleet = create
     config, actual = page.prepare_owned_fleet(30, "本次", check_paths=checked.append)
@@ -182,45 +173,9 @@ def test_fleet_uses_created_configuration_readback(tmp_path):
     assert sum(len(bus["devices"]) for bus in actual) == 21
 
 
-def test_fleet_cleanup_refuses_a_changed_or_foreign_configuration(tmp_path):
-    page = fleet_page(tmp_path)
-    page.driver = ReadOnlyDriver("true")
-    owned = {"name": "本次", "link": "/srv/case", "slaves": [{"station_id": 1}]}
-    page.owned_fleet = {"本次": owned}
-    page._read_configuration = lambda _: [{**owned, "link": "/srv/changed"},
-                                          {"name": "其他", "link": "/srv/foreign", "slaves": []}]
-    page._config_bus = lambda _: pytest.fail("拒绝删除任意总线")
-    with pytest.raises(AssertionError, match="不一致"):
-        page.cleanup_owned_fleet()
-    assert page.owned_fleet == {"本次": owned}
-    assert not page._restoring
-
-
-def test_fleet_cleanup_with_preservation_capability_keeps_foreign_fleet(tmp_path):
-    page = fleet_page(tmp_path)
-    page.driver = ReadOnlyDriver("true")
-    owned = {"name": "本次", "link": "/srv/case", "slaves": [{"station_id": 1}]}
-    foreign = {"name": "其他", "link": "/srv/foreign", "slaves": [{"station_id": 1, "model": "huawei_v3"}]}
-    page.owned_fleet = {"本次": owned}
-    page._read_configuration = lambda _: deepcopy([owned, foreign])
-    deleted = []
-    page._config_bus = lambda name: SimpleNamespace(find_element=lambda *_: SimpleNamespace(click=lambda: deleted.append(name)))
-
-    def save(_, *, before, owned_names, protect_empty_buses):
-        assert before == [owned, foreign]
-        assert set(owned_names) == {"本次"}
-        assert deleted == ["本次"]
-        return [foreign]
-
-    page._save_configuration = save
-    page.cleanup_owned_fleet()
-    assert page.owned_fleet is None
-    assert not page._restoring
-
-
 @pytest.mark.parametrize("changed_at", ["draft", "readback"])
 def test_configuration_save_verifies_foreign_topology_before_and_after(tmp_path, changed_at):
-    page = fleet_page(tmp_path)
+    page = simulator_page(tmp_path, SlaveSimPage)
     saved = []
     fieldset = SimpleNamespace(get_dom_attribute=lambda _: "true")
     save = SimpleNamespace(click=lambda: saved.append(True))
@@ -234,6 +189,26 @@ def test_configuration_save_verifies_foreign_topology_before_and_after(tmp_path,
     with pytest.raises(AssertionError, match="无关 slaveSim 总线配置发生变化：既有"):
         page._save_configuration("新增", before=[foreign], owned_names=("本次",))
     assert bool(saved) == (changed_at == "readback")
+
+
+@pytest.mark.parametrize("remaining_at", ["draft", "readback", None])
+def test_configuration_save_requires_deleted_buses_to_be_absent(tmp_path, remaining_at):
+    page = simulator_page(tmp_path, SlaveSimPage)
+    saved = []
+    fieldset = SimpleNamespace(get_dom_attribute=lambda _: None)
+    save = SimpleNamespace(click=lambda: saved.append(True))
+    page.driver = SimpleNamespace(find_element=lambda _, name: fieldset if name == "config-fields" else save)
+    page._wait = lambda *_: None
+    old = {"name": "旧总线", "link": "/srv/old", "slaves": [manual(1, 0)]}
+    page._configuration_snapshot = lambda _: [old] if remaining_at == "draft" else []
+    page._read_configuration = lambda _: [old] if remaining_at == "readback" else []
+    arguments = {"before": [old], "owned_names": (), "removed_names": ("旧总线",)}
+    if remaining_at is None:
+        assert page._save_configuration("清空", **arguments) == []
+    else:
+        with pytest.raises(AssertionError, match="旧总线"):
+            page._save_configuration("清空", **arguments)
+    assert bool(saved) == (remaining_at != "draft")
 
 
 def capacity_fleet():

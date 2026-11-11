@@ -67,6 +67,7 @@ def _target_row(context):
 
 
 def _prepare_simulator(context):
+    context.simulator_preparation_started = True
     context.paths = context.simulator.prepare(context.rtu.assert_serial_paths_available)
     context.desktop.metadata["本例品质模拟串口"] = context.paths
 
@@ -245,15 +246,15 @@ ENVIRONMENT = Step("quality.environment", "检查 slaveSim 和独立 104 主站�
 SIM_START = Step("quality.sim.start", "打开本例 slaveSim 会话", "显示模拟器运行页及配置入口")
 SIM_FINISH = Step("quality.sim.finish", "关闭本例 slaveSim 浏览器", "独立浏览器会话已关闭")
 UPPER_CLEANUP = Step("quality.upper.cleanup", "清理本例 IEC104 与 RTU 链路", "专用连接、点表及关联路由已删除")
-SIM_CLEANUP = Step("quality.sim.cleanup", "清理本例两路模拟总线", "既有模拟器配置保留")
+SIM_CLEANUP = Step("quality.sim.cleanup", "清空 slaveSim 全部总线", "回读配置确认总线数为 0")
 LOGIN = (
     Step("quality.login.account", "读取测试账号", "专用平台账号配置有效", _load_account),
     *login_steps("quality.login"),
 )
 OPEN_PROTOCOL = Step("quality.rtu.links", "打开已连接设备的 RTU 配置", "可读取 RTU 连接列表", _open_protocol)
 PREPARE_SCENARIO = (
-    Step("quality.sim.prepare", "新建正常参照与静默目标模拟总线",
-         "实际串口路径可用于本例，参照站应答 100，目标站初始无应答", _prepare_simulator),
+    Step("quality.sim.prepare", "读取配置、删除旧总线并新建参照与目标总线",
+         "一次保存应用后仅有两路新总线，实际串口路径可用，参照站应答 100，目标站初始无应答", _prepare_simulator),
     Step("quality.rtu.reference", "创建并核对本例参照 RTU 点",
          "参照 RTU 连接与点表使用本例模拟串口、站号 1、保持寄存器 0 和正死区",
          lambda context: _prepare_rtu(context, "reference")),
@@ -335,18 +336,27 @@ def _capture_failure(context):
 
 
 def _cleanup(context, request, failure):
-    step = UPPER_CLEANUP
+    upper_failed = False
+    metadata = context.desktop.metadata
     try:
-        with track_fixture_step(request, step):
+        with track_fixture_step(request, UPPER_CLEANUP):
             _cleanup_upper(context)
-        step = SIM_CLEANUP
-        with track_fixture_step(request, step):
-            context.simulator.cleanup()
-    except Exception as error:
-        context.desktop.metadata["RTU品质清理错误"] = f"{step.action}：{error}"
-        context.desktop.metadata["待核对的品质模拟资源"] = context.simulator.paths
+    except BaseException as error:
+        upper_failed = True
+        metadata.setdefault("RTU品质清理错误", []).append(f"{UPPER_CLEANUP.action}：{error}")
         if failure is None:
+            _capture_failure(context)
             raise
+    finally:
+        if context.simulator_preparation_started:
+            try:
+                with track_fixture_step(request, SIM_CLEANUP):
+                    context.simulator.clear_all_buses()
+            except BaseException as error:
+                metadata.setdefault("RTU品质清理错误", []).append(f"{SIM_CLEANUP.action}：{error}")
+                metadata["待核对的品质模拟资源"] = context.simulator.paths
+                if failure is None and not upper_failed:
+                    raise
 
 
 @case_plan(ENVIRONMENT, SLAVESIM_BROWSER_READY, DESKTOP_START, *LOGIN, SITE_CONNECT, OPEN_PROTOCOL, SIM_START, *PREPARE_SCENARIO,
@@ -363,7 +373,7 @@ def test_rtu_quality_reaches_iec104_with_unchanged_value(request):
     rtu = ModbusRtuPage(desktop)
     context = SimpleNamespace(name=name, profile={"common_address": 1, "phase_timeout_seconds": timeout},
                               desktop=desktop, page=PlatformLoginPage(desktop), rtu=rtu,
-                              iec104=RtuQualityIec104(rtu, name), rtu_points={})
+                              iec104=RtuQualityIec104(rtu, name), rtu_points={}, simulator_preparation_started=False)
     run_steps(request, LOGIN, context)
     with track_fixture_step(request, SITE_CONNECT):
         address = rtu.connect_site()

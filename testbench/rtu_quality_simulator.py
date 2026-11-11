@@ -53,17 +53,15 @@ class RtuQualitySimulator(SlaveSimPage):
                     1, "exception", "0x03", address, "UINT16", "const", "AB", value), bus
 
     def prepare(self, check_paths):
-        before = self._read_configuration("品质场景准备前")
-        self._check_owned_paths(before)
+        before = self._prepare_empty_configuration("品质场景准备前")
         for name in self.names.values():
-            if any(bus["name"] == name for bus in before):
-                raise AssertionError(f"已有同名模拟总线 {name}，不接管")
-            draft, link = self._add_default_bus()
+            draft, link = self._add_default_bus(replace_before=before)
             self._replace(self._field(self._config_bus(draft), "总线名称"), name)
             self.paths[name] = link
         check_paths(tuple(self.paths.values()))
         self._station(self.names["reference"], 0, 100)
-        actual = self._save_configuration("新建品质验收参照及静默目标总线", before=before, owned_names=self.paths)
+        actual = self._save_configuration("重建品质验收参照及静默目标总线", before=before,
+                                          owned_names=self.paths, removed_names=tuple(bus["name"] for bus in before))
         self._assert_mode(actual, "reference", 0, 100)
         self._assert_mode(actual, "target", None, 0)
         return {role: self.paths[name] for role, name in self.names.items()}
@@ -98,21 +96,3 @@ class RtuQualitySimulator(SlaveSimPage):
             evidence = self._wait(exchange, "slaveSim 未显示目标站本阶段的请求或应答报文", timeout=timeout)
             self._snapshot({"类型": "目标站实际RTU报文", "目标地址配置": address, "日志": evidence})
             return evidence
-
-    def cleanup(self):
-        if not self.paths:
-            return
-        self._restoring = True
-        try:
-            before = self._read_configuration("清理本例品质总线前")
-            owned = [bus["name"] for bus in before if bus["name"] in self.paths]
-            if not owned:
-                return
-            self._check_owned_paths(before)
-            for name in owned:
-                card = self._config_bus(name)
-                card.find_element(By.XPATH, "./summary/button[normalize-space(.)='删除总线']").click()
-            after = self._save_configuration("删除本例品质总线", before=before, owned_names=owned)
-            assert not any(bus["name"] in self.paths for bus in after), "清理后仍有本例模拟总线"
-        finally:
-            self._restoring = False

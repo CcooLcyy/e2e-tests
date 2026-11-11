@@ -31,11 +31,11 @@ RTU_PREPARE = Step("rtu.prepare", "读取 RTU 测试入口", "已提供 slaveSim
 SIMULATOR_START = Step("rtu.simulator.start", "打开 slaveSim 观察会话", "运行页面已加载且收到新刷新")
 RTU_LOGIN_STEPS = login_steps("login")
 RTU_OPEN = Step("rtu.open", "通过上位机当前业务入口打开 RTU 配置", "上位机显示可读取的连接列表")
-RTU_PREPARE_SIM = Step("rtu.simulator.prepare", "读取或创建本例 slaveSim 总线、站点及寄存器", "已记录运行态总线、串口和实际站点映射")
-RTU_RESET_SIM = Step("rtu.simulator.reset", "永久删除 slaveSim 原有总线并新建本例总线、站点及寄存器",
-                     "仅保留本例新建总线，已记录运行态总线、串口和实际站点映射")
+RTU_PREPARE_SIM = Step("rtu.simulator.prepare", "检查并清空 slaveSim 原有总线，按本例重建总线、站点及寄存器",
+                       "仅保留本例新建总线，已记录运行态总线、串口和实际站点映射")
 RTU_CLEANUP = Step("rtu.cleanup", "停止并清理本次创建的 RTU 连接及点表", "本例连接已删除")
-SIMULATOR_FINISH = Step("rtu.simulator.finish", "恢复或清理本例模拟资源，关闭 slaveSim 会话", "复用点恢复原值，本例新建总线已清理")
+SIMULATOR_CLEANUP = Step("rtu.simulator.cleanup", "清空 slaveSim 的全部总线", "保存后回读确认无总线")
+SIMULATOR_FINISH = Step("rtu.simulator.finish", "关闭 slaveSim 会话", "浏览器会话已关闭")
 
 
 class RtuScenario:
@@ -224,10 +224,10 @@ def observation_steps(prefix, index, raw, *, scaled=False, previous=None):
     )
 
 
-def rtu_plan(*steps, prepare_sim=RTU_PREPARE_SIM):
+def rtu_plan(*steps):
     return case_plan(RTU_PREPARE, SLAVESIM_BROWSER_READY, DESKTOP_START, SIMULATOR_START,
-                     *RTU_LOGIN_STEPS, SITE_CONNECT, RTU_OPEN, prepare_sim,
-                     *steps, RTU_CLEANUP, SIMULATOR_FINISH, DESKTOP_FINISH)
+                     *RTU_LOGIN_STEPS, SITE_CONNECT, RTU_OPEN, RTU_PREPARE_SIM,
+                     *steps, RTU_CLEANUP, SIMULATOR_CLEANUP, SIMULATOR_FINISH, DESKTOP_FINISH)
 
 
 def run_observations(request, steps, scenario):
@@ -241,7 +241,7 @@ def run_observations(request, steps, scenario):
 
 
 @contextmanager
-def _rtu_session(request, *, station_count=1, replace_all_buses=False):
+def _rtu_session(request, *, station_count=1):
     """打开本例的两个会话，失败时在清理前保留现场。"""
     from testbench.slavesim_page import SlaveSimPage
     from testbench.model import validate_slavesim_url
@@ -272,6 +272,7 @@ def _rtu_session(request, *, station_count=1, replace_all_buses=False):
     with track_fixture_context(request, SIMULATOR_START, SIMULATOR_FINISH,
                                SlaveSimPage(desktop, simulator_url, browser=browser)) as simulator:
         setup_failed = False
+        simulator_preparation_started = False
         try:
             login = SimpleNamespace(desktop=desktop, page=PlatformLoginPage(desktop), account=account)
             run_steps(request, RTU_LOGIN_STEPS, login)
@@ -279,10 +280,10 @@ def _rtu_session(request, *, station_count=1, replace_all_buses=False):
                 upper.connect_site()
             with track_fixture_step(request, RTU_OPEN):
                 upper.open_current_links()
-            with track_fixture_step(request, RTU_RESET_SIM if replace_all_buses else RTU_PREPARE_SIM):
+            with track_fixture_step(request, RTU_PREPARE_SIM):
+                simulator_preparation_started = True
                 config = simulator.prepare_basic(environment, station_count=station_count,
-                                                 check_paths=upper.assert_serial_paths_available,
-                                                 replace_all_buses=replace_all_buses)
+                                                 check_paths=upper.assert_serial_paths_available)
             desktop.metadata["RTU环境"] = asdict(config)
             desktop.metadata["RTU验收阶段"] = "业务验收"
             yield RtuScenario(desktop, simulator, upper, config)
@@ -292,24 +293,32 @@ def _rtu_session(request, *, station_count=1, replace_all_buses=False):
             raise
         finally:
             case_failed = any(report.failed for report in getattr(request.node, "_bench_reports", []))
-            if not setup_failed and case_failed:
+            stop_path = os.environ.get("TESTBENCH_STOP")
+            case_stopped = bool(stop_path and Path(stop_path).exists())
+            had_failure = setup_failed or case_failed or case_stopped
+            if not setup_failed and (case_failed or case_stopped):
                 capture_failure(simulator)
+            cleanup_failure = None
             if upper.creation_started:
                 try:
                     with track_fixture_step(request, RTU_CLEANUP):
                         upper.cleanup()
                 except Exception as error:
+                    cleanup_failure = error
                     desktop.metadata["RTU连接清理错误"] = str(error)
-                    simulator.retain_basic_bus()
-                    if not (setup_failed or case_failed):
-                        raise
-                    LOGGER.exception("RTU连接清理失败，保留原始用例错误")
-
-
-@pytest.fixture
-def rebuilt_rtu(request):
-    with _rtu_session(request, replace_all_buses=True) as scenario:
-        yield scenario
+                    LOGGER.exception("RTU连接清理失败")
+                    if not had_failure:
+                        capture_failure(simulator)
+            if simulator_preparation_started:
+                try:
+                    with track_fixture_step(request, SIMULATOR_CLEANUP):
+                        simulator.clear_all_buses()
+                except Exception as error:
+                    cleanup_failure = cleanup_failure or error
+                    desktop.metadata["slaveSim清理错误"] = str(error)
+                    LOGGER.exception("slaveSim 总线清理失败")
+            if cleanup_failure is not None and not had_failure:
+                raise cleanup_failure
 
 
 @pytest.fixture
@@ -379,10 +388,10 @@ TWO_STATIONS = (
 )
 
 
-@rtu_plan(*SAVED_CONFIGURATION, prepare_sim=RTU_RESET_SIM)
-def test_rtu_configuration_saved_on_both_pages(request, rebuilt_rtu):
+@rtu_plan(*SAVED_CONFIGURATION)
+def test_rtu_configuration_saved_on_both_pages(request, independent_rtu):
     """RTU连接与点表保存后重新读取一致，模拟器点位身份正确。"""
-    run_observations(request, SAVED_CONFIGURATION, rebuilt_rtu)
+    run_observations(request, SAVED_CONFIGURATION, independent_rtu)
 
 
 @rtu_plan(*INITIAL_ACQUISITION)

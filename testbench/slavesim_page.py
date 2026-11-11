@@ -2,13 +2,15 @@
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from hashlib import sha256
 import json
 import logging
 from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from selenium import webdriver
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import NoAlertPresentException, StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.service import Service
@@ -16,6 +18,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support.ui import Select
 
 from .model import validate_slavesim_url
+from .workspace import local_config
 
 
 LOG = logging.getLogger(__name__)
@@ -39,9 +42,7 @@ class SlaveSimPage:
         self.url = validate_slavesim_url(url, required=True)
         self.browser = browser
         self.driver = None
-        self._originals = {}
         self._verified = set()
-        self._temporary_basic_bus = None
         self._restoring = False
         self._snapshots = 0
 
@@ -57,6 +58,7 @@ class SlaveSimPage:
                 profile = self.desktop.artifacts / "slavesim-edge-profile"
                 profile.mkdir(parents=True, exist_ok=True)
                 options = webdriver.EdgeOptions()
+                options.set_capability("unhandledPromptBehavior", "ignore")
                 options.binary_location = str(browser.binary)
                 options.add_argument(f"--user-data-dir={profile.resolve()}")
                 options.add_argument("--no-first-run")
@@ -91,25 +93,14 @@ class SlaveSimPage:
             raise
 
     def __exit__(self, exc_type, exc_value, traceback):
-        cleanup = None
         try:
-            self.restore_all()
+            self.close()
         except Exception as error:
-            cleanup = error
-            self.desktop.cleanup_failure = f"slaveSim 原值恢复失败：{error}"
+            self.desktop.cleanup_failure = f"slaveSim 浏览器清理失败：{error}"
             self.desktop.failure = self.desktop.failure or self.desktop.cleanup_failure
-            self.desktop.metadata["slaveSim清理错误"] = str(error)
-            LOG.exception("slaveSim 原值恢复失败，保留原始业务异常")
-        finally:
-            try:
-                self.close()
-            except Exception as error:
-                cleanup = cleanup or error
-                self.desktop.cleanup_failure = f"slaveSim 浏览器清理失败：{error}"
-                self.desktop.failure = self.desktop.failure or self.desktop.cleanup_failure
-                self.desktop.metadata["slaveSim浏览器清理错误"] = str(error)
-        if cleanup is not None and exc_value is None:
-            raise RuntimeError(self.desktop.cleanup_failure) from cleanup
+            self.desktop.metadata["slaveSim浏览器清理错误"] = str(error)
+            if exc_value is None:
+                raise RuntimeError(self.desktop.cleanup_failure) from error
 
     def close(self):
         """仅退出本对象创建的浏览器会话。"""
@@ -159,7 +150,7 @@ class SlaveSimPage:
                 self._capture(entry, "failed", required=False)
                 raise
             else:
-                self._capture(entry, "passed", required=True)
+                self._capture(entry, "passed", required=not self._restoring)
 
     def _capture(self, entry, status, *, required):
         stem = f"slavesim-step-{entry['序号']:04d}-{status}"
@@ -260,25 +251,72 @@ class SlaveSimPage:
             self.driver.find_element(By.ID, "show-config").click()
             self._wait(lambda _: self.driver.find_element(By.ID, "config-fields").is_enabled(), "配置读取尚未完成")
             self.driver.find_element(By.ID, "reload-config").click()
+            if self._restoring:
+                try:
+                    alert = self.driver.switch_to.alert
+                except NoAlertPresentException:
+                    pass
+                else:
+                    if alert.text != "重新读取会丢弃尚未保存的配置修改，是否继续？":
+                        raise RuntimeError(f"slaveSim 清理时出现未预期的对话框：{alert.text}")
+                    alert.accept()
             self._wait(lambda _: (self.driver.find_element(By.ID, "config-fields").is_enabled()
                                   and self.driver.find_element(By.ID, "config-status").text == "已读取当前配置"),
                        "未读取slaveSim当前实际配置")
             return self._configuration_snapshot(label)
 
-    def _add_default_bus(self):
+    def _prepare_empty_configuration(self, label):
+        before = self._read_configuration(label)
+        if before:
+            if not self._restoring:
+                self._remember_serial_directory(PurePosixPath(before[0]["link"]).parent)
+            with self._step("从配置草稿删除全部 slaveSim 总线"):
+                self.driver.find_element(By.ID, "delete-all-buses").click()
+                self._wait(lambda _: not self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor"),
+                           "删除全部总线后配置草稿仍存在总线")
+        return before
+
+    def _serial_directory_file(self):
+        endpoint = sha256(self.url.rstrip("/").encode("utf-8")).hexdigest()
+        return local_config("slavesim-serial-directories") / f"{endpoint}.txt"
+
+    def _remember_serial_directory(self, directory):
+        target = self._serial_directory_file()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=target.parent) as temporary:
+            pending = Path(temporary) / target.name
+            pending.write_text(str(directory) + "\n", encoding="utf-8")
+            pending.replace(target)
+
+    def _serial_directory(self, default_link):
+        try:
+            stored = self._serial_directory_file().read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return PurePosixPath(default_link).parent
+        directory = PurePosixPath(stored)
+        if not directory.is_absolute() or ".." in directory.parts:
+            raise ValueError("本机记录的 slaveSim 串口目录无效")
+        return directory
+
+    def _add_default_bus(self, *, replace_before):
         before = len(self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor"))
         self.driver.find_element(By.ID, "add-bus").click()
         self._wait(lambda _: len(self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")) == before + 1,
                    "新增总线未显示")
         card = self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor")[-1]
         name = self._field(card, "总线名称").get_attribute("value")
-        link = self._field(card, "串口软链接路径").get_attribute("value")
+        field = self._field(card, "串口软链接路径")
+        # 沿用实际共享目录，每条新总线使用独立 PTY。
+        directory = (PurePosixPath(replace_before[0]["link"]).parent if replace_before
+                     else self._serial_directory(field.get_attribute("value")))
+        link = str(directory / f"e2e-rtu-{uuid4().hex[:16]}")
+        self._replace(field, link)
         return name, link
 
-    def _assert_save_safe(self, before, owned_names=(), *, protect_empty_buses=False):
+    def _assert_save_safe(self, before, owned_names=()):
         fieldset = self.driver.find_element(By.ID, "config-fields")
         preserves = fieldset.get_dom_attribute("data-preserves-unchanged-slaves") == "true"
-        if not preserves and any(bus["name"] not in owned_names and (protect_empty_buses or bus["slaves"]) for bus in before):
+        if not preserves and any(bus["name"] not in owned_names and bus["slaves"] for bus in before):
             raise RuntimeError("此 slaveSim 版本保存配置会重置既有设备运行状态，本例未保存配置")
         return preserves
 
@@ -290,12 +328,13 @@ class SlaveSimPage:
             changed = sorted(name for name in expected.keys() | actual.keys() if expected.get(name) != actual.get(name))
             raise AssertionError("无关 slaveSim 总线配置发生变化：" + "、".join(changed))
 
-    def _save_configuration(self, label, *, before, owned_names, protect_empty_buses=False, legacy_owned_names=None):
+    def _save_configuration(self, label, *, before, owned_names, legacy_owned_names=None, removed_names=()):
+        remaining_before = [bus for bus in before if bus["name"] not in removed_names]
         with self._step(f"保存并应用slaveSim必要配置：{label}"):
             legacy_owned_names = owned_names if legacy_owned_names is None else legacy_owned_names
-            preserves = self._assert_save_safe(before, legacy_owned_names, protect_empty_buses=protect_empty_buses)
+            preserves = self._assert_save_safe(remaining_before, legacy_owned_names)
             draft = self._configuration_snapshot(label + "保存前草稿")
-            self._assert_unrelated_unchanged(before, draft, owned_names)
+            self._assert_unrelated_unchanged(remaining_before, draft, owned_names)
             self.driver.find_element(By.ID, "save-config").click()
             def saved(_):
                 node = self.driver.find_element(By.ID, "config-status")
@@ -307,65 +346,51 @@ class SlaveSimPage:
                 "内容": label, "保留未改动从站运行状态": preserves,
                 "运行影响": "按页面声明保留未改动从站" if preserves else "旧版本全量重建，仅允许影响本例资源"})
         actual = self._read_configuration(label + "保存后实际配置")
-        self._assert_unrelated_unchanged(before, actual, owned_names)
+        self._assert_unrelated_unchanged(remaining_before, actual, owned_names)
         return actual
 
-    def prepare_basic(self, environment, *, station_count=2, check_paths=None, replace_all_buses=False):
-        """按用例要求复用现有资源或通过页面新建测试总线及手动点。"""
+    def _add_basic_stations(self, name, station_count):
+        for station in range(1, station_count + 1):
+            card = self._config_bus(name)
+            self._open(card)
+            Select(card.find_element(By.CSS_SELECTOR, "select[name='device-type']")).select_by_value("__custom_modbus__")
+            card.find_element(By.XPATH, ".//button[normalize-space(.)='添加设备']").click()
+            self._wait(lambda _: len(self._config_bus(name).find_elements(By.CSS_SELECTOR, ":scope > details.slave-editor")) == station,
+                       "新增自定义从站未显示")
+            slave = self._config_bus(name).find_elements(By.CSS_SELECTOR, ":scope > details.slave-editor")[-1]
+            self._open(slave)
+            group = slave.find_element(By.CSS_SELECTOR, ":scope > details.register-group")
+            self._open(group)
+            reg = self._unique(group.find_elements(By.CSS_SELECTOR, ":scope > details.register-editor"), "新增从站默认寄存器")
+            self._open(reg)
+            Select(self._field(reg, "访问权限")).select_by_value("readwrite")
+            Select(self._field(reg, "数值来源")).select_by_value("manual")
+
+    def prepare_basic(self, environment, *, station_count=2, check_paths=None):
+        """清空现有总线并通过页面新建本例总线及手动点。"""
         from .modbus_rtu_config import RtuRuntime, RtuStation
         from .slavesim_runtime import basic_candidate
-        before = self._read_configuration("基础采集准备前")
-        removed_names = tuple(bus["name"] for bus in before) if replace_all_buses else ()
-        selected = None if replace_all_buses else basic_candidate(before, station_count)
+        before = self._prepare_empty_configuration("基础采集准备前")
+        removed_names = tuple(bus["name"] for bus in before)
+        with self._step("按当前模拟器页面新增基础采集总线与手动点"):
+            default_name, new_link = self._add_default_bus(replace_before=before)
+            name = f"e2e-rtu-{uuid4().hex[:12]}"
+            self._replace(self._field(self._config_bus(default_name), "总线名称"), name)
+            self._add_basic_stations(name, station_count)
+            if check_paths is not None:
+                check_paths((new_link,))
+        actual = self._save_configuration("清空原有总线并建立本例总线及手动寄存器",
+                                          before=before, owned_names=(name,), removed_names=removed_names)
+        rebuilt = self._unique(actual, "重建后 slaveSim 总线")
+        if (rebuilt["name"], rebuilt["link"]) != (name, new_link):
+            raise AssertionError("重建后 slaveSim 总线名称或串口路径与本例不一致")
+        slaves = rebuilt["slaves"]
+        if len(slaves) != station_count or any(len(slave["registers"]) != 1 for slave in slaves):
+            raise AssertionError("重建后 slaveSim 从站数量或寄存器数量与本例不一致")
+        selected = basic_candidate(actual, station_count)
         if selected is None:
-            self._assert_save_safe(before, removed_names)
-            if removed_names:
-                with self._step("从配置草稿删除全部 slaveSim 总线"):
-                    self.driver.find_element(By.ID, "delete-all-buses").click()
-                    self._wait(lambda _: not self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor"),
-                               "删除全部总线后配置草稿仍存在总线")
-            with self._step("按当前模拟器页面新增基础采集总线与手动点"):
-                default_name, new_link = self._add_default_bus()
-                name = f"e2e-rtu-{uuid4().hex[:12]}"
-                card = self._config_bus(default_name)
-                if removed_names:
-                    # 沿用现有串口目录，使用新路径让 slaveSim 释放旧 PTY 并创建新 PTY。
-                    new_link = str(PurePosixPath(before[0]["link"]).with_name(name))
-                    self._replace(self._field(card, "串口软链接路径"), new_link)
-                self._replace(self._field(card, "总线名称"), name)
-                for station in range(1, station_count + 1):
-                    card = self._config_bus(name)
-                    self._open(card)
-                    Select(card.find_element(By.CSS_SELECTOR, "select[name='device-type']")).select_by_value("__custom_modbus__")
-                    card.find_element(By.XPATH, ".//button[normalize-space(.)='添加设备']").click()
-                    self._wait(lambda _: len(self._config_bus(name).find_elements(By.CSS_SELECTOR, ":scope > details.slave-editor")) == station,
-                               "新增自定义从站未显示")
-                    slave = self._config_bus(name).find_elements(By.CSS_SELECTOR, ":scope > details.slave-editor")[-1]
-                    self._open(slave)
-                    group = slave.find_element(By.CSS_SELECTOR, ":scope > details.register-group")
-                    self._open(group)
-                    reg = self._unique(group.find_elements(By.CSS_SELECTOR, ":scope > details.register-editor"), "新增从站默认寄存器")
-                    self._open(reg)
-                    Select(self._field(reg, "访问权限")).select_by_value("readwrite")
-                    Select(self._field(reg, "数值来源")).select_by_value("manual")
-                if check_paths is not None:
-                    check_paths((new_link,))
-            self._temporary_basic_bus = (name, new_link)
-            label = "永久删除原有总线并新建本例总线及手动寄存器" if removed_names else "新增基础采集总线及手动寄存器"
-            actual = self._save_configuration(label, before=before, owned_names=(*removed_names, name))
-            if replace_all_buses:
-                rebuilt = self._unique(actual, "重建后 slaveSim 总线")
-                if (rebuilt["name"], rebuilt["link"]) != (name, new_link):
-                    raise AssertionError("重建后 slaveSim 总线名称或串口路径与本例不一致")
-                slaves = rebuilt["slaves"]
-                if len(slaves) != station_count or any(len(slave["registers"]) != 1 for slave in slaves):
-                    raise AssertionError("重建后 slaveSim 从站数量或寄存器数量与本例不一致")
-            selected = basic_candidate([bus for bus in actual if bus["name"] == name], station_count)
-            if selected is None:
-                raise AssertionError("新增资源保存后未形成预期的 manual UINT16 AB 读写测试点")
+            raise AssertionError("新增资源保存后未形成预期的 manual UINT16 AB 读写测试点")
         bus, stations = selected
-        if check_paths is not None:
-            check_paths((bus["link"],))
         runtime = {"bus": bus["name"], "serial_device": bus["link"], "stations": stations}
         config = RtuRuntime(bus["name"], bus["link"], tuple(RtuStation(**station) for station in stations),
                             float(environment.get("modbus_acquisition_timeout", 300)))
@@ -378,32 +403,20 @@ class SlaveSimPage:
                 raise AssertionError("slaveSim运行路径与实际保存配置不一致，未猜测宿主机路径")
         return config
 
-    def _cleanup_basic_bus(self):
-        name, link = self._temporary_basic_bus
-        current = self._read_configuration("基础采集清理前")
-        target = next((bus for bus in current if bus["name"] == name), None)
-        if target is None:
-            self._temporary_basic_bus = None
-            return
-        if target["link"] != link:
-            raise RuntimeError(f"本例总线 {name} 的串口身份已变化，未删除")
-        self._assert_save_safe(current, (name,))
-        with self._step(f"删除本次创建的总线 {name}"):
-            self._config_bus(name).find_element(By.XPATH, "./summary//button[normalize-space(.)='删除总线']").click()
-        remaining = self._save_configuration("清理本次基础采集总线", before=current, owned_names=(name,))
-        if any(bus["name"] == name for bus in remaining):
-            raise AssertionError(f"本次创建的总线 {name} 未删除")
-        self._temporary_basic_bus = None
-
-    def retain_basic_bus(self):
-        """DSP 连接清理结果不明确时保留其模拟端，避免拆掉仍可能使用的串口。"""
-        if self._temporary_basic_bus is not None:
-            name, path = self._temporary_basic_bus
-            self.desktop.metadata["待人工清理的RTU模拟资源"] = {"总线": name, "串口": path}
-            self._temporary_basic_bus = None
+    def clear_all_buses(self):
+        """用例结束时清空全部总线并核对保存结果，任务已停止时仍执行。"""
+        self._restoring = True
+        try:
+            before = self._prepare_empty_configuration("用例结束清空前")
+            if before:
+                names = tuple(bus["name"] for bus in before)
+                self._save_configuration("用例结束清空全部总线", before=before, owned_names=(), removed_names=names)
+            self.desktop.metadata["slaveSim总线清理"] = {"清理前总线数": len(before), "清理后总线数": 0}
+        finally:
+            self._restoring = False
 
     def _verify_manual(self, key):
-        """只读配置页，确认原值恢复不会破坏动态来源或行为模型。"""
+        """只读配置页，确认测试点允许手动设值。"""
         if key in self._verified:
             return
         bus, station, function, address = key
@@ -497,12 +510,7 @@ class SlaveSimPage:
         key = self._key(bus, station_id, function, address)
         if type(value) is not int or not 0 <= value <= 65535:
             raise ValueError("UINT16 测试值必须为 0～65535 的整数")
-        original = self.observe(*key)
-        if key not in self._originals:
-            self._originals[key] = original["value"]
-            self.desktop.metadata.setdefault("slaveSim恢复原值", []).append({
-                "总线": bus, "站号": station_id, "功能码": function, "地址": address,
-                "原值": original["value"], "恢复状态": "待恢复"})
+        self.observe(*key)
         with self._step(f"设置总线 {bus} / 站号 {station_id} / 地址 {address}", expected=value) as entry:
             _, _, row = self._row(key)
             input_box = row.find_element(By.CSS_SELECTOR, "input[type=text]")
@@ -522,27 +530,3 @@ class SlaveSimPage:
             self._snapshot(result)
             entry["实际"] = json.dumps(result, ensure_ascii=False)
             return result
-
-    def restore_all(self):
-        """manual 来源恢复原数值；隐藏覆盖标志无页面撤销入口。"""
-        failures = []
-        self._restoring = True
-        try:
-            for key, value in list(self._originals.items()):
-                try:
-                    self.set_value(*key, value)
-                    del self._originals[key]
-                    for record in self.desktop.metadata.get("slaveSim恢复原值", []):
-                        if (record["总线"], record["站号"], record["功能码"], record["地址"]) == key:
-                            record["恢复状态"] = "已恢复原数值"
-                except Exception as error:
-                    failures.append(f"{key}：{error}")
-            if self._temporary_basic_bus is not None:
-                try:
-                    self._cleanup_basic_bus()
-                except Exception as error:
-                    failures.append(str(error))
-            if failures:
-                raise RuntimeError("；".join(failures))
-        finally:
-            self._restoring = False
