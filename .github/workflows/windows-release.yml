@@ -18,6 +18,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RELEASE_CHANNEL: ${{ github.event_name == 'push' && 'ci' || 'stable' }}
+
 jobs:
   verify:
     runs-on: windows-2025
@@ -35,6 +38,13 @@ jobs:
           node-version: '22'
           cache: npm
       - uses: dtolnay/rust-toolchain@1.94.1
+      - name: Cache Rust test dependencies and build outputs
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: testbench-windows-x64-verify
+          workspaces: src-tauri -> target
+          cache-bin: 'false'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Python self-tests
         run: |
           $ErrorActionPreference = 'Stop'
@@ -58,10 +68,9 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 40
     environment: testbench-signing
-    env:
-      RELEASE_CHANNEL: ${{ github.event_name == 'push' && 'ci' || 'stable' }}
     outputs:
       artifact-id: ${{ steps.installer.outputs.artifact-id }}
+      offline-inputs-id: ${{ steps.offline-inputs.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,6 +86,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.94.1
         with:
           targets: x86_64-pc-windows-msvc
+      - name: Cache Rust release dependencies and build outputs
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: testbench-windows-x64-release
+          workspaces: src-tauri -> target
+          cache-bin: 'false'
+          save-if: ${{ github.event_name == 'push' }}
       - name: Stage installed runtime
         run: |
           $ErrorActionPreference = 'Stop'
@@ -107,6 +123,49 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
+      - name: Archive offline installer inputs
+        run: |
+          $releaseConfig = Join-Path $env:RUNNER_TEMP 'testbench-tauri-release.json'
+          Copy-Item -LiteralPath $releaseConfig -Destination 'src-tauri/.bundle/testbench-tauri-release.json'
+          $paths = @(
+            'src-tauri/.bundle/testbench-tauri-release.json'
+            'src-tauri/.bundle/runtime'
+            'src-tauri/target/x86_64-pc-windows-msvc/release/mskdsp-testbench.exe'
+          )
+          tar.exe -cf (Join-Path $env:RUNNER_TEMP 'testbench-offline-inputs.tar') @paths
+      - name: Retain offline installer inputs
+        id: offline-inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbench-offline-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/testbench-offline-inputs.tar
+          if-no-files-found: error
+          retention-days: 14
+
+  build-offline-installer:
+    needs: build-installer
+    runs-on: windows-2025
+    timeout-minutes: 20
+    environment: testbench-signing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Download offline installer inputs
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build-installer.outputs.offline-inputs-id }}
+          path: ${{ runner.temp }}
+      - name: Restore offline installer inputs
+        run: tar.exe -xf (Join-Path $env:RUNNER_TEMP 'testbench-offline-inputs.tar')
+      - run: npm ci
       - name: Bundle and sign the offline NSIS installer
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TESTBENCH_TAURI_SIGNING_PRIVATE_KEY }}
@@ -114,11 +173,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          $releaseConfig = Join-Path $env:RUNNER_TEMP 'testbench-tauri-release.json'
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'Missing Testbench updater signing key' }
+          $releaseConfig = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/.bundle/testbench-tauri-release.json'
           $offlineConfig = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/tauri.offline.conf.json'
-          # Both variants use the same NSIS output path. The platform package is already staged and uploaded.
-          $nsisOutput = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis'
-          Move-Item -LiteralPath $nsisOutput -Destination (Join-Path $env:RUNNER_TEMP 'testbench-nsis-platform')
           npm run tauri -- bundle --target x86_64-pc-windows-msvc --bundles nsis --ci --no-binary-patching --config $releaseConfig --config $offlineConfig
       - name: Retain the offline installer
         uses: actions/upload-artifact@v4
