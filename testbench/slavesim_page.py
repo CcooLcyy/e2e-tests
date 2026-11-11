@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import json
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from selenium import webdriver
@@ -310,18 +310,29 @@ class SlaveSimPage:
         self._assert_unrelated_unchanged(before, actual, owned_names)
         return actual
 
-    def prepare_basic(self, environment, *, station_count=2, check_paths=None):
-        """读取现有资源，或通过页面创建本次测试使用的总线及手动点。"""
+    def prepare_basic(self, environment, *, station_count=2, check_paths=None, replace_all_buses=False):
+        """按用例要求复用现有资源或通过页面新建测试总线及手动点。"""
         from .modbus_rtu_config import RtuRuntime, RtuStation
         from .slavesim_runtime import basic_candidate
         before = self._read_configuration("基础采集准备前")
-        selected = basic_candidate(before, station_count)
+        removed_names = tuple(bus["name"] for bus in before) if replace_all_buses else ()
+        selected = None if replace_all_buses else basic_candidate(before, station_count)
         if selected is None:
-            self._assert_save_safe(before)
+            self._assert_save_safe(before, removed_names)
+            if removed_names:
+                with self._step("从配置草稿删除全部 slaveSim 总线"):
+                    self.driver.find_element(By.ID, "delete-all-buses").click()
+                    self._wait(lambda _: not self.driver.find_elements(By.CSS_SELECTOR, "#config-buses > details.bus-editor"),
+                               "删除全部总线后配置草稿仍存在总线")
             with self._step("按当前模拟器页面新增基础采集总线与手动点"):
                 default_name, new_link = self._add_default_bus()
                 name = f"e2e-rtu-{uuid4().hex[:12]}"
-                self._replace(self._field(self._config_bus(default_name), "总线名称"), name)
+                card = self._config_bus(default_name)
+                if removed_names:
+                    # 沿用现有串口目录，使用新路径让 slaveSim 释放旧 PTY 并创建新 PTY。
+                    new_link = str(PurePosixPath(before[0]["link"]).with_name(name))
+                    self._replace(self._field(card, "串口软链接路径"), new_link)
+                self._replace(self._field(card, "总线名称"), name)
                 for station in range(1, station_count + 1):
                     card = self._config_bus(name)
                     self._open(card)
@@ -340,7 +351,15 @@ class SlaveSimPage:
                 if check_paths is not None:
                     check_paths((new_link,))
             self._temporary_basic_bus = (name, new_link)
-            actual = self._save_configuration("新增基础采集总线及手动寄存器", before=before, owned_names=(name,))
+            label = "永久删除原有总线并新建本例总线及手动寄存器" if removed_names else "新增基础采集总线及手动寄存器"
+            actual = self._save_configuration(label, before=before, owned_names=(*removed_names, name))
+            if replace_all_buses:
+                rebuilt = self._unique(actual, "重建后 slaveSim 总线")
+                if (rebuilt["name"], rebuilt["link"]) != (name, new_link):
+                    raise AssertionError("重建后 slaveSim 总线名称或串口路径与本例不一致")
+                slaves = rebuilt["slaves"]
+                if len(slaves) != station_count or any(len(slave["registers"]) != 1 for slave in slaves):
+                    raise AssertionError("重建后 slaveSim 从站数量或寄存器数量与本例不一致")
             selected = basic_candidate([bus for bus in actual if bus["name"] == name], station_count)
             if selected is None:
                 raise AssertionError("新增资源保存后未形成预期的 manual UINT16 AB 读写测试点")
