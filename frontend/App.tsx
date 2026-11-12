@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, Clock3, FileText, FolderOpen, History as HistoryIcon, Layers3, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, Clock3, FileText, FolderOpen, History as HistoryIcon, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
 import { call, choose, desktop, openArtifact } from './api';
 import type { Bootstrap, CaseInfo, CasePackActivation, CasePackStatus, Detail, Environment, History, Master104Check, Poll, PreparedCasePack } from './api';
 import { applyEvents, counts, initialRecords, labels, planProgress } from './state';
@@ -410,7 +410,7 @@ export default function App() {
       <div className="version">DESKTOP EDITION</div>
     </aside>
 
-    <main className="workspace">
+    <main className={page==='execution'?'workspace execution-workspace':'workspace'}>
       <header className="topbar">
         <div className="breadcrumb">工作空间 <ChevronRight size={14}/><span>{{execution:'测试执行',environment:'测试环境',history:'历史报告'}[page]}</span></div>
         <div className="topbar-right">
@@ -418,17 +418,18 @@ export default function App() {
           <span className="avatar">M</span>
         </div>
       </header>
-      <div className={page==='environment'?'page-scroll environment-page-scroll':'page-scroll'}>
-        <section className="page-title">
-          <div><div className="eyebrow">{page==='execution'?'TEST RUNNER':page==='environment'?'ENVIRONMENT':'REPORTS'}</div><h1>{{execution:'测试执行',environment:'测试环境',history:'历史报告'}[page]}</h1><p>{{execution:'选择测试用例，验证系统的每一个关键流程。',environment:'管理上位机运行环境，保持每次测试可控、可重复。',history:'回溯每次测试结果，查看执行记录与问题证据。'}[page]}</p></div>
-          {page==='execution'&&<div className="title-actions">
-            <button className="button" disabled={!ready || disabled || loading || casePackWorking || !!pendingCasePack}
-              onClick={() => void refreshCases()} data-testid="cases-refresh">
-              <RefreshCw size={15} className={loading || casePackWorking ? 'spin' : ''}/>刷新用例
-            </button>
-            {active?<button className="button danger" data-testid="run-stop" disabled={stopping} onClick={()=>void stop()}>{stopping?<LoaderCircle size={15} className="spin"/>:<Square size={13}/>} {stopping?'正在停止…':'停止测试'}</button>:<button className="button primary" data-testid="run-start" disabled={!ready||disabled||loading||!selected.size} onClick={()=>void start()}>{busy?<LoaderCircle size={16} className="spin"/>:<Play size={15} fill="currentColor"/>}开始测试<span className="button-count">{selected.size}</span></button>}
-          </div>}
-        </section>
+      <div className={`page-scroll ${page}-page-scroll`}>
+        {page==='execution' ? <section className="page-title execution-title">
+          <h1>测试执行</h1>
+          <div className="execution-environment">
+            <strong>{environment.name}</strong>
+            <span className="soft-tag">{environment.mode==='fresh'?'全新独立副本':'固定测试工作区'}</span>
+            <span>等待 {environment.timeout} 秒</span>
+            <button className="text-button" onClick={()=>setPage('environment')}>环境设置<ArrowRight size={14}/></button>
+          </div>
+        </section> : <section className="page-title">
+          <div><div className="eyebrow">{page==='environment'?'ENVIRONMENT':'REPORTS'}</div><h1>{page==='environment'?'测试环境':'历史报告'}</h1><p>{page==='environment'?'管理上位机运行环境，保持每次测试可控、可重复。':'回溯每次测试结果，查看执行记录与问题证据。'}</p></div>
+        </section>}
         {!desktop&&<div className="notice info"><CircleHelp size={18}/><div><strong>请使用桌面版测试上位机</strong><p>浏览器仅用于界面开发。连接测试内核、执行用例和选择本机文件需要通过 Tauri 桌面窗口。</p></div></div>}
         {error&&<div className="notice error" role="alert" data-testid="error-message"><Activity size={17}/><div className="notice-content"><strong>操作未完成</strong><p>{error}</p></div><button onClick={()=>setError('')} aria-label="关闭错误提示"><X size={16}/></button></div>}
         {notice&&<div className="notice success" role="status"><CheckCheck size={17}/><span>{notice}</span><button onClick={()=>setNotice('')} aria-label="关闭提示"><X size={16}/></button></div>}
@@ -436,10 +437,24 @@ export default function App() {
 
         {page==='execution'&&<>
           {casePackMessage && <div className="notice info" role="status"><CircleHelp size={17}/><span>{casePackMessage}</span><button onClick={() => setCasePackMessage('')} aria-label="关闭用例更新提示"><X size={16}/></button></div>}
-          <div className="environment-strip"><div className="environment-icon"><Layers3 size={20}/></div><div className="strip-name"><span>当前测试环境</span><strong>{environment.name}</strong></div><span className="soft-tag">{environment.mode==='fresh'?'全新独立副本':'固定测试工作区'}</span><div className="strip-divider"/><span className="strip-hint"><Clock3 size={14}/>等待 {environment.timeout} 秒</span><button className="text-button" onClick={()=>setPage('environment')}>环境设置<ArrowRight size={14}/></button></div>
-          <div className="stat-grid"><Stat label="用例总数" value={stats.total} icon={<ListChecks size={18}/>} hint="本次测试范围"/><Stat label="已完成" value={stats.done} icon={<Activity size={18}/>} hint={`${progress}% 已完成`} accent="blue"/><Stat label="通过" value={stats.passed} icon={<CheckCheck size={18}/>} hint="符合预期结果" accent="green"/><Stat label="失败" value={stats.failed} icon={<X size={18}/>} hint="需要进一步检查" accent="red"/><Stat label="通过率" value={passRate} unit="" icon={<CheckCheck size={18}/>} hint="通过 ÷（通过＋失败）" accent="blue"/></div>
           <div className="execution-grid">
-            <section className="panel case-panel"><div className="panel-heading"><div><h2>测试用例 <span>{cases.length}</span></h2><p>按顺序执行所选用例</p></div><span className={`task-badge ${taskStatus}`} data-testid="task-status">{stopping?'正在停止':labels[taskStatus]||taskStatus}</span></div>
+            <section className="panel case-panel">
+              <div className="panel-heading">
+                <h2>测试用例 <span>{cases.length}</span></h2>
+                <div className="case-run-actions">
+                  <button className="button" disabled={!ready || disabled || loading || casePackWorking || !!pendingCasePack}
+                    onClick={() => void refreshCases()} data-testid="cases-refresh">
+                    <RefreshCw size={15} className={loading || casePackWorking ? 'spin' : ''}/>刷新用例
+                  </button>
+                  {active ? <button className="button danger" data-testid="run-stop" disabled={stopping} onClick={()=>void stop()}>
+                    {stopping?<LoaderCircle size={15} className="spin"/>:<Square size={13}/>}
+                    {stopping?'正在停止…':'停止测试'}
+                  </button> : <button className="button primary" data-testid="run-start" disabled={!ready||disabled||loading||!selected.size} onClick={()=>void start()}>
+                    {busy?<LoaderCircle size={16} className="spin"/>:<Play size={15} fill="currentColor"/>}
+                    开始测试<span className="button-count">{selected.size}</span>
+                  </button>}
+                </div>
+              </div>
               <div className="case-toolbar"><label className="search"><Search size={15}/><input value={search} onChange={e=>{setSearch(e.target.value);setSearchCollapsed(new Set());}} placeholder="搜索分组、用例名称或说明" aria-label="搜索测试用例"/></label><span className="selection-count">匹配 {visible.length} 项 · 已选 {selected.size} 项</span></div>
               <div className="case-list-actions"><span>{sections.length} 个分组</span><button className="text-button" disabled={!sections.length} data-testid="groups-expand-all" onClick={()=>expandAll(true)}>全部展开</button><button className="text-button" disabled={!sections.length} data-testid="groups-collapse-all" onClick={()=>expandAll(false)}>全部折叠</button></div>
               <div className="case-table"><div className="table-head"><label><SelectionCheckbox ids={visible.map(item=>item.id)} selected={selected} disabled={disabled} label="选择当前搜索结果" onChange={checked=>chooseCases(visible.map(item=>item.id),checked)}/></label><span>用例名称</span><span>执行状态</span><span>耗时</span></div>
@@ -473,7 +488,14 @@ export default function App() {
                 </div>
               </section>;})}
               {!visible.length&&<div className="empty"><ListChecks size={30}/><strong>{search?'没有匹配的用例':'暂无测试用例'}</strong><span>{search?'尝试其他关键词':'在 tests 目录添加 Python 用例，然后点击刷新。'}</span></div>}</div>
-              <div className="case-footer"><div className="legend"><Status status="pending"/><Status status="passed"/><Status status="failed"/></div><span>{stats.done} / {stats.total} 已完成</span></div><div className="progress-track"><div style={{width:`${progress}%`}}/></div>
+              <div className="case-footer" role="group" aria-label="任务统计">
+                <span className={`task-badge ${taskStatus}`} data-testid="task-status">{stopping?'正在停止':labels[taskStatus]||taskStatus}</span>
+                <span>已完成 <strong>{stats.done} / {stats.total}</strong></span>
+                <span className="group-passed">通过 <strong>{stats.passed}</strong></span>
+                <span className="group-failed">失败 <strong>{stats.failed}</strong></span>
+                <span title="通过 ÷（通过＋失败）">通过率 <strong>{passRate}</strong></span>
+              </div>
+              <div className="progress-track" role="progressbar" aria-label="任务进度" aria-valuenow={progress}><div style={{width:`${progress}%`}}/></div>
             </section>
 
             <section className="panel detail-panel"><div className="panel-heading"><div><h2>执行详情</h2><p>{currentCase?.name.replace(/。$/, '') || '选择用例查看执行详情'}</p></div><button className="icon-button" aria-label="打开报告资料" disabled={!record?.artifacts_dir} onClick={()=>void open(detail?.business_report_path||detail?.diagnostics_path||record!.artifacts_dir!)}><FolderOpen size={17}/></button></div>
@@ -579,6 +601,5 @@ undefined
   </div>;
 }
 
-function Stat({label,value,icon,hint,accent='default',unit='项'}:{label:string;value:number|string;icon:React.ReactNode;hint:string;accent?:string;unit?:string}){return <div className={`stat-card ${accent}`}><div className="stat-top"><span>{label}</span><span className="stat-icon">{icon}</span></div><strong>{value}{unit&&<small>{unit}</small>}</strong><p>{hint}</p></div>;}
 function Field({label,hint,children}:{label:string;hint?:string;children:React.ReactNode}){return <div className="field"><label>{label}</label>{children}{hint&&<p>{hint}</p>}</div>;}
 function PathInput({value,onChange,onBrowse,testId}:{value:string;onChange:(v:string)=>void;onBrowse:()=>void;testId?:string}){return <div className="path-input"><input value={value} onChange={e=>onChange(e.target.value)} data-testid={testId}/><button type="button" onClick={onBrowse} aria-label="浏览路径"><FolderOpen size={16}/></button></div>;}
