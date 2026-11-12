@@ -28,6 +28,7 @@ const METHODS: &[&str] = &[
     "poll",
     "stop",
     "history",
+    "history_snapshot",
     "history_detail",
     "case_detail",
     "migrate_workspace",
@@ -487,6 +488,7 @@ mod tests {
     #[test]
     fn only_documented_bridge_methods_are_allowed() {
         assert!(allowed_method("bootstrap"));
+        assert!(allowed_method("history_snapshot"));
         assert!(allowed_method("shutdown"));
         assert!(allowed_method("open_slavesim"));
         assert!(allowed_method("check_slavesim"));

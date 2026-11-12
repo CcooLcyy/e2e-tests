@@ -51,7 +51,7 @@ class TestbenchBridge:
                     "private_webview_version": private_pair[0].parent.name if private_pair else "",
                     "case_pack": self.controller.case_store.current().status(),
                     "case_pack_warning": self.controller.case_store.warning,
-                    "cases": cases, "history": self._history()}
+                    "cases": cases, **self._history_snapshot()}
         if method == "update_ready":
             return {"ready": not self.controller.active and self._master104_check is None}
         if method == "case_pack_status":
@@ -172,7 +172,9 @@ class TestbenchBridge:
             self.controller.stop()
             return {"active": self.controller.active}
         if method == "history":
-            return self._history()
+            return self._history_snapshot()["history"]
+        if method == "history_snapshot":
+            return self._history_snapshot()
         if method == "history_detail":
             directory = self._artifact_directory(payload["run_dir"])
             summary = self._read_object(directory / "summary.json")
@@ -323,25 +325,57 @@ class TestbenchBridge:
         env.driver_path = str(max(candidates, key=version)) if candidates else ""
         return env.to_dict()
 
-    def _history(self):
+    def _history_snapshot(self):
         paths = sorted(self.artifacts.glob("*/summary.json"),
                        key=lambda path: path.stat().st_mtime, reverse=True)
-        result = []
-        for path in paths[:100]:
-            # 不允许符号链接将产物读取扩大到仓库以外。
-            directory = self._artifact_directory(str(path.parent))
-            summary = self._read_object(path)
-            task = self._read_object(directory / "task.json")
+        history = []
+        latest = {}
+        for path in paths:
+            try:
+                directory = self._artifact_directory(str(path.parent))
+                summary = self._read_object(path)
+                modified_at = path.stat().st_mtime
+            except (OSError, ValueError) as error:
+                logging.getLogger(__name__).warning("无法读取历史任务摘要 %s：%s", path.parent.name, error)
+                continue
             cases = summary.get("cases", [])
-            result.append({"id": directory.name, "status": summary.get("status", "failed"),
-                "environment_name": summary.get("environment_name") or task.get("environment", {}).get("name", "未记录"),
-                "created_at": datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds"),
+            if not isinstance(cases, list):
+                continue
+            cases = [case for case in cases if isinstance(case, dict)]
+            # 用例的最近结果可能早于历史页显示的 100 条任务。
+            for case in cases:
+                case_id, status = case.get("case_id"), case.get("status")
+                if not isinstance(case_id, str) or not case_id or status not in ("passed", "failed", "cancelled", "skipped"):
+                    continue
+                if status == "skipped" and case.get("message") == "未执行":
+                    continue
+                finished_at = case.get("finished_at") or summary.get("ended_at")
+                timestamp = modified_at
+                if isinstance(finished_at, str):
+                    try:
+                        timestamp = datetime.fromisoformat(finished_at).timestamp()
+                    except (ValueError, OverflowError, OSError):
+                        pass
+                if case_id not in latest or timestamp > latest[case_id][0]:
+                    latest[case_id] = (timestamp, status)
+            if len(history) >= 100:
+                continue
+            try:
+                task = self._read_object(directory / "task.json")
+            except (OSError, ValueError) as error:
+                logging.getLogger(__name__).warning("无法读取历史任务配置 %s：%s", directory.name, error)
+                task = {}
+            environment = task.get("environment")
+            environment_name = environment.get("name", "未记录") if isinstance(environment, dict) else "未记录"
+            history.append({"id": directory.name, "status": summary.get("status", "failed"),
+                "environment_name": summary.get("environment_name") or environment_name,
+                "created_at": datetime.fromtimestamp(modified_at).astimezone().isoformat(timespec="seconds"),
                 "case_count": len(cases), "passed": sum(case.get("status") == "passed" for case in cases),
                 "failed": sum(case.get("status") == "failed" for case in cases),
                 "cancelled": sum(case.get("status") == "cancelled" for case in cases),
                 "skipped": sum(case.get("status") in ("skipped", "pending", "not_run") for case in cases),
                 "run_dir": str(directory)})
-        return result
+        return {"history": history, "latest_case_results": {case_id: status for case_id, (_, status) in latest.items()}}
 
     def _artifact_directory(self, value):
         directory = Path(value).resolve(strict=True)

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, FileText, FolderOpen, History as HistoryIcon, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
 import { call, choose, desktop, openArtifact } from './api';
-import type { Bootstrap, CaseInfo, CasePackActivation, CasePackStatus, Detail, Environment, History, Master104Check, Poll, PreparedCasePack } from './api';
+import type { Bootstrap, CaseInfo, CasePackActivation, CasePackStatus, Detail, Environment, HistorySnapshot, Master104Check, Poll, PreparedCasePack } from './api';
 import { applyEvents, counts, initialRecords, labels, planProgress, wasNotRun } from './state';
 import type { BenchEvent, CaseRecord, ExecutionTiming } from './state';
 import { BusinessCaseDetails } from './BusinessCaseDetails';
@@ -53,7 +53,9 @@ export default function App() {
   const [pendingCasePack,setPendingCasePack] = useState<ReadyCasePack>();
   const [casePackWorking,setCasePackWorking] = useState(false);
   const [casePackMessage,setCasePackMessage] = useState('');
-  const [history,setHistory] = useState<History[]>([]);
+  const [{history, latest_case_results: latestCaseResults}, setHistorySnapshot] = useState<HistorySnapshot>({
+    history: [], latest_case_results: {},
+  });
   const [records,setRecords] = useState<Record<string,CaseRecord>>({});
   const [selected,setSelected] = useState<Set<string>>(new Set());
   const [focused,setFocused] = useState('');
@@ -110,7 +112,7 @@ export default function App() {
     setEnvironmentTarget('');
   },[page,environmentTarget]);
 
-  async function refreshHistory() { const result = await call<History[]>('history'); setHistory(result); }
+  async function refreshHistory() { setHistorySnapshot(await call<HistorySnapshot>('history_snapshot')); }
   async function bootstrap() {
     if (!desktop) return;
     setLoading(true); setError('');
@@ -122,7 +124,7 @@ export default function App() {
       setCasePack(data.case_pack);
       setCasePackMessage(data.case_pack_warning ?? '');
       setCases(data.cases);
-      setHistory(data.history);
+      setHistorySnapshot({history: data.history, latest_case_results: data.latest_case_results});
       setRecords(initialRecords(data.cases.map(c=>c.id)));
       setSelected(reconcileSelection([],data.cases,new Set()));
       setFocused(data.cases[0]?.id || '');
@@ -458,7 +460,7 @@ export default function App() {
               </div>
               <div className="case-toolbar"><label className="search"><Search size={15}/><input value={search} onChange={e=>{setSearch(e.target.value);setSearchCollapsed(new Set());}} placeholder="搜索分组、用例名称或说明" aria-label="搜索测试用例"/></label><span className="selection-count">匹配 {visible.length} 项 · 已选 {selected.size} 项</span></div>
               <div className="case-list-actions"><span>{sections.length} 个分组</span><button className="text-button" disabled={!sections.length} data-testid="groups-expand-all" onClick={()=>expandAll(true)}>全部展开</button><button className="text-button" disabled={!sections.length} data-testid="groups-collapse-all" onClick={()=>expandAll(false)}>全部折叠</button></div>
-              <div className="case-table"><div className="table-head"><label><SelectionCheckbox ids={visible.map(item=>item.id)} selected={selected} disabled={disabled} label="选择当前搜索结果" onChange={checked=>chooseCases(visible.map(item=>item.id),checked)}/></label><span>用例名称</span><span>执行状态</span><span>耗时</span></div>
+              <div className="case-table"><div className="table-head"><label><SelectionCheckbox ids={visible.map(item=>item.id)} selected={selected} disabled={disabled} label="选择当前搜索结果" onChange={checked=>chooseCases(visible.map(item=>item.id),checked)}/></label><span>用例名称</span><span>执行状态</span><span>最近结果</span><span>耗时</span></div>
               {sections.map(section=>{const contentId=`group-cases-${cases.findIndex(item=>caseGroup(item)===section.name)}`;return <section className="case-group-section" key={section.name}>
                 <div className="case-group-heading" data-testid="case-group" data-group={section.name}>
                   <SelectionCheckbox ids={section.ids} selected={selected} disabled={disabled} label={`选择整组${section.name}`} onChange={checked=>chooseCases(section.ids,checked)}/>
@@ -468,8 +470,9 @@ export default function App() {
                   </button>
                 </div>
                 <div id={contentId} hidden={!section.open} data-testid="case-group-content">
-                  {section.open && section.cases.map(item => (
-                    <div key={item.id} role="button" tabIndex={0} data-testid="case-row" data-case-id={item.id}
+                  {section.open && section.cases.map(item => {
+                    const latestResult = latestCaseResults[item.id];
+                    return <div key={item.id} role="button" tabIndex={0} data-testid="case-row" data-case-id={item.id}
                       data-status={records[item.id]?.status || 'pending'} className={`case-row ${focused === item.id ? 'focused' : ''}`}
                       onClick={() => showCase(item.id)} onKeyDown={event => {
                         if (event.key === 'Enter' && event.target === event.currentTarget) showCase(item.id);
@@ -483,9 +486,10 @@ export default function App() {
                         <strong>{item.name.replace(/。$/, '')}</strong>
                       </div>
                       <Status status={records[item.id]?.status || 'pending'}/>
+                      {latestResult ? <Status status={latestResult}/> : <span className="status">无记录</span>}
                       <span className="elapsed"><ExecutionTime timing={records[item.id]} status={records[item.id]?.status}/></span>
-                    </div>
-                  ))}
+                    </div>;
+                  })}
                 </div>
               </section>;})}
               {!visible.length&&<div className="empty"><ListChecks size={30}/><strong>{search?'没有匹配的用例':'暂无测试用例'}</strong><span>{search?'尝试其他关键词':'在 tests 目录添加 Python 用例，然后点击刷新。'}</span></div>}</div>

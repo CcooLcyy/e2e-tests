@@ -50,6 +50,31 @@ def test_history_summarizes_real_reports_and_case_details(tmp_path):
     assert details["cases"][0]["report"]["结果"] == "失败"
 
 
+def test_latest_case_results_use_each_cases_most_recent_execution(tmp_path):
+    first, second, third = (
+        f"tests/test_sample.py::test_value[{index}]" for index in range(3)
+    )
+
+    def report(index, cases):
+        directory = tmp_path / "artifacts" / f"task-{index}"
+        directory.mkdir(parents=True)
+        summary = directory / "summary.json"
+        summary.write_text(json.dumps({"cases": cases}), encoding="utf-8")
+        modified_at = 1_700_000_000 + index
+        os.utime(summary, (modified_at, modified_at))
+
+    report(1, [{"case_id": first, "status": "passed"}])
+    report(2, [{"case_id": first, "status": "failed"}, {"case_id": second, "status": "passed"}])
+    for index in range(3, 103):
+        report(index, [{"case_id": third, "status": "passed"}])
+    report(103, [{"case_id": second, "status": "skipped", "message": "未执行"},
+                 {"case_id": third, "status": "failed"}])
+
+    snapshot = TestbenchBridge(tmp_path).handle("history_snapshot")
+    assert len(snapshot["history"]) == 100
+    assert snapshot["latest_case_results"] == {first: "failed", second: "passed", third: "failed"}
+
+
 def test_poll_reads_controller_events_and_shutdown_waits_for_cleanup(tmp_path):
     """关闭协议等待工作进程清理完成，不能只发送停止就返回。"""
     bridge = TestbenchBridge(tmp_path)
