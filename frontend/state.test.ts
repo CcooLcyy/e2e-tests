@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyEvents, initialRecords, counts, planProgress } from './state.ts';
+import { applyEvents, initialRecords, counts, latestCaseResult, planProgress } from './state.ts';
 
 test('双端同名同编号步骤按来源分别完成', () => {
   const state = applyEvents(initialRecords(['a']), [
@@ -73,6 +73,25 @@ test('停止后的当前项取消、后续未执行，不能误计通过', () =>
   assert.equal(state.b.status, 'pending');
   assert.deepEqual(counts(state, ['a', 'b']), { total: 2, done: 1, passed: 0, failed: 0 });
 });
+
+test('批量任务中单个用例完成后立即显示最近结果', () => {
+  const records = applyEvents(initialRecords(['a', 'b', 'c']), [
+    { type: 'case_started', case_id: 'a' },
+    { type: 'case_finished', case_id: 'a', status: 'passed' },
+    { type: 'case_started', case_id: 'b' },
+  ]);
+  assert.equal(latestCaseResult(records.a, 'failed'), 'passed');
+  assert.equal(latestCaseResult(records.b, 'failed'), 'failed');
+  assert.equal(latestCaseResult(records.c, undefined), undefined);
+
+  const finished = applyEvents(records, [
+    { type: 'case_finished', case_id: 'b', status: 'cancelled' },
+    { type: 'case_finished', case_id: 'c', status: 'skipped', message: '未执行' },
+  ]);
+  assert.equal(latestCaseResult(finished.b, 'failed'), 'cancelled');
+  assert.equal(latestCaseResult(finished.c, 'passed'), 'passed');
+});
+
 test('清理阶段失败应覆盖用例通过，保留错误供详情查看', () => {
   const start = '2026-11-12T10:00:00.123+08:00';
   const running = applyEvents(initialRecords(['a', 'b']), [

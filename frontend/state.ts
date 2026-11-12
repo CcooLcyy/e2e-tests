@@ -9,6 +9,12 @@ export function wasNotRun(status?: string, message?: string) {
   return status === 'pending' || status === 'not_run' || (status === 'skipped' && message === '未执行');
 }
 
+export function latestCaseResult(record: CaseRecord | undefined, previousResult: Status | undefined) {
+  const status = record?.status;
+  if (status && status !== 'running' && !wasNotRun(status, record?.message)) return status;
+  return previousResult;
+}
+
 function eventTiming(event: BenchEvent, running: boolean, previous?: ExecutionTiming): ExecutionTiming {
   return {
     started_at: event.started_at ?? (running ? event.time : previous?.started_at),

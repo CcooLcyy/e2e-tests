@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, FileText, FolderOpen, History as HistoryIcon, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
 import { call, choose, desktop, openArtifact } from './api';
 import type { Bootstrap, CaseInfo, CasePackActivation, CasePackStatus, Detail, Environment, HistorySnapshot, Master104Check, Poll, PreparedCasePack } from './api';
-import { applyEvents, counts, initialRecords, labels, planProgress, wasNotRun } from './state';
+import { applyEvents, counts, initialRecords, labels, latestCaseResult, planProgress, wasNotRun } from './state';
 import type { BenchEvent, CaseRecord, ExecutionTiming } from './state';
 import { BusinessCaseDetails } from './BusinessCaseDetails';
 import { CaseFlow } from './CaseFlow';
@@ -491,7 +491,7 @@ export default function App() {
                 </div>
                 <div id={contentId} hidden={!section.open} data-testid="case-group-content">
                   {section.open && section.cases.map(item => {
-                    const latestResult = latestCaseResults[item.id];
+                    const latestResult = latestCaseResult(records[item.id], latestCaseResults[item.id]);
                     return <div key={item.id} role="button" tabIndex={0} data-testid="case-row" data-case-id={item.id}
                       data-status={records[item.id]?.status || 'pending'} className={`case-row ${focused === item.id ? 'focused' : ''}`}
                       onClick={() => showCase(item.id)} onKeyDown={event => {
