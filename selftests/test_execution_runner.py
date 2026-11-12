@@ -46,9 +46,21 @@ def test_runner_keeps_failure_and_continues(tmp_path):
 
 
 def test_runner_cancel_leaves_next_case_unexecuted(tmp_path):
-    """停止卡在业务步骤的任务，不能继续执行下一用例。"""
+    """业务步骤响应协作停止后，执行器不能启动下一用例。"""
     tmp_path = accessible_root()
-    env = make_suite(tmp_path, 'import time\ndef test_slow():\n    time.sleep(30)\ndef test_never():\n    assert True\n')
+    env = make_suite(tmp_path, '''import time
+from desktop_demo import ReleaseDesktop
+
+def test_slow():
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        ReleaseDesktop._check_stop()
+        time.sleep(0.05)
+    raise AssertionError("业务步骤未收到停止信号")
+
+def test_never():
+    raise AssertionError("不应启动后续用例")
+''')
     controller = TaskController(tmp_path)
     controller.start(env, [case.id for case in discover_cases(tmp_path)])
     deadline = time.monotonic() + 15
