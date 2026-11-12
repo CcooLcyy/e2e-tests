@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, FileText, FolderOpen, History as HistoryIcon, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
 import { call, choose, desktop, openArtifact } from './api';
@@ -17,6 +17,7 @@ import { caseGroup, summarizeGroups, visibleCases, toggleCases, selectionState, 
 type Page = 'execution' | 'environment' | 'history';
 type ReadyCasePack = Extract<PreparedCasePack, { status: 'ready' }>;
 type HistoryCase = Partial<Detail> & ExecutionTiming & { case_id?: string; status?: string; message?: string };
+const casePackCheckInterval = 10_000;
 const environmentSections = [
   ['environment-basics','基础信息','程序与驱动'],
   ['environment-isolation','运行与隔离','工作区与等待时间'],
@@ -133,8 +134,14 @@ export default function App() {
     catch(e) {setError(String(e));} finally {setLoading(false);}
   }
   useEffect(()=>{void bootstrap();},[]);
+  const checkForCasePackUpdate = useEffectEvent(() => {
+    if (!maintenance) void refreshCases(true);
+  });
   useEffect(() => {
-    if (ready && installed) void refreshCases(true);
+    if (!ready || !installed) return;
+    checkForCasePackUpdate();
+    const timer = window.setInterval(() => checkForCasePackUpdate(), casePackCheckInterval);
+    return () => window.clearInterval(timer);
   }, [ready, installed]);
   useEffect(()=>{
     if (!ready || maintenance) return;
@@ -216,14 +223,13 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!pendingCasePack || disabled || master104Checking) return;
+    if (!pendingCasePack || disabled || master104Checking || casePackWorking) return;
     let retry: number | undefined;
     let cancelled = false;
     const pack = pendingCasePack;
     async function activateWhenIdle() {
       if (checkingCases.current || runnerLocked.current || starting.current) return;
       checkingCases.current = true;
-      setCasePackWorking(true);
       try {
         if (await activateCasePack(pack, true)) setPendingCasePack(undefined);
         else if (!cancelled) retry = window.setTimeout(() => void activateWhenIdle(), 1000);
@@ -234,7 +240,6 @@ export default function App() {
         applyingCases.current = false;
         checkingCases.current = false;
         setLoading(false);
-        setCasePackWorking(false);
       }
     }
     void activateWhenIdle();
@@ -242,10 +247,11 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(retry);
     };
-  }, [pendingCasePack, disabled, master104Checking]);
+  }, [pendingCasePack, disabled, master104Checking, casePackWorking]);
 
   async function refreshCases(automatic = false) {
-    if (pendingCasePack || checkingCases.current || runnerLocked.current || starting.current) return;
+    if (checkingCases.current) return;
+    if (!automatic && (pendingCasePack || runnerLocked.current || starting.current)) return;
     checkingCases.current = true;
     setCasePackWorking(true);
     if (!automatic) {
@@ -260,20 +266,25 @@ export default function App() {
           if (prepared.status === 'ready') {
             const waitForIdle = runnerLocked.current || starting.current;
             if (automatic || waitForIdle || !(await activateCasePack(prepared, false))) {
-              setPendingCasePack(prepared);
-              if (waitForIdle) {
-                setCasePackMessage(`用例包 v${prepared.version} 已下载，将在当前操作结束后启用。`);
+              if (pendingCasePack?.id !== prepared.id || pendingCasePack?.version !== prepared.version) {
+                setPendingCasePack(prepared);
+                if (waitForIdle) {
+                  setCasePackMessage(`用例包 v${prepared.version} 已下载，将在当前操作结束后启用。`);
+                }
               }
             }
             return;
           }
-          if (!automatic && prepared.status === 'unavailable') {
+          if (pendingCasePack && (prepared.status === 'unavailable' || prepared.status === 'current')) {
+            setPendingCasePack(undefined);
+            setCasePackMessage('');
+          } else if (!automatic && prepared.status === 'unavailable') {
             setCasePackMessage('所选频道暂无已发布的用例包，继续使用当前用例。');
           } else if (!automatic && prepared.status === 'current') {
             setCasePackMessage('所选频道暂无更新版本，继续使用当前用例。');
           }
         } catch (e) {
-          setCasePackMessage(`用例包更新失败，继续使用当前用例。${String(e)}`);
+          if (!pendingCasePack) setCasePackMessage(`用例包更新失败，继续使用当前用例。${String(e)}`);
         }
       }
       if (!automatic) applyCaseList(await call<CaseInfo[]>('discover'), false);
@@ -288,7 +299,7 @@ export default function App() {
   }
 
   async function start(){
-    if(disabled || loading || applyingCases.current || starting.current || !selected.size)return;
+    if(disabled || loading || pendingCasePack || applyingCases.current || starting.current || !selected.size)return;
     setBusy(true);starting.current=true;setError('');setNotice('');
     const ids=selectedCaseIds(cases,selected);
     try{await call('save_environment',{environment});const result=await call<{run_dir:string}>('start',{environment,case_ids:ids});setRecords(initialRecords(cases.map(c=>c.id)));setLogs([]);setDetail(null);setTaskIds(ids);setRunDir(result.run_dir);setTaskStatus('running');setActive(true);setStopping(false);setPage('execution');}
@@ -461,7 +472,7 @@ export default function App() {
                   {active ? <button className="button danger" data-testid="run-stop" disabled={stopping} onClick={()=>void stop()}>
                     {stopping?<LoaderCircle size={15} className="spin"/>:<Square size={13}/>}
                     {stopping?'正在停止并清理…':'停止测试'}
-                  </button> : <button className="button primary" data-testid="run-start" disabled={!ready||disabled||loading||!selected.size} onClick={()=>void start()}>
+                  </button> : <button className="button primary" data-testid="run-start" disabled={!ready||disabled||loading||!!pendingCasePack||!selected.size} onClick={()=>void start()}>
                     {busy?<LoaderCircle size={16} className="spin"/>:<Play size={15} fill="currentColor"/>}
                     开始测试<span className="button-count">{selected.size}</span>
                   </button>}

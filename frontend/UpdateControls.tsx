@@ -119,7 +119,7 @@ export function UpdateControls({ locked, onMaintenance, onImport, casePack, case
     try {
       await invoke('set_case_pack_update_channel', { channel });
       setCasePackInfo({ ...casePackInfo, channel });
-      setCasePackSettingsStatus(`已选择 ${channelLabels[channel]}。点击「刷新用例」检查该频道。`);
+      setCasePackSettingsStatus(`已选择 ${channelLabels[channel]}。下次自动检查将使用该频道。`);
     } catch (error) {
       setCasePackSettingsStatus(String(error));
     } finally {

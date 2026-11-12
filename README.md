@@ -4,7 +4,7 @@
 
 ## Windows 安装版
 
-测试电脑可使用 Windows x64 安装包。安装包自带 Python 测试内核和固定提交的离线用例。安装版启动和点击「刷新用例」时从 MskDSPPlatform 查询用例包，本体和用例可分别选择 CI 或 Stable。参见[安装版与平台更新](docs/安装版与平台更新.md)和[发布配置](docs/Windows安装包与Stable发布.md)。
+测试电脑可使用 Windows x64 安装包。安装包自带 Python 测试内核和固定提交的离线用例。安装版启动后立即从 MskDSPPlatform 查询用例包，之后每 10 秒自动检查，也可点击「刷新用例」。运行中的测试结束并完成清理后，程序会自动启用已准备好的用例包。本体和用例可分别选择 CI 或 Stable。参见[安装版与平台更新](docs/安装版与平台更新.md)和[发布配置](docs/Windows安装包与Stable发布.md)。
 
 ## 从仓库启动
 

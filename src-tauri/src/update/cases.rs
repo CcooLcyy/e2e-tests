@@ -157,7 +157,7 @@ pub(crate) async fn prepare_case_pack_update(app: AppHandle) -> Result<Value, St
     if pending.as_ref().is_some_and(|pack| pack.candidate == candidate) {
         return Ok(result);
     }
-    *pending = None;
+    // 新候选验签成功后再替换已准备的用例包。
     let key = decode_public_key(key)?;
     let directory = app.state::<ShellState>().data_root().join(".case-downloads");
     tokio::fs::create_dir_all(&directory)
