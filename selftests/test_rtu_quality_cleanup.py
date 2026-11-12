@@ -39,6 +39,7 @@ def test_upper_cleanup_failure_leaves_evidence_and_clears_when_preparation_start
 
     assert caught.value is original
     assert calls == ["清理上位机", "上位机截图", "slaveSim 截图"] + (["清空总线"] if preparation_started else [])
+    assert desktop.metadata["测试资源清理错误"] == [f"清理本例 IEC104 与 RTU 链路：{original}"]
 
 
 def test_preparation_failure_before_creating_paths_still_clears_and_preserves_error(quality_case, monkeypatch):
@@ -53,7 +54,7 @@ def test_preparation_failure_before_creating_paths_still_clears_and_preserves_er
         raise RuntimeError("模拟器清理失败")
 
     desktop = SimpleNamespace(metadata={})
-    simulator = SimpleNamespace(prepare=prepare, clear_all_buses=clear_all_buses, paths={})
+    simulator = SimpleNamespace(prepare=prepare, clear_all_buses=clear_all_buses, link_paths={}, actual_devices={})
     context = SimpleNamespace(desktop=desktop, simulator=simulator, simulator_preparation_started=False,
                               rtu=SimpleNamespace(assert_serial_paths_available=None))
     request = SimpleNamespace(node=SimpleNamespace())
@@ -68,4 +69,4 @@ def test_preparation_failure_before_creating_paths_still_clears_and_preserves_er
 
     assert caught.value is original
     assert calls == ["清理上位机", "清空总线"]
-    assert desktop.metadata["RTU品质清理错误"] == ["清空 slaveSim 全部总线：模拟器清理失败"]
+    assert desktop.metadata["测试资源清理错误"] == ["清空 slaveSim 全部总线：模拟器清理失败"]

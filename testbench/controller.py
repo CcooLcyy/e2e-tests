@@ -137,17 +137,21 @@ class TaskController:
             status = self._pending_finish["status"]
             self._restore_case_results()
             outgoing.extend(self._recover_incomplete_cases(status))
-            self._persist_summary(status)
+            cleanup_errors = self._persist_summary(status)
+            if cleanup_errors:
+                self._pending_finish["cleanup_errors"] = cleanup_errors
             outgoing.extend({"type": "case_finished", **event} for case_id, event in self._finished.items()
                             if event != before.get(case_id))
             outgoing.append(self._pending_finish)
             self._finalized, self.active = True, False
             return outgoing
         if self.active:
-            if self._stop_at and time.monotonic() - self._stop_at > 3:
-                self._begin_cleanup("cancelled", "用户停止了测试任务")
-            elif time.monotonic() - max(self._started, self._last_progress) > self._timeout:
-                self._begin_cleanup("failed", "工作进程长时间无步骤进展，超过等待时限")
+            # 有进展的收尾继续运行，停止请求也重新开始计算无进展时限。
+            if time.monotonic() - max(self._started, self._last_progress, self._stop_at or 0) > self._timeout:
+                if self._stop_at is not None:
+                    self._begin_cleanup("cancelled", "停止后工作进程长时间无步骤进展，超过等待时限")
+                else:
+                    self._begin_cleanup("failed", "工作进程长时间无步骤进展，超过等待时限")
             elif self._process.poll() not in (None, 0):
                 self._begin_cleanup("failed", "测试工作进程启动失败")
             elif not (self.run_dir / "worker.json").exists() and time.monotonic() - self._started > 15:
@@ -312,7 +316,7 @@ class TaskController:
             if case.get("case_id") not in self._finished or case.get("status") == "failed":
                 self._remember_finished(case)
 
-    def _persist_summary(self, status, message=""):
+    def _persist_summary(self, status, message="", *, cleanup_error=""):
         task = self._read_object(self.run_dir / "task.json")
         summary = self._read_object(self.run_dir / "summary.json")
         for case_id in self._selected:
@@ -320,6 +324,9 @@ class TaskController:
                 self._finished[case_id] = {"case_id": case_id, "status": "skipped", "message": "未执行",
                                            "artifacts_dir": ""}
         cases = [self._finished[case_id] for case_id in self._selected]
+        cleanup_errors = [error for case in cases for error in case.get("cleanup_errors", [])]
+        if cleanup_error:
+            cleanup_errors.append(cleanup_error)
         summary.update(status=status, run_dir=str(self.run_dir), cases=cases,
                        started_at=task.get("started_at", summary.get("started_at", "")),
                        ended_at=datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -328,9 +335,12 @@ class TaskController:
             summary["case_pack"] = task["case_pack"]
         if message:
             summary["message"] = message
+        if cleanup_errors:
+            summary["cleanup_errors"] = cleanup_errors
         (self.run_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         write_task_report(self.run_dir, summary, task)
         logging.getLogger(__name__).info("已保存任务业务报告与诊断资料，结果：%s", status)
+        return cleanup_errors
 
     def _completion_exited(self):
         # 启动前失败时尚无 worker.json，也没有可能创建上位机进程。
@@ -419,12 +429,18 @@ class TaskController:
                 events.append(event)
         self._restore_case_results()
         events.extend(self._recover_incomplete_cases(status, message))
-        self._persist_summary(status, message)
+        cleanup_error = ""
+        if (self._stop_at is not None or self._current is not None) and not self._pending_finish:
+            cleanup_error = f"{message}。未收到工作进程的清理完成记录，请核对本次测试资源。"
+        cleanup_errors = self._persist_summary(status, message, cleanup_error=cleanup_error)
         for case_id in self._selected:
             event = self._finished[case_id]
             if event != before.get(case_id):
                 events.append({"type": "case_finished", **event})
-        events.append({"type": "task_finished", "status": status, "run_dir": str(self.run_dir)})
+        finished = {"type": "task_finished", "status": status, "run_dir": str(self.run_dir)}
+        if cleanup_errors:
+            finished["cleanup_errors"] = cleanup_errors
+        events.append(finished)
         self.active = False
         self._finalized = True
         return events
@@ -491,6 +507,8 @@ class TaskController:
             message = ""
         result = {"type": "case_finished", "case_id": case_id, "status": status, "message": message,
                   "artifacts_dir": directory, **timing}
+        if isinstance(report.get("测试资源清理错误"), list):
+            result["cleanup_errors"] = report["测试资源清理错误"]
         for key in ("plan_steps", "plan_step_timings"):
             if isinstance(report.get(key), dict):
                 result[key] = report[key]

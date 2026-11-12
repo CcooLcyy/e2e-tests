@@ -43,9 +43,9 @@ def point(key):
 def test_negative_reactive_power_and_pf_use_signed_raw_conversion():
     """负无功和负功率因数按有符号整数及倍率比较，不能变成正数。"""
     assert compare_point(point("reactive"), -12345, -12345,
-                         {"value": "-12.345", "quality": "正常", "timestamp": "12:00:02"})["通过"]
+                         {"value": "-12.35", "quality": "正常", "timestamp": "12:00:02"})["通过"]
     failed = compare_point(point("reactive"), -12345, -12345,
-                           {"value": "4294954.951", "quality": "正常", "timestamp": "12:00:02"})
+                           {"value": "4294954.95", "quality": "正常", "timestamp": "12:00:02"})
     assert not failed["通过"]
     assert compare_point(point("pf"), -900, -900,
                          {"value": "-0.9", "quality": "正常", "timestamp": "12:00:02"})["通过"]

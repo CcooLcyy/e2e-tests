@@ -47,6 +47,8 @@ def main():
     finally:
         summary_path = run / "summary.json"
         summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {"cases": []}
+        if status == "passed" and any(case.get("cleanup_errors") for case in summary["cases"]):
+            status, code = "failed", 1
         completed = {case["case_id"] for case in summary["cases"]}
         for case_id in task["case_ids"]:
             if case_id not in completed:

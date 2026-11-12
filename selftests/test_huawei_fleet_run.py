@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import importlib.util
 import json
 from pathlib import Path
@@ -39,10 +39,15 @@ class Desktop:
     def _check_stop(self):
         pass
 
+    def check(self, name, actual, expected):
+        assert actual == expected, name
+
 
 def sample_run(tmp_path):
-    config = HuaweiFleetConfig(tuple(f"/dev/rtu{i}" for i in range(6)), acquisition_timeout=30)
+    config = HuaweiFleetConfig(tuple(f"/dev/pts/{i}" for i in range(6)), acquisition_timeout=30)
     scenario = HuaweiFleetRun(Desktop(tmp_path), None, None, config, "unit")
+    for bus in scenario.buses:
+        bus["link_path"] = f"/run/slavesim/{bus['name']}"
     bus, device = scenario.buses[0], scenario.buses[0]["devices"][0]
     registers = {point.address: {"value": 0, "type": "UINT16" if point.data_type == "BOOL" else point.data_type}
                  for point in READ_POINTS}
@@ -59,24 +64,27 @@ def sample_run(tmp_path):
     def observe(*args):
         nonlocal tick
         tick += 1
-        return {"bus": bus["name"], "station_id": 1, "link_path": bus["serial_device"],
+        return {"bus": bus["name"], "station_id": 1, "actual_device": bus["serial_device"], "link_path": bus["link_path"],
                 "registers": deepcopy(registers), "refresh_tick": tick}
 
-    observations = {point.key: {"value": (point_expected(point, registers[point.address]["value"])
-                                         if point.data_type == "BOOL" else str(point_expected(point, registers[point.address]["value"]))),
-                                "quality": "正常", "timestamp": "12:00:02", "address": str(point.address),
-                                "function": "0x03 读保持寄存器"} for point in READ_POINTS}
+    observations = {}
+    for point in READ_POINTS:
+        value = point_expected(point, registers[point.address]["value"])
+        if point.data_type != "BOOL":
+            value = str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        observations[point.key] = {"value": value, "quality": "正常", "timestamp": "12:00:02",
+                                   "address": str(point.address), "function": "0x03 读保持寄存器"}
     scenario.simulator = SimpleNamespace(observe_device=observe)
     scenario.upper = SimpleNamespace(select=lambda _: None, observe_device=lambda _: deepcopy(observations))
     scenario.connections["1/1"] = {"name": "owned", "tags": {point.key: point.key for point in READ_POINTS}}
     return scenario, bus, device, registers, observations
 
 
-def test_stable_device_requires_all_eighteen_points_and_fresh_source(tmp_path):
+def test_stable_device_requires_all_seventeen_points_and_fresh_source(tmp_path):
     """同一设备的全部遥测与状态均匹配且有两次新源采样才能通过。"""
     scenario, bus, device, _, _ = sample_run(tmp_path)
     result = scenario.sample("发电", bus, device)
-    assert result["通过"] and len(result["点位"]) == 18
+    assert result["通过"] and len(result["点位"]) == 17
     assert result["模拟器后采样"]["refresh_tick"] > result["模拟器前采样"]["refresh_tick"]
 
 
@@ -92,7 +100,7 @@ def test_unit_efficiency_generation_and_recovery_reject_old_loss_target(tmp_path
 
 @pytest.mark.parametrize("point", READ_POINTS, ids=lambda point: point.key)
 def test_each_collected_point_is_compared_with_independent_simulator_value(tmp_path, point):
-    """18个采集点任意一个偏离独立模拟器源值，即使质量和时间有效仍失败。"""
+    """17 个采集点任意一个偏离独立模拟器源值，即使质量和时间有效仍失败。"""
     scenario, bus, device, raw, upper = sample_run(tmp_path)
     scenario.config = replace(scenario.config, acquisition_timeout=0)
     original = deepcopy(raw)
@@ -151,17 +159,32 @@ def test_late_matching_observation_cannot_pass_deadline(tmp_path, monkeypatch):
 
 def test_creation_uses_the_installed_serial_path_and_case_owned_tags(tmp_path):
     scenario, bus, device, *_ = sample_run(tmp_path)
-    connections, points, started = [], [], []
+    connections, points, checked, copied, started = [], [], [], [], []
+    name = "e2e-huawei-unit-r1-s1"
+    point_table = {f"{name}-{point.key}": {"地址": str(point.address)} for point in READ_POINTS}
     scenario.upper = SimpleNamespace(create_connection=lambda *args: connections.append(args),
-                                     add_huawei_point=lambda *args: points.append(args), start=lambda: started.append(True))
-    scenario.simulator = object()
+                                     add_huawei_point=lambda *args: points.append(args),
+                                     assert_saved_configuration=lambda: checked.append(True),
+                                     read_point_configuration=lambda: deepcopy(point_table),
+                                     copy_connection=lambda *args: copied.append(args),
+                                     start=lambda: started.append(True))
+    bus_paths = {bus["name"]: (bus["serial_device"], bus["link_path"]) for bus in scenario.buses}
+    scenario.simulator = SimpleNamespace(observe_bus_paths=bus_paths.__getitem__)
     device["point_addresses"] = {point.key: point.address for point in READ_POINTS}
     scenario.create_device(bus, device)
-    name = "e2e-huawei-unit-r1-s1"
-    assert connections == [(name, "/dev/rtu0", 9600, 8, 1, "N", 1, 1000)]
+
+    copy_bus = scenario.buses[1]
+    copy_device = copy_bus["devices"][1]
+    copy_device["point_addresses"] = dict(device["point_addresses"])
+    scenario.create_device(copy_bus, copy_device)
+
+    assert connections == [(name, "/dev/pts/0", 9600, 8, 1, "N", 1, 1000)]
     assert points == [(point, f"{name}-{point.key}") for point in READ_POINTS]
-    assert started == [True]
+    assert checked == [True]
+    assert copied == [(name, "e2e-huawei-unit-r2-s2", "/dev/pts/1", 2)]
+    assert started == [True, True]
     assert scenario.connections["1/1"]["name"] == name
+    assert scenario.connections["2/2"] == {"name": "e2e-huawei-unit-r2-s2", "tags": scenario.connections["1/1"]["tags"]}
 
 
 def test_one_failed_device_stage_is_retained_while_other_devices_finish(tmp_path):
@@ -263,5 +286,7 @@ def test_fleet_cleanup_failure_captures_both_pages_and_still_clears_buses(tmp_pa
 
     prior_evidence = ["模拟器现场", "上位机现场"] if business_result != "passed" else []
     assert calls == prior_evidence + ["清理上位机", "模拟器现场", "上位机现场", "清空总线", "关闭浏览器"]
-    assert desktop.metadata["华为连接清理错误"] == str(upper_error)
-    assert desktop.metadata["华为模拟器清理错误"] == "模拟器清理失败"
+    assert desktop.metadata["测试资源清理错误"] == [
+        f"停止并删除本次机群连接：{upper_error}",
+        "清空 slaveSim 全部总线：模拟器清理失败",
+    ]

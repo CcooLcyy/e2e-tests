@@ -70,6 +70,7 @@ def test_current_cases_keep_ids_order_and_expected_group_counts():
         "tests/test_session_preferences.py::test_forget_password_clears_saved_password_and_auto_login",
         "tests/test_session_preferences.py::test_explicit_logout_disables_auto_login_but_keeps_password",
         "tests/test_session_preferences.py::test_changing_account_does_not_reuse_saved_password",
+        "tests/test_wrong_password.py::test_wrong_password_is_not_remembered_or_auto_used_after_reopen",
         "tests/test_modbus_rtu.py::test_rtu_configuration_saved_on_both_pages",
         "tests/test_modbus_rtu.py::test_rtu_initial_acquisition_matches_simulator",
         "tests/test_modbus_rtu.py::test_rtu_source_change_updates_value_and_time",
@@ -83,13 +84,16 @@ def test_current_cases_keep_ids_order_and_expected_group_counts():
         "tests/test_agc_direction_blocks.py::test_agc_higher_target_clears_decrease_block",
         "tests/test_agc_direction_blocks.py::test_agc_increase_block_does_not_wait_for_measured_limit",
         "tests/test_agc_rebalance.py::test_agc_redistributes_when_rtu_member_loses_communication",
+        "tests/test_agc_power_range.py::test_agc_station_power_range_reaches_iec104",
+        "tests/test_measurement_expiry.py::test_agc_member_measurement_expiry",
         "tests/test_avc_control_periods.py::test_avc_voltage_deviation_recalculates_without_new_input",
         "tests/test_avc_control_periods.py::test_avc_burst_respects_command_interval_and_uses_latest_target",
         "tests/test_avc_control_periods.py::test_avc_stopped_group_applies_new_periods_after_restart",
+        "tests/test_avc_reactive_headroom.py::test_avc_station_reactive_headroom_reaches_iec104",
+        "tests/test_measurement_expiry.py::test_avc_voltage_measurement_expiry",
     ]
     assert Counter(case.group for case in cases) == {
-        "基础登录": 3, "启动与界面": 1, "密码记忆与自动登录": 7, "Modbus RTU": 7,
-        "AGC 增减闭锁": 5, "AGC 通信重分配": 1, "AVC 周期控制": 3,
+        "基础登录": 4, "密码记忆与自动登录": 8, "Modbus RTU": 7, "AGC 控制": 8, "AVC 控制": 5,
     }
     for case in cases:
         assert case.flow, f"用例缺少测试流程：{case.id}"

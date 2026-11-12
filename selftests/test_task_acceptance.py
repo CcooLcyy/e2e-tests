@@ -55,17 +55,35 @@ def test_failed_case_is_red_and_next_independent_case_still_executes(tmp_path):
 
 
 def test_stop_does_not_start_next_case_and_reports_cancelled(tmp_path):
-    """停止应结束当前任务并保持后续用例未执行。"""
-    root = project(tmp_path, 'import time\ndef test_slow():\n    time.sleep(30)\n'
-                   'def test_later():\n    raise AssertionError("不应该执行")\n')
+    """协作停止应先收尾当前用例，并保持后续用例未执行。"""
+    root = project(tmp_path, '''import os
+from pathlib import Path
+import time
+
+def test_slow():
+    stop = Path(os.environ["TESTBENCH_STOP"])
+    resource = stop.with_name("test-resource")
+    resource.touch()
+    try:
+        while not stop.exists():
+            time.sleep(0.025)
+        raise InterruptedError("已收到停止请求")
+    finally:
+        resource.unlink()
+        assert not resource.exists()
+        stop.with_name("cleanup-confirmed").touch()
+
+def test_later():
+    raise AssertionError("不应该执行")
+''')
     controller = TaskController(root)
     ids = ["tests/test_external.py::test_slow", "tests/test_external.py::test_later"]
-    controller.start(environment(), ids)
+    run_dir = controller.start(environment(), ids)
     events = []
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         events.extend(controller.poll())
-        if any(event["type"] == "case_started" for event in events):
+        if (run_dir / "test-resource").is_file():
             break
         time.sleep(0.05)
     else:
@@ -73,5 +91,7 @@ def test_stop_does_not_start_next_case_and_reports_cancelled(tmp_path):
         raise AssertionError("任务没有开始执行用例")
     controller.stop()
     events = finish(controller, events, timeout=15)
+    assert (run_dir / "cleanup-confirmed").is_file()
+    assert not (run_dir / "test-resource").exists()
     assert not any(event["type"] == "case_started" and event["case_id"] == ids[1] for event in events)
     assert any(event["type"] == "task_finished" and event["status"] == "cancelled" for event in events)

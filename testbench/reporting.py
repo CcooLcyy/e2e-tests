@@ -160,6 +160,9 @@ def business_case(result):
         summary = {"通过": "本用例检查通过。", "失败": "测试未完成或检查未满足要求，具体原因见诊断资料。",
                    "已停止": "本用例已停止，未完成的行为尚未验证。", "跳过": "本用例未完成验证。",
                    "未执行": "本用例尚未执行。", "未判定": "尚未记录用例最终结果。"}.get(status, "尚未记录用例最终结果。")
+    errors = result.get("测试资源清理错误")
+    if isinstance(errors, list) and errors:
+        summary += " 测试资源清理未完成。" + "；".join(str(error) for error in errors)
     shots = _records(result, "截图")
     saved = [shot for shot in shots if shot.get("capture_status") == "saved" and isinstance(shot.get("name"), str)]
     chosen = []
@@ -264,6 +267,9 @@ def write_task_report(directory, summary, task):
             counts[status] += 1
     lines = ["# 测试任务报告", "", f"任务结果：**{_label(summary.get('status'))}**", "",
              " · ".join(f"{name} {count}" for name, count in counts.items())]
+    cleanup_errors = summary.get("cleanup_errors") or [error for case in cases for error in case.get("cleanup_errors", [])]
+    if cleanup_errors:
+        lines.extend(["", "## 测试资源清理未完成", "", *[f"- {_cell(error)}" for error in cleanup_errors]])
     if version := _business_text(task.get("testbench_version"), ""):
         lines.extend(["", f"测试上位机版本 {_cell(version)}"])
     pack = task.get("case_pack")

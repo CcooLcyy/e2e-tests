@@ -80,6 +80,8 @@ class WindowsCredentialGuard:
         if self._claimed:
             try:
                 self.backend.delete(self.target)
+                if self.exists():
+                    raise RuntimeError("回读发现本次测试凭据仍存在")
                 LOGGER.info("已清理本次测试账号的 Windows 凭据")
             finally:
                 self._claimed = False
@@ -108,8 +110,8 @@ def cleanup_login_credentials(desktop, guard):
         try:
             with desktop.step("删除本次测试账号的保存凭据", cancellable=False):
                 guard.__exit__(None, None, None)
-        except BaseException:
-            errors.append("删除本次测试账号的保存凭据失败")
+        except BaseException as error:
+            errors.append(f"删除本次测试账号的保存凭据失败：{error}")
     if errors:
         desktop.failure = "；".join(errors)
         raise RuntimeError(desktop.failure) from None

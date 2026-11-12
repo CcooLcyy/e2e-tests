@@ -63,7 +63,8 @@ def test_owned_credential_is_cleaned_on_every_exit(failure):
     else:
         with pytest.raises(type(failure)):
             run()
-    assert backend.calls == [("exists", guard.target), ("exists", guard.target), ("delete", guard.target)]
+    assert backend.calls == [("exists", guard.target), ("exists", guard.target),
+                             ("delete", guard.target), ("exists", guard.target)]
     assert not backend.present
 
 

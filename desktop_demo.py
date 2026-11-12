@@ -1,6 +1,7 @@
 """真实 Windows Release 的 WebView2 测试会话与证据收集。"""
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 import hashlib
 import json
@@ -18,6 +19,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from testbench.events import ExecutionTiming
 from testbench.workspace import SITE_MANAGER_ADDRESS, set_test_site_address
+
+
+_cleanup_active = ContextVar("desktop_cleanup_active", default=False)
 
 
 class ReleaseDesktop:
@@ -208,8 +212,18 @@ class ReleaseDesktop:
     @staticmethod
     def _check_stop():
         stop = os.environ.get("TESTBENCH_STOP")
-        if stop and Path(stop).exists():
+        if not _cleanup_active.get() and stop and Path(stop).exists():
             raise InterruptedError("测试任务已停止")
+
+    @staticmethod
+    @contextmanager
+    def cleanup_scope():
+        """保留任务停止信号，允许当前用例完成必要的界面清理。"""
+        token = _cleanup_active.set(True)
+        try:
+            yield
+        finally:
+            _cleanup_active.reset(token)
 
     @contextmanager
     def step(self, name, expected=None, actual=None, *, cancellable=True, targets=()):
@@ -367,6 +381,16 @@ class ReleaseDesktop:
             self.failure = self.failure or f"重开测试副本失败：{type(error).__name__}"
             self.close()
             raise
+
+    def reopen_for_cleanup(self):
+        """用例重开中断后，重新接管同一副本以删除已保存的业务配置。"""
+        if not _cleanup_active.get() or self.driver is not None:
+            raise RuntimeError("只能在清理期间恢复已关闭的测试会话")
+        if self.process is not None and self.process.poll() is None:
+            raise RuntimeError("旧测试进程尚未退出，无法恢复清理会话")
+        self._wait_debug_port_closed()
+        self.process = None
+        self._launch()
 
     def _close_owned_window(self):
         """路径和 PID 同时匹配才发送 WM_CLOSE，不能以注销或强杀替代正常退出。"""

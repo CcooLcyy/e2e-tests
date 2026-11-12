@@ -150,7 +150,16 @@ export default function App() {
           if (diagnosticEvents.length) setLogs(old => [...old, ...diagnosticEvents].slice(-1000));
           for(const event of result.events) {
             if(event.type==='case_started' && event.case_id) setFocused(event.case_id);
-            if(event.type==='task_finished') {setTaskStatus(event.status || 'failed');setStopping(false);void refreshHistory().catch(e=>setError(String(e)));}
+            if(event.type==='task_finished') {
+              setTaskStatus(event.status || 'failed');
+              setStopping(false);
+              if(event.cleanup_errors?.length) {
+                setError(`测试资源清理未完成。 ${event.cleanup_errors.join('；')}`);
+              } else if(event.status==='cancelled') {
+                setNotice('测试已停止。');
+              }
+              void refreshHistory().catch(e=>setError(String(e)));
+            }
             if(event.type==='error') {
               if(event.message==='用户停止了测试任务') setNotice('测试已停止，已产生的结果和现场资料会保留。');
               else setError('测试执行遇到异常，详细记录保存在诊断资料中。');
@@ -451,7 +460,7 @@ export default function App() {
                   </button>
                   {active ? <button className="button danger" data-testid="run-stop" disabled={stopping} onClick={()=>void stop()}>
                     {stopping?<LoaderCircle size={15} className="spin"/>:<Square size={13}/>}
-                    {stopping?'正在停止…':'停止测试'}
+                    {stopping?'正在停止并清理…':'停止测试'}
                   </button> : <button className="button primary" data-testid="run-start" disabled={!ready||disabled||loading||!selected.size} onClick={()=>void start()}>
                     {busy?<LoaderCircle size={16} className="spin"/>:<Play size={15} fill="currentColor"/>}
                     开始测试<span className="button-count">{selected.size}</span>
@@ -494,7 +503,7 @@ export default function App() {
               </section>;})}
               {!visible.length&&<div className="empty"><ListChecks size={30}/><strong>{search?'没有匹配的用例':'暂无测试用例'}</strong><span>{search?'尝试其他关键词':'在 tests 目录添加 Python 用例，然后点击刷新。'}</span></div>}</div>
               <div className="case-footer" role="group" aria-label="任务统计">
-                <span className={`task-badge ${taskStatus}`} data-testid="task-status">{stopping?'正在停止':labels[taskStatus]||taskStatus}</span>
+                <span className={`task-badge ${taskStatus}`} data-testid="task-status">{stopping?'正在停止并清理':labels[taskStatus]||taskStatus}</span>
                 <span>已完成 <strong>{stats.done} / {stats.total}</strong></span>
                 <span className="group-passed">通过 <strong>{stats.passed}</strong></span>
                 <span className="group-failed">失败 <strong>{stats.failed}</strong></span>
@@ -597,6 +606,11 @@ undefined
             </div>
             {historyDetail?<div className="history-cases">
               <div className="history-summary"><Status status={String(historyDetail.summary.status||'pending')}/><span>{historyDetail.cases.length} 项测试用例</span><span title="通过 ÷（通过＋失败）；跳过、停止和未执行不计入">通过率 {historyPassRate}</span></div>
+              {Array.isArray(historyDetail.summary.cleanup_errors) && historyDetail.summary.cleanup_errors.length > 0 &&
+                <div className="notice error" role="alert"><div className="notice-content">
+                  <strong>测试资源清理未完成</strong>
+                  <p>{historyDetail.summary.cleanup_errors.join('；')}</p>
+                </div></div>}
               {historyDetail.cases.map((item,index)=><details key={`${historyFocus}-${index}`} className="history-case" open={index===0}>
                 <summary><Status status={String(item.status||'pending')} text={false}/><strong>{item.business?.title||cases.find(c=>c.id===item.case_id)?.name||'测试用例'}</strong><ExecutionTime timing={wasNotRun(item.status,item.message) ? undefined : item}/><ChevronRight size={14}/></summary>
                 <section className="history-flow" aria-label="测试流程">

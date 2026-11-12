@@ -95,6 +95,7 @@ def basic_draft(tmp_path):
 def test_basic_prepare_uses_new_topology_and_saved_actual_mapping(basic_draft):
     page, previous, draft = basic_draft
     calls = []
+    device = "/dev/pts/17"
 
     def save(label, *, before, owned_names, removed_names):
         assert before == previous
@@ -103,31 +104,44 @@ def test_basic_prepare_uses_new_topology_and_saved_actual_mapping(basic_draft):
         return [draft]
 
     page._save_configuration = save
-    page.observe = lambda *args: calls.append(args) or {"link_path": draft["link"]}
+    page.observe = lambda *args: calls.append(args) or {"link_path": draft["link"], "actual_device": device}
     config = page.prepare_basic(environment(), check_paths=lambda paths: calls.append(paths))
-    assert config.serial_device == draft["link"] and config.bus == draft["name"]
+    assert config.serial_device == device and config.bus == draft["name"]
     assert [(station.station_id, station.address) for station in config.stations] == [(9, 10), (28, 17)]
     assert config.baud_rate == 9600
-    assert calls == [(draft["link"],), ("保存", draft["name"]),
-                     (draft["name"], 9, "0x03", 10), (draft["name"], 28, "0x03", 17)]
+    assert calls == [("保存", draft["name"]), (draft["name"], 9, "0x03", 10),
+                     (draft["name"], 28, "0x03", 17), (device,)]
 
 
 def test_basic_runtime_path_mismatch_keeps_failure(basic_draft):
     page, _, draft = basic_draft
     page._save_configuration = lambda *args, **kwargs: [draft]
-    page.observe = lambda *_: {"link_path": "/srv/another/tty9"}
-    with pytest.raises(AssertionError, match="运行路径"):
+    page.observe = lambda *_: {"link_path": "/srv/another/tty9", "actual_device": "/dev/pts/17"}
+    with pytest.raises(AssertionError, match="固定配置路径"):
         page.prepare_basic(environment())
 
 
-def test_basic_path_conflict_prevents_preparation_save_and_observation(basic_draft):
-    page, _, _ = basic_draft
-    page.observe = lambda *_: pytest.fail("路径占用时不得设置或读取测试点")
-    page._save_configuration = lambda *args, **kwargs: pytest.fail("路径占用时不得保存准备配置")
-    def conflict(_):
-        raise AssertionError("DSP串口路径已占用")
+def test_basic_actual_device_conflict_prevents_rtu_preparation(basic_draft):
+    page, _, draft = basic_draft
+    calls = []
+
+    def save(*args, **kwargs):
+        calls.append("保存模拟器")
+        return [draft]
+
+    def observe(*args):
+        calls.append(args)
+        return {"link_path": draft["link"], "actual_device": "/dev/pts/17"}
+
+    def conflict(paths):
+        calls.append(paths)
+        raise AssertionError("DSP实际设备已占用")
+
+    page._save_configuration = save
+    page.observe = observe
     with pytest.raises(AssertionError, match="已占用"):
         page.prepare_basic(environment(), check_paths=conflict)
+    assert calls == ["保存模拟器", (draft["name"], 9, "0x03", 10), (draft["name"], 28, "0x03", 17), ("/dev/pts/17",)]
 
 
 @pytest.mark.parametrize("marker", [None, "false", "true"])
@@ -157,19 +171,24 @@ def simulator_page(tmp_path, page_type=HuaweiSlaveSimPage):
 def test_fleet_uses_created_configuration_readback(tmp_path):
     page = simulator_page(tmp_path)
     checked = []
+    runtime = {}
 
-    def create(buses, *, check_paths):
-        paths = tuple(f"/srv/actual/tty{index}" for index in range(6))
-        check_paths(paths)
-        return [{
-            "name": bus["name"], "link": path,
-            "slaves": [{"station_id": device["station_id"]} for device in bus["devices"]],
-        } for bus, path in zip(buses, paths, strict=True)]
+    def create(buses):
+        actual = []
+        for index, bus in enumerate(buses):
+            link = f"/srv/actual/tty{index}"
+            bus["link_path"] = link
+            runtime[bus["name"]] = (f"/dev/pts/{index + 17}", link)
+            actual.append({"name": bus["name"], "link": link,
+                           "slaves": [{"station_id": device["station_id"]} for device in bus["devices"]]})
+        return actual
 
     page.create_fleet = create
+    page.observe_bus_paths = runtime.__getitem__
     config, actual = page.prepare_owned_fleet(30, "本次", check_paths=checked.append)
-    assert config.serial_devices == checked[0]
-    assert [bus["serial_device"] for bus in actual] == list(checked[0])
+    devices = tuple(device for device, _ in runtime.values())
+    assert config.serial_devices == devices and checked == [devices]
+    assert [(bus["serial_device"], bus["link_path"]) for bus in actual] == list(runtime.values())
     assert sum(len(bus["devices"]) for bus in actual) == 21
 
 

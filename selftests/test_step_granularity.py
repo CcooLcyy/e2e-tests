@@ -112,14 +112,23 @@ def test_readiness_waits_have_separate_completion_boundaries():
 
 def test_all_business_case_ui_actions_have_explicit_step_boundaries():
     """所有业务文件中的直接界面动作、重开和等待都置于独立步骤内。"""
+    actions = ("restart", "click", "clear", "send_keys", "replace_text", "until")
+
+    def direct_action(node):
+        return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in actions
+
     root = Path(__file__).resolve().parents[1] / "case-suite" / "tests"
     for path in root.glob("test_*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        named_steps = {
+            call.args[3].id: call.func.id for call in ast.walk(tree)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            and call.func.id in ("desktop_action", "Step") and len(call.args) > 3
+            and isinstance(call.args[3], ast.Name)
+        }
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            if node.func.attr not in ("restart", "click", "clear", "send_keys", "replace_text", "until"):
+            if not direct_action(node):
                 continue
             statement = parents[node]
             if isinstance(statement, ast.Lambda):
@@ -129,6 +138,15 @@ def test_all_business_case_ui_actions_have_explicit_step_boundaries():
                 continue
             assert isinstance(statement, (ast.Expr, ast.Assign)), (path.name, node.lineno)
             context = parents[statement]
+            if isinstance(context, ast.FunctionDef) and context.name in named_steps:
+                assert parents[context] is tree, (path.name, node.lineno)
+                assert sum(direct_action(child) for child in ast.walk(context)) == 1, (path.name, node.lineno)
+                if named_steps[context.name] == "Step":
+                    # ReleaseDesktop.restart 自身用桌面步骤记录关闭、重开和重新接管。
+                    receiver = node.func.value
+                    assert (node.func.attr == "restart" and isinstance(receiver, ast.Attribute)
+                            and receiver.attr == "desktop"), (path.name, node.lineno)
+                continue
             # 密码输入可在当前步骤内捕获并清理驱动异常；不能跨越其他动作或步骤。
             if isinstance(context, ast.Try):
                 assert context.body == [statement]
@@ -141,7 +159,5 @@ def test_all_business_case_ui_actions_have_explicit_step_boundaries():
                           for child in (sibling.body if isinstance(sibling, ast.Try) else [sibling])]
             direct_actions = [child for sibling in statements
                               if isinstance(sibling, (ast.Expr, ast.Assign))
-                              for child in [sibling.value] if isinstance(child, ast.Call)
-                              and isinstance(child.func, ast.Attribute)
-                              and child.func.attr in ("restart", "click", "clear", "send_keys", "replace_text", "until")]
+                              for child in [sibling.value] if direct_action(child)]
             assert len(direct_actions) == 1, (path.name, node.lineno)

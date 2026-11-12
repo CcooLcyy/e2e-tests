@@ -159,6 +159,17 @@ def pytest_runtest_makereport(item, call):
     stop = os.environ.get("TESTBENCH_STOP")
     if stop and Path(stop).exists():
         status, message = "cancelled", "用户停止了测试任务"
+    cleanup_errors = [error for source, app in sessions if source == "desktop"
+                      for error in app.metadata.get("测试资源清理错误", [])]
+    cleanup_errors.extend(app.cleanup_failure for _, app in sessions if getattr(app, "cleanup_failure", None))
+    if report.failed and not cleanup_errors:
+        crash = getattr(report.longrepr, "reprcrash", None)
+        cleanup_errors.append(getattr(crash, "message", None) or "用例收尾失败，详见诊断资料")
+    if cleanup_errors:
+        details = "测试资源清理未完成：" + "；".join(cleanup_errors)
+        if status == "passed":
+            status = "failed"
+        message = f"{message}\n{details}" if message else details
     timing = item.config._bench_started.pop(item.nodeid, None)
     elapsed = timing.finish() if timing is not None else {}
     executable_flow = _executable_flow(item)
@@ -183,6 +194,8 @@ def pytest_runtest_makereport(item, call):
         result.setdefault("截图", [])
         if getattr(item, "_bench_evidence_errors", None):
             result["证据采集错误"] = item._bench_evidence_errors
+        if cleanup_errors:
+            result["测试资源清理错误"] = cleanup_errors
         result.update({"用例ID": item.nodeid, "用例": (getattr(item.obj, "__doc__", "") or item.name).strip(),
                        "结果": STATUS_LABELS[status], "步骤": result.get("步骤", []),
                        "阶段结果": [{"阶段": part.when, "结果": "失败" if part.failed else "跳过" if part.skipped else "通过",
@@ -198,6 +211,8 @@ def pytest_runtest_makereport(item, call):
         print(f"[报告] 已保存用例报告：{item.nodeid}（{STATUS_LABELS[status]}）", flush=True)
     event = {"type": "case_finished", "case_id": item.nodeid, "status": status,
              "message": message, "artifacts_dir": getattr(item, "_bench_artifacts", ""), **elapsed, **plan_details}
+    if cleanup_errors:
+        event["cleanup_errors"] = cleanup_errors
     item.config._bench_results[item.nodeid] = event
     emit(event)
 

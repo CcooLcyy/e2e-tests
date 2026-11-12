@@ -49,13 +49,13 @@ def test_timeout_keeps_both_observations_without_resending_business(tmp_path, mo
         calls.append("读取模拟器")
         if simulator_failed:
             raise RuntimeError("模拟器连接中断")
-        return {"value": 1234, "link_path": "/dev/rtu-test"}
+        return {"value": 1234, "actual_device": "/dev/pts/17", "link_path": "/srv/rtu-test"}
 
     desktop = EvidenceDesktop(tmp_path)
     upper = SimpleNamespace(select=lambda _: None, wait_value=wait_value)
     simulator = SimpleNamespace(observe=observe)
     environment = SimpleNamespace(stations=(RtuStation(1, 0),), bus="专用总线",
-                                  serial_device="/dev/rtu-test", acquisition_timeout=20)
+                                  serial_device="/dev/pts/17", acquisition_timeout=20)
     cases = business_cases()
     scenario = cases.RtuScenario(desktop, simulator, upper, environment)
     scenario.connections[0] = {"name": "owned", "tag": "tag", "scale": 1, "offset": 0}

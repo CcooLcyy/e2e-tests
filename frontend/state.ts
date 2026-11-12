@@ -3,7 +3,7 @@ export interface ExecutionTiming { started_at?: string; duration?: number }
 export type PlanStepTimings = Record<string, ExecutionTiming>;
 export interface Step extends ExecutionTiming { name: string; status: string; step_id?: number | string; expected?: unknown; actual?: unknown }
 export interface CaseRecord extends ExecutionTiming { status: Status; steps: Step[]; message?: string; artifacts_dir?: string; plan_steps?: Record<string, string>; plan_step_timings?: PlanStepTimings; latest_plan_step_id?: string }
-export interface BenchEvent extends ExecutionTiming { type: string; case_id?: string; status?: string; step_id?: number | string; plan_step_id?: string; name?: string; expected?: unknown; actual?: unknown; message?: string; artifacts_dir?: string; time?: string; plan_steps?: Record<string, string>; plan_step_timings?: PlanStepTimings }
+export interface BenchEvent extends ExecutionTiming { type: string; case_id?: string; status?: string; step_id?: number | string; plan_step_id?: string; name?: string; expected?: unknown; actual?: unknown; message?: string; artifacts_dir?: string; time?: string; plan_steps?: Record<string, string>; plan_step_timings?: PlanStepTimings; cleanup_errors?: string[] }
 
 export function wasNotRun(status?: string, message?: string) {
   return status === 'pending' || status === 'not_run' || (status === 'skipped' && message === '未执行');

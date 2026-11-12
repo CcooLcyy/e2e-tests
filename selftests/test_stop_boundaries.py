@@ -15,22 +15,48 @@ def test_stop_stays_active_until_cleanup_finishes_and_ignores_late_events(tmp_pa
     controller.run_dir = tmp_path / "run"
     controller.run_dir.mkdir()
     controller.active = True
-    controller._started = time.monotonic()
-    controller._stop_at = time.monotonic() - 5
+    now = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    controller._started = now[0]
     controller._timeout = 60
     controller._process = SimpleNamespace(poll=lambda: None)
-    cleanup = SimpleNamespace(code=None)
-    cleanup.poll = lambda: cleanup.code
-    monkeypatch.setattr(controller, "_terminate", lambda: cleanup)
-    monkeypatch.setattr(controller, "_worker_exited", lambda: cleanup.code == 0)
+    (controller.run_dir / "worker.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(controller, "_worker_exited", lambda: False)
+    exited = [False]
+    monkeypatch.setattr(controller, "_completion_exited", lambda: exited[0])
+    terminated = []
+    monkeypatch.setattr(controller, "_terminate", lambda: terminated.append(True))
+    controller.stop()
+    assert (controller.run_dir / "stop").is_file()
+
+    case_id = "tests/test_case.py::test_cleanup"
+    controller._selected = [case_id]
+    path = controller.run_dir / "events.jsonl"
+    now[0] += 45
+    path.write_text(json.dumps({"type": "plan_step", "case_id": case_id,
+                               "plan_step_id": "cleanup", "status": "running"}) + "\n", encoding="utf-8")
     events = controller.poll()
     assert controller.active
     assert not any(event["type"] == "task_finished" for event in events)
-    cleanup.code = 0
+    now[0] += 45
+    assert not controller.poll()
+    assert controller.active
+    assert not terminated
+
+    cleanup_error = "IEC104 本例连接：删除后仍在列表"
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"type": "case_finished", "case_id": case_id, "status": "cancelled",
+                                 "cleanup_errors": [cleanup_error]}) + "\n")
+        stream.write(json.dumps({"type": "task_finished", "status": "cancelled"}) + "\n")
+    assert not any(event["type"] == "task_finished" for event in controller.poll())
+    exited[0] = True
     events = controller.poll()
     assert not controller.active
-    assert any(event["type"] == "task_finished" and event["status"] == "cancelled" for event in events)
-    (controller.run_dir / "events.jsonl").write_text(json.dumps({"type": "task_finished", "status": "passed"}) + "\n", encoding="utf-8")
+    finished = next(event for event in events if event["type"] == "task_finished")
+    assert finished["status"] == "cancelled"
+    assert finished["cleanup_errors"] == [cleanup_error]
+    assert cleanup_error in (controller.run_dir / "report.md").read_text(encoding="utf-8")
+    path.write_text(json.dumps({"type": "task_finished", "status": "passed"}) + "\n", encoding="utf-8")
     assert controller.poll() == []
 
 
