@@ -13,6 +13,7 @@ import time
 import uuid
 from .case_pack import CasePackStore
 from .catalog import discover_cases
+from .events import timestamp
 from .reporting import write_task_report
 from .modbus_environment import RTU_OBSERVATION_CASE_IDS, validate_modbus_observation
 
@@ -33,12 +34,15 @@ class TaskController:
         self._current = None
         self._selected = []
         self._finished = {}
+        self._case_starts = {}
         self._plan_steps = {}
+        self._executed_steps = {}
         self._finalized = False
         self._cleanup = None
         self._pending_finish = None
         self._cleanup_reason = None
         self._cleanup_error_reported = False
+        self._worker_ended_at = None
 
     def start(self, environment, case_ids, *, private_webview_pair=None):
         if self.active:
@@ -95,7 +99,9 @@ class TaskController:
         self._started = time.monotonic()
         self._last_progress = self._started
         self._selected, self._finished, self._current = list(case_ids), {}, None
+        self._case_starts = {}
         self._plan_steps = {}
+        self._executed_steps = {}
         # 无进展保护覆盖界面、主站及所选RTU采集等待；持续推进的长流程不受总墙钟截断。
         operation_timeout = max(float(environment.timeout),
                                 float(environment.master104_timeout) if environment.master104_enabled else 0,
@@ -106,6 +112,7 @@ class TaskController:
                                          environment.timeout, environment.modbus_acquisition_timeout, self._timeout)
         self._finalized, self._cleanup, self._pending_finish = False, None, None
         self._cleanup_reason, self._cleanup_error_reported = None, False
+        self._worker_ended_at = None
         self.active = True
         return self.run_dir
 
@@ -119,24 +126,18 @@ class TaskController:
         for event in events:
             if event["type"] in ("case_started", "case_finished", "step", "plan_step") and event.get("case_id") in self._selected:
                 self._last_progress = time.monotonic()
-            if event["type"] == "case_started":
-                self._current = event["case_id"]
-            elif event["type"] == "case_finished":
-                self._remember_finished(event)
-                if self._current == event["case_id"]:
-                    self._current = None
-                event = {"type": "case_finished", **self._finished.get(event["case_id"], event)}
-            elif event["type"] == "plan_step":
-                self._remember_plan_step(event)
-            elif event["type"] == "task_finished":
+            if event["type"] == "task_finished":
                 if self._stop_at:
                     event["status"] = "cancelled"
                 self._pending_finish = event
                 continue
-            outgoing.append(event)
+            outgoing.append(self._remember_case_event(event))
         if self._pending_finish and self._completion_exited():
             before = dict(self._finished)
-            self._persist_summary(self._pending_finish["status"])
+            status = self._pending_finish["status"]
+            self._restore_case_results()
+            outgoing.extend(self._recover_incomplete_cases(status))
+            self._persist_summary(status)
             outgoing.extend({"type": "case_finished", **event} for case_id, event in self._finished.items()
                             if event != before.get(case_id))
             outgoing.append(self._pending_finish)
@@ -212,41 +213,113 @@ class TaskController:
             candidate.update(status=previous["status"], message=previous.get("message", ""))
         candidate["artifacts_dir"] = (self._safe_case_directory(event.get("artifacts_dir", ""))
                                        or self._safe_case_directory(previous.get("artifacts_dir", "")))
-        duration = event.get("duration", 0)
-        if not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration < 0:
-            duration = 0
-        candidate["duration"] = duration or previous.get("duration", 0)
+        duration = event.get("duration")
+        if not self._valid_duration(duration) or (duration == 0 and not event.get("started_at") and previous.get("duration")):
+            candidate.pop("duration", None)
+            if self._valid_duration(previous.get("duration")):
+                candidate["duration"] = previous["duration"]
+        if case_id in self._case_starts:
+            candidate.setdefault("started_at", self._case_starts[case_id])
+        if candidate.get("status") == "skipped" and candidate.get("message") == "未执行":
+            candidate.pop("duration", None)
+        plan_steps = self._plan_steps.get(case_id)
+        if plan_steps:
+            states = candidate.get("plan_steps")
+            timings = candidate.get("plan_step_timings")
+            states = dict(states) if isinstance(states, dict) else {}
+            timings = dict(timings) if isinstance(timings, dict) else {}
+            for step_id, step in plan_steps.items():
+                if step["status"] == "running" and states.get(step_id) in ("passed", "failed", "cancelled", "skipped"):
+                    continue
+                states[step_id] = step["status"]
+                if step["status"] == "skipped":
+                    timings.pop(step_id, None)
+                else:
+                    values = self._timing_fields(step)
+                    if values:
+                        saved = timings.get(step_id)
+                        timings[step_id] = {**values, **saved} if isinstance(saved, dict) else values
+            candidate.update(plan_steps=states, plan_step_timings=timings)
         self._finished[case_id] = candidate
+
+    @staticmethod
+    def _valid_duration(value):
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+    @classmethod
+    def _timing_fields(cls, record):
+        timing = {key: record[key] for key in ("started_at", "finished_at") if isinstance(record.get(key), str)}
+        if cls._valid_duration(record.get("duration")):
+            timing["duration"] = record["duration"]
+        return timing
+
+    @staticmethod
+    def _elapsed_between(started_at, finished_at):
+        try:
+            elapsed = (datetime.fromisoformat(finished_at) - datetime.fromisoformat(started_at)).total_seconds()
+        except (ValueError, TypeError):
+            return {}
+        return {"started_at": started_at, "finished_at": finished_at, "duration": round(max(0, elapsed), 3)}
 
     @staticmethod
     def _case_records(summary):
         cases = summary.get("cases")
         return [case for case in cases if isinstance(case, dict)] if isinstance(cases, list) else []
 
-    def _remember_plan_step(self, event):
+    def _remember_case_event(self, event):
         case_id = event.get("case_id")
-        step_id = event.get("plan_step_id")
+        if case_id not in self._selected:
+            return event
+        kind = event["type"]
+        if kind == "case_started":
+            self._current = case_id
+            started_at = event.get("started_at") or event.get("time")
+            if isinstance(started_at, str):
+                self._case_starts[case_id] = started_at
+        elif kind == "case_finished":
+            self._remember_finished(event)
+            if self._current == case_id:
+                self._current = None
+            return {"type": "case_finished", **self._finished[case_id]}
+        elif kind == "plan_step":
+            self._remember_step(self._plan_steps, case_id, event, "plan_step_id")
+        elif kind == "step":
+            self._remember_step(self._executed_steps, case_id, event, "step_id")
+        return event
+
+    def _remember_step(self, steps, case_id, event, id_key):
+        step_id = event.get(id_key)
         status = event.get("status")
-        if (case_id in self._selected and isinstance(step_id, str) and step_id
-                and status in ("running", "passed", "failed", "cancelled", "skipped")):
-            self._plan_steps.setdefault(case_id, {})[step_id] = status
+        if (type(step_id) not in (str, int) or not step_id
+                or status not in ("running", "passed", "failed", "cancelled", "skipped")):
+            return
+        records = steps.setdefault(case_id, {})
+        if status == "skipped":
+            records[step_id] = {id_key: step_id, "status": status}
+            return
+        timing = self._timing_fields(event)
+        if status == "running" and isinstance(event.get("time"), str):
+            timing.setdefault("started_at", event["time"])
+        if status != "running" and isinstance(event.get("time"), str):
+            timing.setdefault("finished_at", event["time"])
+        details = {key: event[key] for key in ("name", "expected", "actual") if key in event}
+        previous = {} if status == "running" else records.get(step_id, {})
+        records[step_id] = {**previous, id_key: step_id, "status": status, **details, **timing}
+
+    def _restore_case_results(self):
+        summary = self._read_object(self.run_dir / "summary.json")
+        for case in self._case_records(summary):
+            if case.get("case_id") not in self._finished or case.get("status") == "failed":
+                self._remember_finished(case)
 
     def _persist_summary(self, status, message=""):
         task = self._read_object(self.run_dir / "task.json")
         summary = self._read_object(self.run_dir / "summary.json")
-        for case in self._case_records(summary):
-            if isinstance(case, dict) and (case.get("case_id") not in self._finished or case.get("status") == "failed"):
-                self._remember_finished(case)
         for case_id in self._selected:
             if case_id not in self._finished:
                 self._finished[case_id] = {"case_id": case_id, "status": "skipped", "message": "未执行",
-                                           "duration": 0, "artifacts_dir": ""}
-        cases = []
-        for case_id in self._selected:
-            case = self._finished[case_id]
-            if case_id in task.get("case_flows", {}):
-                case = {**case, "plan_steps": self._plan_steps.get(case_id, {})}
-            cases.append(case)
+                                           "artifacts_dir": ""}
+        cases = [self._finished[case_id] for case_id in self._selected]
         summary.update(status=status, run_dir=str(self.run_dir), cases=cases,
                        started_at=task.get("started_at", summary.get("started_at", "")),
                        ended_at=datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -266,11 +339,16 @@ class TaskController:
         return self._worker_exited()
 
     def _begin_cleanup(self, status, message):
+        if self._worker_exited():
+            self._worker_ended_at = timestamp()
         self._cleanup_reason = (status, message)
         self._cleanup = self._terminate()
 
     def _poll_cleanup(self):
         code = self._cleanup.poll()
+        worker_exited = self._worker_exited()
+        if worker_exited and self._worker_ended_at is None:
+            self._worker_ended_at = timestamp()
         if code is None:
             return []
         if code != 0:
@@ -278,11 +356,11 @@ class TaskController:
                 self._cleanup_error_reported = True
                 return [{"type": "error", "message": "本次进程清理失败，任务保持正在停止，请确认测试进程状态"}]
             return []
-        if (self.run_dir / "worker.json").exists() and not self._worker_exited():
+        if (self.run_dir / "worker.json").exists() and not worker_exited:
             return []
         # 未写入 worker 标记的启动失败由清理程序确认没有匹配进程。
         # 测试替身也可通过 _worker_exited 表示清理后的退出。
-        if not (self.run_dir / "worker.json").exists() and self._process.poll() is None and not self._worker_exited():
+        if not (self.run_dir / "worker.json").exists() and self._process.poll() is None and not worker_exited:
             return []
         return self._finish_abnormal(*self._cleanup_reason)
 
@@ -336,60 +414,86 @@ class TaskController:
         before = dict(self._finished)
         # 工作进程在清理等待期间仍可能完成报告，终结前必须读完这批事件。
         for event in self._read_events(final=True):
-            case_id = event.get("case_id")
-            if event["type"] == "case_started" and case_id in self._selected:
-                self._current = case_id
-            elif event["type"] == "case_finished":
-                self._remember_finished(event)
-                if self._current == case_id:
-                    self._current = None
-            elif event["type"] == "plan_step" and case_id in self._selected:
-                self._remember_plan_step(event)
+            event = self._remember_case_event(event)
+            if event["type"] in ("step", "plan_step") and event.get("case_id") in self._selected:
                 events.append(event)
-        stored = self._read_object(self.run_dir / "summary.json")
-        for event in self._case_records(stored):
-            if isinstance(event, dict) and (event.get("case_id") not in self._finished or event.get("status") == "failed"):
-                self._remember_finished(event)
-        for case_id in self._selected:
-            if case_id in self._finished and self._finished[case_id].get("status") != "skipped":
-                continue
-            directory = self.run_dir / "cases" / hashlib.sha256(case_id.encode()).hexdigest()[:16]
-            safe_directory = self._safe_case_directory(str(directory))
-            report = self._read_object(directory / "report.json") if safe_directory else {}
-            if report or case_id == self._current:
-                recovered_status = status
-                # 只有包含清理阶段结果的完整记录才能恢复“通过”，临时通过不能作最终判定。
-                phases = report.get("阶段结果", [])
-                final = any(isinstance(phase, dict) and phase.get("阶段") == "teardown" for phase in phases)
-                if final:
-                    recovered_status = {"通过": "passed", "失败": "failed", "已停止": "cancelled",
-                                        "跳过": "skipped"}.get(report.get("结果"), status)
-                elif report.get("结果") == "失败" and any(
-                    isinstance(step, dict) and step.get("状态") == "失败" and step.get("错误")
-                    and not str(step["错误"]).startswith("InterruptedError:") for step in report.get("步骤", [])
-                ):
-                    recovered_status = "failed"
-                duration = 0
-                try:
-                    duration = max(0, (datetime.fromisoformat(report["结束时间"])
-                                       - datetime.fromisoformat(report["开始时间"])).total_seconds())
-                except (KeyError, ValueError, TypeError):
-                    pass
-                self._remember_finished({"type": "case_finished", "case_id": case_id,
-                                         "status": recovered_status, "duration": duration,
-                                         "message": (report.get("错误") or "用例在停止前已记录失败，详见诊断资料")
-                                         if recovered_status == "failed" else "" if recovered_status == "passed" else message,
-                                         "artifacts_dir": safe_directory})
-        for case in self._selected:
-            if case not in self._finished:
-                self._finished[case] = {"case_id": case, "status": "skipped", "message": "未执行", "duration": 0,
-                                        "artifacts_dir": ""}
+        self._restore_case_results()
+        events.extend(self._recover_incomplete_cases(status, message))
+        self._persist_summary(status, message)
         for case_id in self._selected:
             event = self._finished[case_id]
             if event != before.get(case_id):
                 events.append({"type": "case_finished", **event})
-        self._persist_summary(status, message)
         events.append({"type": "task_finished", "status": status, "run_dir": str(self.run_dir)})
         self.active = False
         self._finalized = True
         return events
+
+    def _recover_incomplete_cases(self, status, message=""):
+        ended_at = self._worker_ended_at or timestamp()
+        interrupted = "cancelled" if status == "cancelled" else "failed"
+        events = []
+        for case_id in self._selected:
+            record = self._finished.get(case_id, {})
+            has_result = record and not (record.get("status") == "skipped" and record.get("message") == "未执行")
+            safe_directory, report = "", {}
+            if not has_result:
+                directory = self.run_dir / "cases" / hashlib.sha256(case_id.encode()).hexdigest()[:16]
+                safe_directory = self._safe_case_directory(str(directory))
+                report = self._read_object(directory / "report.json") if safe_directory else {}
+            plan_states = (record if has_result else report).get("plan_steps")
+            incomplete_steps = self._close_unfinished_steps(case_id, interrupted, record.get("finished_at") or ended_at,
+                                                            plan_states if isinstance(plan_states, dict) else {})
+            events.extend(incomplete_steps)
+            if has_result:
+                if incomplete_steps:
+                    self._remember_finished({**record, "executed_steps": list(self._executed_steps.get(case_id, {}).values())})
+            elif report or case_id == self._current or case_id in self._case_starts:
+                self._recover_case(case_id, interrupted, message, ended_at, report, safe_directory)
+        return events
+
+    def _close_unfinished_steps(self, case_id, status, ended_at, plan_states):
+        events = []
+        for kind, records in (("plan_step", self._plan_steps), ("step", self._executed_steps)):
+            steps = records.get(case_id, {})
+            for step_id, step in steps.items():
+                if kind == "plan_step" and plan_states.get(step_id) in ("passed", "failed", "cancelled", "skipped"):
+                    continue
+                if step["status"] == "running":
+                    timing = self._elapsed_between(step.get("started_at"), ended_at)
+                    step = {**step, "status": status, **timing}
+                    steps[step_id] = step
+                    events.append({"type": kind, "case_id": case_id, "time": ended_at, **step})
+        return events
+
+    def _recover_case(self, case_id, status, message, ended_at, report, directory):
+        phases = report.get("阶段结果", [])
+        steps = report.get("步骤", [])
+        # 只有包含清理阶段结果的完整记录才能恢复“通过”，临时通过不能作最终判定。
+        final = isinstance(phases, list) and any(isinstance(phase, dict) and phase.get("阶段") == "teardown" for phase in phases)
+        if final:
+            status = {"通过": "passed", "失败": "failed", "已停止": "cancelled", "跳过": "skipped"}.get(report.get("结果"), status)
+        elif report.get("结果") == "失败" and isinstance(steps, list) and any(
+            isinstance(step, dict) and step.get("状态") == "失败" and step.get("错误")
+            and not str(step["错误"]).startswith(("InterruptedError:", "InterruptedError：")) for step in steps
+        ):
+            status = "failed"
+        started_at = self._case_starts.get(case_id)
+        if final or not started_at:
+            timing = self._elapsed_between(report.get("开始时间") or started_at, report.get("结束时间"))
+            if self._valid_duration(report.get("耗时秒")):
+                timing["duration"] = report["耗时秒"]
+        else:
+            timing = self._elapsed_between(started_at, ended_at)
+        if status == "failed":
+            message = report.get("错误") or message or "用例在停止前已记录失败，详见诊断资料"
+        elif status == "passed":
+            message = ""
+        result = {"type": "case_finished", "case_id": case_id, "status": status, "message": message,
+                  "artifacts_dir": directory, **timing}
+        for key in ("plan_steps", "plan_step_timings"):
+            if isinstance(report.get(key), dict):
+                result[key] = report[key]
+        if self._executed_steps.get(case_id):
+            result["executed_steps"] = list(self._executed_steps[case_id].values())
+        self._remember_finished(result)

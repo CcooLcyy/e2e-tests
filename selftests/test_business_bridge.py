@@ -30,7 +30,11 @@ def test_history_recovers_missing_case_directory_without_changing_summary(tmp_pa
     case_id = "tests/test_demo.py::test_cancel"
     directory = run / "cases" / hashlib.sha256(case_id.encode()).hexdigest()[:16]
     directory.mkdir(parents=True)
-    (directory / "report.json").write_text(json.dumps({"用例ID": case_id, "用例": "停止现场", "结果": "已停止", "步骤": [], "截图": []}), encoding="utf-8")
+    report = {"用例ID": case_id, "用例": "停止现场", "结果": "已停止", "截图": [], "步骤": [
+        {"序号": 1, "步骤": "已结束的实际操作", "状态": "通过", "耗时秒": 0},
+        {"序号": 2, "步骤": "后续操作", "状态": "未执行"},
+    ]}
+    (directory / "report.json").write_text(json.dumps(report), encoding="utf-8")
     summary = run / "summary.json"
     summary.write_text(json.dumps({"cases": [{"case_id": case_id, "status": "cancelled", "artifacts_dir": ""}]}), encoding="utf-8")
     (run / "task.json").write_text("{}", encoding="utf-8")
@@ -38,6 +42,9 @@ def test_history_recovers_missing_case_directory_without_changing_summary(tmp_pa
     details = TestbenchBridge(tmp_path).handle("history_detail", {"run_dir": str(run)})
     assert details["cases"][0]["business"]["title"] == "停止现场"
     assert details["cases"][0]["diagnostics_path"]
+    finished, waiting = details["cases"][0]["executed_steps"]
+    assert finished["duration"] == 0
+    assert waiting["status"] == "not_run" and "duration" not in waiting
     assert summary.read_bytes() == before
 
 

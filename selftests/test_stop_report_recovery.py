@@ -78,6 +78,31 @@ def test_incomplete_pass_report_remains_cancelled_but_keeps_evidence(tmp_path):
     assert json.loads((directory / "report.json").read_text(encoding="utf-8"))["结果"] == "通过"
 
 
+def test_forced_stop_freezes_active_case_and_steps_at_worker_exit(tmp_path):
+    controller = controller_at(tmp_path)
+    case_start = "2026-11-04T13:00:00.000+08:00"
+    step_start = "2026-11-04T13:00:04.123+08:00"
+    controller._worker_ended_at = "2026-11-04T13:00:06.000+08:00"
+    event_file(controller, [
+        {"type": "case_started", "case_id": CASE, "started_at": case_start},
+        {"type": "plan_step", "case_id": CASE, "plan_step_id": "read", "status": "running", "started_at": step_start},
+        {"type": "step", "case_id": CASE, "step_id": 1, "name": "读取", "status": "running", "started_at": step_start},
+    ])
+
+    events = controller._finish_abnormal("cancelled", "用户停止了测试任务")
+    summary = json.loads((controller.run_dir / "summary.json").read_text(encoding="utf-8"))
+    case, next_case = summary["cases"]
+    assert case["status"] == "cancelled"
+    assert case["duration"] == 6
+    assert case["plan_step_timings"]["read"]["duration"] == 1.877
+    assert case["executed_steps"][0]["duration"] == 1.877
+    assert "duration" not in next_case
+    assert [(event["type"], event["duration"]) for event in events
+            if event.get("case_id") == CASE and event["status"] == "cancelled"] == [
+        ("plan_step", 1.877), ("step", 1.877), ("case_finished", 6),
+    ]
+
+
 def test_external_summary_path_is_not_linked_or_loaded(tmp_path):
     """汇总中的外部目录不能扩大诊断资料读取范围。"""
     controller = controller_at(tmp_path)

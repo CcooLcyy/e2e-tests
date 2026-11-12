@@ -7,6 +7,7 @@ from dataclasses import asdict
 from datetime import datetime
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import sys
@@ -194,8 +195,21 @@ class TestbenchBridge:
                     flows = task.get("case_flows")
                     flow = flows.get(case.get("case_id")) if isinstance(flows, dict) else None
                     if isinstance(flow, list):
-                        steps = case.get("plan_steps")
-                        details.update({"flow": flow, "plan_steps": steps if isinstance(steps, dict) else {}})
+                        details["flow"] = flow
+                if "flow" in details:
+                    self._merge_plan_details(details, case)
+                recovered = case.get("executed_steps")
+                if isinstance(recovered, list):
+                    steps = {step["step_id"]: step for step in details.get("executed_steps", [])}
+                    # 强停记录可能晚于临时报告。保留现场报告中的业务数据，以收尾事件的状态和计时为准。
+                    merged = {}
+                    for step in recovered:
+                        if not isinstance(step, dict) or type(step.get("step_id")) not in (str, int):
+                            continue
+                        step_id = step["step_id"]
+                        merged[step_id] = {**step, **steps.pop(step_id, {}),
+                                           **{key: step[key] for key in ("status", "started_at", "finished_at", "duration") if key in step}}
+                    details["executed_steps"] = list(merged.values()) + list(steps.values())
                 cases.append({**case, **details})
             return {"summary": summary, "task": task, "cases": cases,
                     "diagnostics_path": self._diagnostics_path(directory),
@@ -442,11 +456,60 @@ class TestbenchBridge:
             screenshots.append({**self._screenshot_description(name, {}), **image, "capture_status": "saved"})
         logging.getLogger(__name__).debug("已读取用例截图证据，共 %s 条", len(screenshots))
         details = {"report": report, "screenshots": screenshots, "business": business_case(report),
+                   "executed_steps": self._report_steps(report),
                    "diagnostics_path": self._diagnostics_path(directory),
                    "business_report_path": self._business_report_path(directory)}
         if isinstance(report.get("flow"), list) and isinstance(report.get("plan_steps"), dict):
             details.update({"flow": report["flow"], "plan_steps": report["plan_steps"]})
+            if isinstance(report.get("plan_step_timings"), dict):
+                details["plan_step_timings"] = report["plan_step_timings"]
         return details
+
+    @staticmethod
+    def _merge_plan_details(details, case):
+        states = case.get("plan_steps")
+        details["plan_steps"] = {**details.get("plan_steps", {}), **(states if isinstance(states, dict) else {})}
+        timings = dict(details.get("plan_step_timings", {}))
+        recorded = case.get("plan_step_timings")
+        if isinstance(recorded, dict):
+            for step_id, timing in recorded.items():
+                if isinstance(timing, dict):
+                    previous = timings.get(step_id)
+                    timings[step_id] = {**(previous if isinstance(previous, dict) else {}), **timing}
+        for step_id, status in details["plan_steps"].items():
+            if status in ("skipped", "not_run"):
+                timings.pop(step_id, None)
+        details["plan_step_timings"] = timings
+
+    @staticmethod
+    def _report_steps(report):
+        steps = report.get("步骤")
+        if not isinstance(steps, list):
+            return []
+        result = []
+        statuses = {"执行中": "running", "通过": "passed", "失败": "failed", "已停止": "cancelled",
+                    "跳过": "skipped", "未执行": "not_run"}
+        for index, step in enumerate(steps, 1):
+            if not isinstance(step, dict) or not isinstance(step.get("步骤"), str):
+                continue
+            raw_status = step.get("状态")
+            status = statuses.get(raw_status) if isinstance(raw_status, str) else None
+            if status is None:
+                continue
+            if status == "failed" and str(step.get("错误", "")).startswith(("InterruptedError:", "InterruptedError：")):
+                status = "cancelled"
+            step_id = step.get("序号")
+            record = {"step_id": step_id if type(step_id) in (str, int) else f"report:{index}",
+                      "name": step["步骤"], "status": status, "expected": step.get("预期"), "actual": step.get("实际")}
+            if status != "not_run":
+                for source, target in (("开始时间", "started_at"), ("结束时间", "finished_at")):
+                    if isinstance(step.get(source), str):
+                        record[target] = step[source]
+                duration = step.get("耗时秒")
+                if type(duration) in (int, float) and math.isfinite(duration) and duration >= 0:
+                    record["duration"] = duration
+            result.append(record)
+        return result
 
     @staticmethod
     def _screenshot_description(name, record):

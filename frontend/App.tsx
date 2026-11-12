@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, Clock3, FileText, FolderOpen, History as HistoryIcon, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, FileText, FolderOpen, History as HistoryIcon, ListChecks, LoaderCircle, Play, RefreshCw, Search, Settings2, ShieldCheck, Square, Terminal, TestTube2, X } from 'lucide-react';
 import { call, choose, desktop, openArtifact } from './api';
 import type { Bootstrap, CaseInfo, CasePackActivation, CasePackStatus, Detail, Environment, History, Master104Check, Poll, PreparedCasePack } from './api';
-import { applyEvents, counts, initialRecords, labels, planProgress } from './state';
-import type { BenchEvent, CaseRecord } from './state';
+import { applyEvents, counts, initialRecords, labels, planProgress, wasNotRun } from './state';
+import type { BenchEvent, CaseRecord, ExecutionTiming } from './state';
 import { BusinessCaseDetails } from './BusinessCaseDetails';
 import { CaseFlow } from './CaseFlow';
+import { ExecutionTime } from './ExecutionTime';
 import { formatPassRate } from './pass-rate';
 import { ModbusEnvironment } from './ModbusEnvironment';
 import { UpdateControls } from './UpdateControls';
@@ -15,6 +16,7 @@ import { caseGroup, summarizeGroups, visibleCases, toggleCases, selectionState, 
 
 type Page = 'execution' | 'environment' | 'history';
 type ReadyCasePack = Extract<PreparedCasePack, { status: 'ready' }>;
+type HistoryCase = Partial<Detail> & ExecutionTiming & { case_id?: string; status?: string; message?: string };
 const environmentSections = [
   ['environment-basics','基础信息','程序与驱动'],
   ['environment-isolation','运行与隔离','工作区与等待时间'],
@@ -24,7 +26,6 @@ const environmentSections = [
   ['environment-modbus','Modbus RTU','运行时跟随模拟器配置'],
 ] as const;
 const emptyEnvironment: Environment = withModbusDefaults({name:'本机测试环境',app_path:'',driver_path:'',mode:'fresh',workspace_path:'',baseline_path:'',timeout:300,close_app:true,slavesim_url:'http://192.168.1.219:16000',annotation_enabled:true,master104_enabled:false,master104_path:'',master104_timeout:10} as Environment);
-const duration = (value?: number) => value === undefined ? '—' : `${value.toFixed(2)} s`;
 function Status({ status, text = true }: {status: string; text?: boolean}) { return <span className={`status ${status}`}><i />{text && (labels[status] || status)}{status === 'running' && <LoaderCircle size={12} className="spin"/>}</span>; }
 
 function SelectionCheckbox({ids, selected, disabled, label, onChange}: {
@@ -73,7 +74,7 @@ export default function App() {
   const [tab,setTab] = useState<'flow'|'steps'|'logs'|'logic'>('steps');
   const [detail,setDetail] = useState<Detail|null>(null);
   const [historyFocus,setHistoryFocus] = useState('');
-  const [historyDetail,setHistoryDetail] = useState<{summary: Record<string,unknown>; task: {environment?:Environment}; cases: Array<Record<string,unknown> & Partial<Detail>>; diagnostics_path?: string; business_report_path?: string}|null>(null);
+  const [historyDetail,setHistoryDetail] = useState<{summary: Record<string,unknown>; task: {environment?:Environment}; cases: HistoryCase[]; diagnostics_path?: string; business_report_path?: string}|null>(null);
   const polling = useRef(false);
   const starting = useRef(false);
   const checkingCases = useRef(false);
@@ -482,7 +483,7 @@ export default function App() {
                         <strong>{item.name.replace(/。$/, '')}</strong>
                       </div>
                       <Status status={records[item.id]?.status || 'pending'}/>
-                      <span className="elapsed">{duration(records[item.id]?.duration)}</span>
+                      <span className="elapsed"><ExecutionTime timing={records[item.id]} status={records[item.id]?.status}/></span>
                     </div>
                   ))}
                 </div>
@@ -498,7 +499,15 @@ export default function App() {
               <div className="progress-track" role="progressbar" aria-label="任务进度" aria-valuenow={progress}><div style={{width:`${progress}%`}}/></div>
             </section>
 
-            <section className="panel detail-panel"><div className="panel-heading"><div><h2>执行详情</h2><p>{currentCase?.name.replace(/。$/, '') || '选择用例查看执行详情'}</p></div><button className="icon-button" aria-label="打开报告资料" disabled={!record?.artifacts_dir} onClick={()=>void open(detail?.business_report_path||detail?.diagnostics_path||record!.artifacts_dir!)}><FolderOpen size={17}/></button></div>
+            <section className="panel detail-panel">
+              <div className="panel-heading">
+                <div><h2>执行详情</h2><p>{currentCase?.name.replace(/。$/, '') || '选择用例查看执行详情'}</p></div>
+                <div className="case-detail-actions">
+                  {record && record.status !== 'pending' && <ExecutionTime timing={record} status={record.status} labeled/>}
+                  <button className="icon-button" aria-label="打开报告资料" disabled={!record?.artifacts_dir}
+                    onClick={()=>void open(detail?.business_report_path||detail?.diagnostics_path||record!.artifacts_dir!)}><FolderOpen size={17}/></button>
+                </div>
+              </div>
               <div className="tabs">
                 <button className={tab==='flow'?'active':''} aria-pressed={tab==='flow'} onClick={()=>setTab('flow')}><ListChecks size={14}/>测试流程</button>
                 <button className={tab==='steps'?'active':''} aria-pressed={tab==='steps'} onClick={()=>setTab('steps')}><CheckCheck size={14}/>测试结果</button>
@@ -506,10 +515,12 @@ export default function App() {
                 <button className={tab==='logic'?'active':''} aria-pressed={tab==='logic'} onClick={()=>setTab('logic')}><FileText size={14}/>执行逻辑</button>
               </div>
               {tab==='flow'&&<div className="detail-scroll" key={focused} ref={flowScroll}>
-                <CaseFlow testCase={currentCase} steps={record?.plan_steps}
+                <CaseFlow testCase={currentCase} steps={record?.plan_steps ?? detail?.plan_steps}
+                  timings={record?.plan_step_timings ?? detail?.plan_step_timings}
+                  executedSteps={record?.steps.length ? record.steps : detail?.executed_steps}
                   caseStatus={record?.status} finished={flowFinished} followStepId={followStepId}/>
               </div>}
-              {tab==='steps'&&<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/><span><Clock3 size={13}/>{duration(record.duration)}</span></div>}<BusinessCaseDetails key={focused} detail={detail} status={record?.status} onOpen={path=>void open(path)}/></div>}
+              {tab==='steps'&&<div className="detail-scroll">{record&&<div className="detail-overview"><Status status={record.status}/></div>}<BusinessCaseDetails key={focused} detail={detail} status={record?.status} onOpen={path=>void open(path)}/></div>}
               {tab==='logs'&&<div className="log-scroll" ref={logScroll}>{logs.length?logs.map((event,index)=><div className="log-line" key={index}><time>{event.time?.slice(11,19)||'--:--:--'}</time><span>{event.message||event.name||(event.type==='case_started'?'开始执行用例':event.type==='task_finished'?'任务执行结束':event.type==='case_finished'?`用例${labels[event.status||'']||'结束'}`:'准备测试任务')}{event.type==='step'&&` · ${labels[event.status||'']||''}`}</span></div>):<div className="empty"><Terminal size={26}/><span>执行日志将在任务开始后显示</span></div>}</div>}
               {tab==='logic'&&<div className="detail-scroll" key={focused}>
                 {executionLogic.length ? <div className="case-logic">
@@ -583,11 +594,12 @@ undefined
             {historyDetail?<div className="history-cases">
               <div className="history-summary"><Status status={String(historyDetail.summary.status||'pending')}/><span>{historyDetail.cases.length} 项测试用例</span><span title="通过 ÷（通过＋失败）；跳过、停止和未执行不计入">通过率 {historyPassRate}</span></div>
               {historyDetail.cases.map((item,index)=><details key={`${historyFocus}-${index}`} className="history-case" open={index===0}>
-                <summary><Status status={String(item.status||'pending')} text={false}/><strong>{item.business?.title||cases.find(c=>c.id===item.case_id)?.name||'测试用例'}</strong><span>{duration(item.duration as number|undefined)}</span><ChevronRight size={14}/></summary>
+                <summary><Status status={String(item.status||'pending')} text={false}/><strong>{item.business?.title||cases.find(c=>c.id===item.case_id)?.name||'测试用例'}</strong><ExecutionTime timing={wasNotRun(item.status,item.message) ? undefined : item}/><ChevronRight size={14}/></summary>
                 <section className="history-flow" aria-label="测试流程">
-                  {item.flow?.length ? <>
+                  {(item.flow?.length || item.executed_steps?.length) ? <>
                     <h3>测试流程</h3>
-                    <CaseFlow testCase={{flow:item.flow, executable_flow:true}} steps={item.plan_steps}
+                    <CaseFlow testCase={{flow:item.flow, executable_flow:!!item.flow?.length}} steps={item.plan_steps}
+                      timings={item.plan_step_timings} executedSteps={item.executed_steps}
                       caseStatus={String(item.status||'pending')} finished/>
                   </> : <p className="flow-record-note">无逐步记录</p>}
                 </section>

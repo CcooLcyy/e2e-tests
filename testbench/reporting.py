@@ -15,11 +15,18 @@ def _plan_table(result):
     states = result.get("plan_steps")
     if not flow or not isinstance(states, dict):
         return []
+    timings = result.get("plan_step_timings")
+    timings = timings if isinstance(timings, dict) else {}
     labels = {**STATUS_LABELS, "skipped": "条件不满足", "running": "已中断"}
-    lines = ["", "## 测试流程", "", "| 序号 | 步骤 | 状态 | 预期结果 |", "| --- | --- | --- | --- |"]
+    lines = ["", "## 测试流程", "", "| 序号 | 步骤 | 状态 | 耗时（秒） | 预期结果 |", "| --- | --- | --- | --- | --- |"]
     for index, step in enumerate(flow, 1):
-        status = states.get(step.get("id", ""))
-        lines.append(f"| {index} | {_cell(step.get('action', ''))} | {labels.get(status, '未执行')} | {_cell(step.get('expected', ''))} |")
+        step_id = step.get("id", "")
+        status = states.get(step_id)
+        timing = timings.get(step_id)
+        duration = timing.get("duration") if isinstance(timing, dict) else None
+        if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0:
+            duration = "—"
+        lines.append(f"| {index} | {_cell(step.get('action', ''))} | {labels.get(status, '未执行')} | {_cell(duration)} | {_cell(step.get('expected', ''))} |")
     return lines
 
 
@@ -43,7 +50,8 @@ def _write_case_diagnostics(directory, result):
         copy = annotated_name(shot)
         return f"[查看截图]({copy or shot['name']})" + (f" · [查看原图]({shot['name']})" if copy else "")
     lines = ["# 用例诊断资料", "", f"结果：**{result['结果']}**", ""]
-    lines.extend(f"- {key}：{value}" for key, value in result.items() if key not in ("步骤", "截图", "错误", "flow", "plan_steps"))
+    lines.extend(f"- {key}：{value}" for key, value in result.items()
+                 if key not in ("步骤", "截图", "错误", "flow", "plan_steps", "plan_step_timings"))
     lines.extend(_plan_table(result))
     lines.extend(["", "| 序号 | 步骤 | 结果 | 预期 | 实际 | 耗时（秒） | 截图 |", "| --- | --- | --- | --- | --- | --- | --- |"])
     for step in result.get("步骤", []):

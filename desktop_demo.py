@@ -16,6 +16,7 @@ from selenium import webdriver
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 
+from testbench.events import ExecutionTiming
 from testbench.workspace import SITE_MANAGER_ADDRESS, set_test_site_address
 
 
@@ -215,24 +216,27 @@ class ReleaseDesktop:
         from testbench.events import emit
         if cancellable:
             self._check_stop()
+        timing = ExecutionTiming()
         step_id = len(self.steps) + 1
-        entry = {"序号": step_id, "步骤": name, "状态": "执行中"}
+        entry = {"序号": step_id, "步骤": name, "状态": "执行中", "开始时间": timing.started_at}
         if expected is not None:
             entry["预期"] = expected
         if actual is not None:
             entry["实际"] = actual
         emit({"type": "step", "case_id": os.environ.get("TESTBENCH_CASE_ID", ""), "name": name,
-              "step_id": step_id, "status": "running", "expected": expected, "actual": actual})
+              "step_id": step_id, "status": "running", "expected": expected, "actual": actual,
+              "started_at": timing.started_at})
         self.steps.append(entry)
         self._active_steps.append(entry)
-        begin = time.monotonic()
         print(f"[步骤] {name}", flush=True)
+        status = "passed"
         try:
             yield
             entry["状态"] = "通过"
             self._capture_evidence(f"step-{step_id:04d}", entry, "passed",
                                    description=f"步骤 {step_id} 完成：{name}", targets=targets)
         except BaseException as error:
+            status = "cancelled" if isinstance(error, InterruptedError) else "failed"
             entry["状态"] = "失败"
             entry["错误"] = f"{type(error).__name__}: {str(error)[:1500]}"
             self.failure = self.failure or entry["错误"]
@@ -241,10 +245,10 @@ class ReleaseDesktop:
             raise
         finally:
             self._active_steps.pop()
-            entry["耗时秒"] = round(time.monotonic() - begin, 3)
+            elapsed = timing.finish()
+            entry.update({"结束时间": elapsed["finished_at"], "耗时秒": elapsed["duration"]})
             emit({"type": "step", "case_id": os.environ.get("TESTBENCH_CASE_ID", ""), "name": name,
-                  "step_id": step_id, "status": "passed" if entry["状态"] == "通过" else "failed", "expected": expected,
-                  "actual": actual, "duration": entry["耗时秒"]})
+                  "step_id": step_id, "status": status, "expected": expected, "actual": actual, **elapsed})
 
     def check(self, name, actual, expected, *, targets=()):
         with self.step(name, expected=expected, actual=actual, targets=targets):

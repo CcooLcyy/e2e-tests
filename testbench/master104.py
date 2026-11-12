@@ -20,7 +20,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 
-from .events import emit
+from .events import ExecutionTiming, emit
 
 
 class Master104Session:
@@ -191,22 +191,24 @@ class Master104Session:
     @contextmanager
     def step(self, name, expected=None, actual=None):
         self._check_stop()
+        timing = ExecutionTiming()
         step_id = len(self.steps) + 1
-        entry = {"序号": step_id, "步骤": name, "状态": "执行中", "来源": "104主站"}
+        entry = {"序号": step_id, "步骤": name, "状态": "执行中", "来源": "104主站", "开始时间": timing.started_at}
         if expected is not None:
             entry["预期"] = expected
         if actual is not None:
             entry["实际"] = actual
         self.steps.append(entry)
         self._active_steps.append(entry)
-        self._emit_step(entry, "running")
-        begin = time.monotonic()
+        self._emit_step(entry, "running", started_at=timing.started_at)
         logging.getLogger(__name__).info("主站步骤 %s：%s", step_id, name)
+        status = "passed"
         try:
             yield entry
             entry["状态"] = "通过"
             self._capture_evidence(f"step-{step_id:04d}", entry, "passed")
         except BaseException as error:
+            status = "cancelled" if isinstance(error, InterruptedError) else "failed"
             entry["状态"] = "失败"
             entry["错误"] = f"{type(error).__name__}：{str(error)[:1500]}"
             self.failure = self.failure or entry["错误"]
@@ -214,15 +216,16 @@ class Master104Session:
             raise
         finally:
             self._active_steps.pop()
-            entry["耗时秒"] = round(time.monotonic() - begin, 3)
-            self._emit_step(entry, "passed" if entry["状态"] == "通过" else "failed")
+            elapsed = timing.finish()
+            entry.update({"结束时间": elapsed["finished_at"], "耗时秒": elapsed["duration"]})
+            self._emit_step(entry, status, **elapsed)
 
     @staticmethod
-    def _emit_step(entry, status):
+    def _emit_step(entry, status, **timing):
         emit({"type": "step", "case_id": os.environ.get("TESTBENCH_CASE_ID", ""),
               "name": f"[104主站] {entry['步骤']}", "step_id": f"master104:{entry['序号']}",
               "source": "master104", "status": status, "expected": entry.get("预期"),
-              "actual": entry.get("实际"), "duration": entry.get("耗时秒")})
+              "actual": entry.get("实际"), **timing})
 
     def check(self, name, actual, expected):
         with self.step(name, expected=expected, actual=actual):

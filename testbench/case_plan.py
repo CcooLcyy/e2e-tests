@@ -4,7 +4,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Callable
 
-from .events import emit
+from .events import ExecutionTiming, emit
 from .workspace import SITE_MANAGER_ADDRESS
 
 
@@ -48,24 +48,34 @@ def get_case_plan(function):
     return getattr(function, "_bench_case_plan", None)
 
 
-def _record(item, step, status):
+def _record(item, step, status, **timing):
     if not hasattr(item, "_bench_plan_steps"):
         item._bench_plan_steps = {}
+        item._bench_plan_step_timings = {}
     item._bench_plan_steps[step.id] = status
-    emit({"type": "plan_step", "case_id": item.nodeid, "plan_step_id": step.id, "status": status})
+    if timing:
+        item._bench_plan_step_timings[step.id] = timing
+    else:
+        item._bench_plan_step_timings.pop(step.id, None)
+    emit({"type": "plan_step", "case_id": item.nodeid, "plan_step_id": step.id, "status": status, **timing})
 
 
 @contextmanager
-def _track(item, step):
-    _record(item, step, "running")
+def _track(item, step, context=None):
+    timing = ExecutionTiming()
     try:
-        yield
+        should_run = context is None or step.when is None or step.when(context)
+        if should_run:
+            _record(item, step, "running", started_at=timing.started_at)
+        else:
+            _record(item, step, "skipped")
+        yield should_run
     except BaseException as error:
-        _record(item, step, "cancelled" if isinstance(error, InterruptedError) else "failed")
+        _record(item, step, "cancelled" if isinstance(error, InterruptedError) else "failed", **timing.finish())
         raise
     else:
-        if item._bench_plan_steps[step.id] == "running":
-            _record(item, step, "passed")
+        if should_run:
+            _record(item, step, "passed", **timing.finish())
 
 
 @contextmanager
@@ -105,10 +115,8 @@ def run_steps(request, steps, context):
             continue
         context.desktop._check_stop()
         try:
-            with _track(item, step):
-                if step.when is not None and not step.when(context):
-                    _record(item, step, "skipped")
-                else:
+            with _track(item, step, context) as should_run:
+                if should_run:
                     step.run(context)
         except ContinueAfterFailure as error:
             if deferred_failure is None:

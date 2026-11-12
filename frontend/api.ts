@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { BenchEvent } from './state';
+import type { BenchEvent, PlanStepTimings, Step } from './state';
 export interface ModbusEnvironmentFields { modbus_acquisition_timeout?: number }
 export interface Environment extends ModbusEnvironmentFields { name: string; app_path: string; driver_path: string; mode: 'fresh' | 'workspace'; workspace_path: string; baseline_path: string; timeout: number; close_app: boolean; slavesim_url: string; annotation_enabled: boolean; master104_enabled: boolean; master104_path: string; master104_timeout: number }
 export interface Master104Check { checking: boolean; message?: string; snapshot?: Record<string, unknown> }
@@ -18,7 +18,7 @@ export interface CaseInfo {
 export interface History { id: string; status: string; environment_name: string; created_at: string; case_count: number; passed: number; failed: number; cancelled?: number; skipped?: number; run_dir: string }
 export interface Shot { name: string; path: string; data_url: string; description?: string; expected?: unknown; actual?: unknown; status?: string; capture_status?: string; error?: string; time?: string; annotated_name?: string; annotated_path?: string; annotated_data_url?: string; annotation_status?: string; annotation_format?: string; annotation_error?: string; annotations?: Array<{label: string; reason?: string}>; step_id?: number | string | null; business_result?: string }
 export interface BusinessReport { title: string; goal: string; result: string; summary: string; checks: Array<{step_id?: number | string | null; name: string; status: string; expected: string; actual: string}>; key_screenshots: string[] }
-export interface Detail { report: Record<string, unknown>; screenshots: Shot[]; business?: BusinessReport; diagnostics_path?: string; business_report_path?: string; flow?: FlowStep[]; plan_steps?: Record<string, string> }
+export interface Detail { report: Record<string, unknown>; screenshots: Shot[]; business?: BusinessReport; diagnostics_path?: string; business_report_path?: string; flow?: FlowStep[]; plan_steps?: Record<string, string>; plan_step_timings?: PlanStepTimings; executed_steps?: Step[] }
 export type UpdateChannel = 'stable' | 'ci';
 export interface CasePackStatus {
   source: 'downloaded' | 'bundled' | 'checkout' | 'legacy';

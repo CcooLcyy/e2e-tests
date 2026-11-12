@@ -48,6 +48,16 @@ def test_failed_step_preserves_conditional_and_cleanup_status(monkeypatch):
     assert [(event["plan_step_id"], event["status"]) for event in events if event["status"] != "running"] == [
         ("first", "passed"), ("optional", "skipped"), ("failure", "failed"), ("desktop.finish", "passed"),
     ]
+    timings = item._bench_plan_step_timings
+    assert set(timings) == {"first", "failure", "desktop.finish"}
+    for event in events:
+        step_id = event["plan_step_id"]
+        if event["status"] == "skipped":
+            assert "started_at" not in event and "duration" not in event
+        else:
+            assert event["started_at"] == timings[step_id]["started_at"]
+            if event["status"] != "running":
+                assert event["duration"] == timings[step_id]["duration"] >= 0
 
 
 def test_recorded_failure_allows_following_step_but_preserves_failure(monkeypatch):

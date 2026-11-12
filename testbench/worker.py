@@ -50,7 +50,7 @@ def main():
         completed = {case["case_id"] for case in summary["cases"]}
         for case_id in task["case_ids"]:
             if case_id not in completed:
-                summary["cases"].append({"case_id": case_id, "status": "skipped", "duration": 0,
+                summary["cases"].append({"case_id": case_id, "status": "skipped",
                                           "message": "未执行", "artifacts_dir": ""})
         summary.update(status=status, exit_code=code, run_dir=str(run), environment_name=task["environment"]["name"],
                        started_at=task.get("started_at", ""),

@@ -74,25 +74,38 @@ test('停止后的当前项取消、后续未执行，不能误计通过', () =>
   assert.deepEqual(counts(state, ['a', 'b']), { total: 2, done: 1, passed: 0, failed: 0 });
 });
 test('清理阶段失败应覆盖用例通过，保留错误供详情查看', () => {
-  const state = applyEvents(initialRecords(['a']), [
+  const start = '2026-11-12T10:00:00.123+08:00';
+  const running = applyEvents(initialRecords(['a', 'b']), [
+    { type: 'case_started', case_id: 'a', time: '2026-11-12T10:00:00+08:00', started_at: start },
+  ]);
+  assert.equal(running.a.started_at, start);
+  assert.equal(running.a.duration, undefined);
+  const state = applyEvents(running, [
     { type: 'case_finished', case_id: 'a', status: 'failed', message: '清理失败', duration: 2 },
+    { type: 'case_finished', case_id: 'b', status: 'skipped', message: '未执行', duration: 0 },
   ]);
   assert.equal(state.a.status, 'failed');
   assert.equal(state.a.message, '清理失败');
+  assert.equal(state.a.started_at, start);
+  assert.equal(state.a.duration, 2);
+  assert.equal(state.b.duration, undefined);
   assert.equal(counts(state, ['a']).failed, 1);
 });
 
 test('跟随各用例最后一条计划步骤事件，同批完成的步骤仍可定位', () => {
+  const start = '2026-11-12T10:00:00.123+08:00';
   const state = applyEvents(initialRecords(['a', 'b']), [
     { type: 'plan_step', case_id: 'a', plan_step_id: 'first', status: 'passed' },
-    { type: 'plan_step', case_id: 'a', plan_step_id: 'next', status: 'running' },
-    { type: 'plan_step', case_id: 'a', plan_step_id: 'next', status: 'passed' },
+    { type: 'plan_step', case_id: 'a', plan_step_id: 'next', status: 'running', started_at: start },
+    { type: 'plan_step', case_id: 'a', plan_step_id: 'next', status: 'passed', duration: 0 },
     { type: 'case_finished', case_id: 'a', status: 'passed' },
-    { type: 'plan_step', case_id: 'b', plan_step_id: 'first', status: 'running' },
+    { type: 'plan_step', case_id: 'b', plan_step_id: 'first', status: 'running', time: start },
   ]);
   assert.equal(state.a.latest_plan_step_id, 'next');
   assert.equal(state.a.plan_steps?.next, 'passed');
+  assert.deepEqual(state.a.plan_step_timings?.next, { started_at: start, duration: 0 });
   assert.equal(state.b.latest_plan_step_id, 'first');
+  assert.deepEqual(state.b.plan_step_timings?.first, { started_at: start, duration: undefined });
 });
 
 test('用例进度按已处理的计划步骤计数，停止或尚未执行不补满进度', () => {

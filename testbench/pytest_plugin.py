@@ -3,10 +3,9 @@ import json
 import logging
 import os
 from pathlib import Path
-import time
 from datetime import datetime
 import pytest
-from .events import emit
+from .events import ExecutionTiming, emit
 from .case_order import order_case_ids
 from .case_plan import get_case_plan
 from .reporting import STATUS_LABELS, write_case_report
@@ -109,7 +108,10 @@ def pytest_runtest_setup(item):
     stop = os.environ.get("TESTBENCH_STOP")
     if stop and Path(stop).exists():
         pytest.exit("测试任务已停止", returncode=2)
-    item.config._bench_started[item.nodeid] = time.monotonic()
+    timing = ExecutionTiming()
+    item.config._bench_started[item.nodeid] = timing
+    os.environ["TESTBENCH_CASE_ID"] = item.nodeid
+    emit({"type": "case_started", "case_id": item.nodeid, "started_at": timing.started_at})
     task_path = os.environ.get("TESTBENCH_TASK")
     artifacts = item.config.getoption("--artifacts-dir", default="")
     if task_path or artifacts:
@@ -118,8 +120,6 @@ def pytest_runtest_setup(item):
         directory = root / "cases" / hashlib.sha256(item.nodeid.encode()).hexdigest()[:16]
         directory.mkdir(parents=True, exist_ok=True)
         item._bench_artifacts = str(directory)
-    os.environ["TESTBENCH_CASE_ID"] = item.nodeid
-    emit({"type": "case_started", "case_id": item.nodeid})
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -159,6 +159,13 @@ def pytest_runtest_makereport(item, call):
     stop = os.environ.get("TESTBENCH_STOP")
     if stop and Path(stop).exists():
         status, message = "cancelled", "用户停止了测试任务"
+    timing = item.config._bench_started.pop(item.nodeid, None)
+    elapsed = timing.finish() if timing is not None else {}
+    executable_flow = _executable_flow(item)
+    plan_details = {}
+    if executable_flow is not None:
+        plan_details = {"plan_steps": getattr(item, "_bench_plan_steps", {}),
+                        "plan_step_timings": getattr(item, "_bench_plan_step_timings", {})}
     directory = getattr(item, "_bench_artifacts", "")
     if directory:
         result = {}
@@ -180,17 +187,17 @@ def pytest_runtest_makereport(item, call):
                        "结果": STATUS_LABELS[status], "步骤": result.get("步骤", []),
                        "阶段结果": [{"阶段": part.when, "结果": "失败" if part.failed else "跳过" if part.skipped else "通过",
                                    "错误": str(part.longrepr) if not part.passed else ""} for part in reports],
-                       "结束时间": datetime.now().astimezone().isoformat(timespec="seconds")})
+                       "结束时间": elapsed.get("finished_at", datetime.now().astimezone().isoformat(timespec="seconds"))})
+        if elapsed:
+            result.update({"开始时间": elapsed["started_at"], "耗时秒": elapsed["duration"]})
         if message:
             result["错误"] = message
-        executable_flow = _executable_flow(item)
         if executable_flow is not None:
-            result.update({"flow": executable_flow, "plan_steps": getattr(item, "_bench_plan_steps", {})})
+            result.update({"flow": executable_flow, **plan_details})
         write_case_report(directory, result)
         print(f"[报告] 已保存用例报告：{item.nodeid}（{STATUS_LABELS[status]}）", flush=True)
     event = {"type": "case_finished", "case_id": item.nodeid, "status": status,
-             "duration": round(time.monotonic() - item.config._bench_started.get(item.nodeid, time.monotonic()), 3),
-             "message": message, "artifacts_dir": getattr(item, "_bench_artifacts", "")}
+             "message": message, "artifacts_dir": getattr(item, "_bench_artifacts", ""), **elapsed, **plan_details}
     item.config._bench_results[item.nodeid] = event
     emit(event)
 
