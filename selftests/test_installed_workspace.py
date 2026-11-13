@@ -1,5 +1,9 @@
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 
 import pytest
 
@@ -35,6 +39,64 @@ def test_installer_data_migration_keeps_existing_data_and_does_not_restore_delet
     prepare_installed_data(legacy, data)
     assert not imported.exists()
     assert json.loads((data / "local" / "environment.json").read_text(encoding="utf-8")) == {"name": "新配置"}
+
+
+def assert_inherits_windows_data_permissions(data, relative_paths):
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", r"""
+$ErrorActionPreference = 'Stop'
+foreach ($relative in ($env:TESTBENCH_ACL_PATHS | ConvertFrom-Json)) {
+    $path = Join-Path $env:TESTBENCH_ACL_DATA $relative
+    $acl = Get-Acl -LiteralPath $path
+    $inherited = $acl.GetAccessRules($false, $true, [Security.Principal.SecurityIdentifier])
+    if ($acl.AreAccessRulesProtected -or $inherited.Count -eq 0) {
+        throw "Missing inherited permissions: $relative"
+    }
+}
+"""],
+        env=dict(os.environ, TESTBENCH_ACL_DATA=str(data), TESTBENCH_ACL_PATHS=json.dumps(relative_paths)),
+        capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32" or sys.version_info < (3, 13),
+                    reason="Python 3.13 起 Windows 临时目录有独立访问规则")
+@pytest.mark.parametrize("repair_previous_install", [False, True])
+def test_installer_migration_inherits_windows_data_permissions(tmp_path, repair_previous_install):
+    legacy = tmp_path / "legacy"
+    data = tmp_path / "installation" / "data"
+    run_id = "20261101-100000-00000001"
+    files = {
+        "local/environment.json": {"name": "旧配置"},
+        ".tools/msedgedriver/index.json": {},
+        ".case-packs/active.json": {"directory": "active"},
+        f"artifacts/{run_id}/summary.json": {"status": "passed", "cases": []},
+    }
+    if repair_previous_install:
+        artifacts = data / "artifacts"
+        artifacts.mkdir(parents=True)
+        # Replicate a prior upgrade's same-volume move from a private temp directory.
+        with tempfile.TemporaryDirectory(dir=data) as temporary:
+            staging = Path(temporary)
+            for name, content in files.items():
+                write_json(staging / name, content)
+            for name in ("local", ".tools", ".case-packs"):
+                (staging / name).rename(data / name)
+            (staging / "artifacts" / run_id).rename(artifacts / run_id)
+            marker = staging / ".mskdsp-testbench-data"
+            marker.touch()
+            marker.rename(data / marker.name)
+    else:
+        for name, content in files.items():
+            write_json(legacy / name, content)
+
+    prepare_installed_data(legacy, data)
+    for name, content in files.items():
+        assert json.loads((data / name).read_text(encoding="utf-8")) == content
+    assert_inherits_windows_data_permissions(data, [
+        "local", ".tools", ".case-packs", f"artifacts/{run_id}", ".mskdsp-testbench-data", *files,
+    ])
 
 
 def test_installed_bridge_uses_editable_data_separately(tmp_path, monkeypatch):

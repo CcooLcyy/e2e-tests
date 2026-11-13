@@ -1,10 +1,13 @@
 """Resolve editable test inputs and import evidence from a source checkout."""
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import tempfile
+import uuid
 
 
 CONFIG_FILES = (
@@ -68,6 +71,18 @@ def _is_plain(path, predicate):
     if path.is_symlink() or not predicate():
         return False
     return not (getattr(path.lstat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+@contextmanager
+def _inherited_staging(parent, prefix):
+    # CPython 3.13 TemporaryDirectory protects the Windows ACL. A directory
+    # published by rename needs to inherit the data directory's access rules.
+    staging = parent / (prefix + uuid.uuid4().hex)
+    staging.mkdir()
+    try:
+        yield staging
+    finally:
+        shutil.rmtree(staging)
 
 
 def set_test_site_address(runtime):
@@ -134,8 +149,7 @@ def import_workspace(source, destination):
             raise ValueError("测试数据目录不能是链接")
 
     counts = {"configs": 0, "reports": 0, "skipped": 0}
-    with tempfile.TemporaryDirectory(prefix=".import-", dir=destination) as temporary:
-        staging = Path(temporary)
+    with _inherited_staging(target_local, ".import-") as staging:
         if _is_plain(source_local, source_local.is_dir):
             for name in CONFIG_FILES:
                 entry = source_local / name
@@ -151,11 +165,11 @@ def import_workspace(source, destination):
                 else:
                     counts["configs"] += 1
 
-        _import_runs(source_artifacts, target_artifacts, staging, counts)
+    _import_runs(source_artifacts, target_artifacts, counts)
     return counts
 
 
-def _import_runs(source, destination, staging, counts):
+def _import_runs(source, destination, counts):
     if not _is_plain(source, source.is_dir):
         return
     for run in source.iterdir():
@@ -165,15 +179,15 @@ def _import_runs(source, destination, staging, counts):
         if target.exists() or target.is_symlink():
             counts["skipped"] += 1
             continue
-        copy = staging / "run"
-        _copy_evidence(run, copy)
-        try:
-            copy.rename(target)
-        except FileExistsError:
-            shutil.rmtree(copy)
-            counts["skipped"] += 1
-        else:
-            counts["reports"] += 1
+        with _inherited_staging(destination, ".import-") as staging:
+            copy = staging / "run"
+            _copy_evidence(run, copy)
+            try:
+                copy.rename(target)
+            except FileExistsError:
+                counts["skipped"] += 1
+            else:
+                counts["reports"] += 1
 
 
 def _copy_installed_data(source, destination):
@@ -184,6 +198,42 @@ def _copy_installed_data(source, destination):
             _copy_installed_data(entry, target)
         elif _is_plain(entry, entry.is_file):
             shutil.copy2(entry, target)
+
+
+def repair_installed_data_permissions(destination):
+    """Restore inheritance on data published by the previous Windows migration."""
+    if os.name != "nt":
+        return
+    powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    subprocess.run(
+        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", r"""
+$ErrorActionPreference = 'Stop'
+$data = $env:TESTBENCH_INSTALL_DATA
+$expectedSids = @('S-1-3-4', 'S-1-5-18', 'S-1-5-32-544')
+$paths = @('local', '.tools', '.case-packs', '.mskdsp-testbench-data') | ForEach-Object { Join-Path $data $_ }
+$artifacts = Get-Item -LiteralPath (Join-Path $data 'artifacts') -Force -ErrorAction SilentlyContinue
+if ($artifacts -and $artifacts.PSIsContainer -and -not ($artifacts.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    $paths = @($paths) + @(Get-ChildItem -LiteralPath $artifacts.FullName -Directory -Force |
+        Where-Object Name -Match '^[0-9]{8}-[0-9]{6}-[0-9a-f]{8}$' | ForEach-Object FullName)
+}
+foreach ($path in $paths) {
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    if (-not $item -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+    $acl = Get-Acl -LiteralPath $item.FullName
+    if (-not $acl.AreAccessRulesProtected) { continue }
+    $rules = @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))
+    $sids = @($rules | Where-Object {
+        $_.AccessControlType -eq 'Allow' -and $_.FileSystemRights -eq 'FullControl'
+    } | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+    if ($rules.Count -ne 3 -or ($sids -join ',') -ne ($expectedSids -join ',')) { continue }
+    # Keep existing explicit entries. Windows propagates inherited entries to the children.
+    $acl.SetAccessRuleProtection($false, $true)
+    Set-Acl -LiteralPath $item.FullName -AclObject $acl
+}
+"""],
+        env=dict(os.environ, TESTBENCH_INSTALL_DATA=str(destination)),
+        timeout=120, check=True, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
 
 
 def prepare_installed_data(source, destination):
@@ -201,10 +251,10 @@ def prepare_installed_data(source, destination):
         if (directory.exists() or directory.is_symlink()) and not _is_plain(directory, directory.is_dir):
             raise ValueError(f"安装数据子目录必须是普通目录：{name}")
     marker = destination / ".mskdsp-testbench-data"
-    with tempfile.TemporaryDirectory(prefix=".migration-", dir=destination) as temporary:
-        if _is_plain(marker, marker.is_file):
-            return
-        staging = Path(temporary)
+    repair_installed_data_permissions(destination)
+    if _is_plain(marker, marker.is_file):
+        return
+    with _inherited_staging(destination, ".migration-") as staging:
         if _is_plain(source, source.is_dir):
             for name in ("local", ".tools", ".case-packs"):
                 entry, target = source / name, destination / name
@@ -217,7 +267,7 @@ def prepare_installed_data(source, destination):
                 artifacts.mkdir(exist_ok=True)
                 if not _is_plain(artifacts, artifacts.is_dir):
                     raise ValueError("测试产物目录必须是普通目录")
-                _import_runs(source / "artifacts", artifacts, staging, {"reports": 0, "skipped": 0})
+                _import_runs(source / "artifacts", artifacts, {"reports": 0, "skipped": 0})
         pending = staging / marker.name
         pending.touch()
         pending.rename(marker)
