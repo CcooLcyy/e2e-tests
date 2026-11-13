@@ -225,7 +225,8 @@ if ($artifacts -and $artifacts.PSIsContainer -and -not ($artifacts.Attributes -b
 foreach ($path in $paths) {
     $item = Get-OptionalItem $path
     if (-not $item -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
-    $acl = Get-Acl -LiteralPath $item.FullName
+    $access = [Security.AccessControl.AccessControlSections]::Access
+    $acl = $item.GetAccessControl($access)
     if (-not $acl.AreAccessRulesProtected) { continue }
     $rules = @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))
     $sids = @($rules | Where-Object {
@@ -234,7 +235,7 @@ foreach ($path in $paths) {
     if ($rules.Count -ne 3 -or ($sids -join ',') -ne ($expectedSids -join ',')) { continue }
     # Keep existing explicit entries. Windows propagates inherited entries to the children.
     $acl.SetAccessRuleProtection($false, $true)
-    Set-Acl -LiteralPath $item.FullName -AclObject $acl
+    $item.SetAccessControl($acl)
 }
 exit 0
 """

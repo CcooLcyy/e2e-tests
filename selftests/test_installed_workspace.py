@@ -47,7 +47,8 @@ def assert_inherits_windows_data_permissions(data, relative_paths):
 $ErrorActionPreference = 'Stop'
 foreach ($relative in ($env:TESTBENCH_ACL_PATHS | ConvertFrom-Json)) {
     $path = Join-Path $env:TESTBENCH_ACL_DATA $relative
-    $acl = Get-Acl -LiteralPath $path
+    $item = Get-Item -LiteralPath $path -Force
+    $acl = $item.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
     $inherited = $acl.GetAccessRules($false, $true, [Security.Principal.SecurityIdentifier])
     if ($acl.AreAccessRulesProtected -or $inherited.Count -eq 0) {
         throw "Missing inherited permissions: $relative"
