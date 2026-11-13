@@ -1,3 +1,4 @@
+from base64 import b64encode
 import json
 import os
 from pathlib import Path
@@ -42,8 +43,7 @@ def test_installer_data_migration_keeps_existing_data_and_does_not_restore_delet
 
 
 def assert_inherits_windows_data_permissions(data, relative_paths):
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", r"""
+    script = r"""
 $ErrorActionPreference = 'Stop'
 foreach ($relative in ($env:TESTBENCH_ACL_PATHS | ConvertFrom-Json)) {
     $path = Join-Path $env:TESTBENCH_ACL_DATA $relative
@@ -53,7 +53,10 @@ foreach ($relative in ($env:TESTBENCH_ACL_PATHS | ConvertFrom-Json)) {
         throw "Missing inherited permissions: $relative"
     }
 }
-"""],
+"""
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+         b64encode(script.encode("utf-16-le")).decode("ascii")],
         env=dict(os.environ, TESTBENCH_ACL_DATA=str(data), TESTBENCH_ACL_PATHS=json.dumps(relative_paths)),
         capture_output=True, timeout=30,
     )

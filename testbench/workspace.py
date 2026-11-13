@@ -1,4 +1,5 @@
 """Resolve editable test inputs and import evidence from a source checkout."""
+from base64 import b64encode
 from contextlib import contextmanager
 import json
 import os
@@ -205,19 +206,24 @@ def repair_installed_data_permissions(destination):
     if os.name != "nt":
         return
     powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    subprocess.run(
-        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", r"""
+    script = r"""
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $data = $env:TESTBENCH_INSTALL_DATA
 $expectedSids = @('S-1-3-4', 'S-1-5-18', 'S-1-5-32-544')
 $paths = @('local', '.tools', '.case-packs', '.mskdsp-testbench-data') | ForEach-Object { Join-Path $data $_ }
-$artifacts = Get-Item -LiteralPath (Join-Path $data 'artifacts') -Force -ErrorAction SilentlyContinue
+function Get-OptionalItem($path) {
+    try { Get-Item -LiteralPath $path -Force }
+    catch [Management.Automation.ItemNotFoundException] { return }
+}
+$artifacts = Get-OptionalItem (Join-Path $data 'artifacts')
 if ($artifacts -and $artifacts.PSIsContainer -and -not ($artifacts.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
     $paths = @($paths) + @(Get-ChildItem -LiteralPath $artifacts.FullName -Directory -Force |
         Where-Object Name -Match '^[0-9]{8}-[0-9]{6}-[0-9a-f]{8}$' | ForEach-Object FullName)
 }
 foreach ($path in $paths) {
-    $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    $item = Get-OptionalItem $path
     if (-not $item -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
     $acl = Get-Acl -LiteralPath $item.FullName
     if (-not $acl.AreAccessRulesProtected) { continue }
@@ -230,10 +236,18 @@ foreach ($path in $paths) {
     $acl.SetAccessRuleProtection($false, $true)
     Set-Acl -LiteralPath $item.FullName -AclObject $acl
 }
-"""],
+exit 0
+"""
+    # Windows PowerShell can reparse newlines and quotes in a raw -Command argument.
+    encoded = b64encode(script.encode("utf-16-le")).decode("ascii")
+    result = subprocess.run(
+        [str(powershell), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
         env=dict(os.environ, TESTBENCH_INSTALL_DATA=str(destination)),
-        timeout=120, check=True, creationflags=subprocess.CREATE_NO_WINDOW,
+        capture_output=True, timeout=120, creationflags=subprocess.CREATE_NO_WINDOW,
     )
+    if result.returncode:
+        details = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+        raise OSError(f"无法恢复旧安装数据的权限继承（退出码 {result.returncode}）\n{details}")
 
 
 def prepare_installed_data(source, destination):
