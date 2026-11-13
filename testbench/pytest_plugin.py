@@ -8,7 +8,7 @@ import pytest
 from .events import ExecutionTiming, emit
 from .case_order import order_case_ids
 from .case_plan import get_case_plan
-from .reporting import STATUS_LABELS, write_case_report
+from .reporting import STATUS_LABELS, record_case_report_error, write_case_report
 from .session_evidence import collect_sessions, merge_session_evidence
 
 
@@ -24,8 +24,9 @@ def fail_e2e_prerequisite(request, *, required, missing, checks):
         try:
             write_case_report(directory, {"用例ID": request.node.nodeid, "用例": request.node.obj.__doc__,
                                           "结果": "失败", "步骤": steps})
-        except OSError:
-            logging.getLogger(__name__).exception("保存前置条件报告失败，保留原始失败原因")
+        except Exception as error:
+            request.node._bench_report_errors = getattr(request.node, "_bench_report_errors", [])
+            record_case_report_error(request.node._bench_report_errors, "生成前置条件报告", error)
     pytest.fail(f"前置条件未满足，目标行为未验证。{missing}", pytrace=False)
 
 
@@ -177,44 +178,64 @@ def pytest_runtest_makereport(item, call):
     if executable_flow is not None:
         plan_details = {"plan_steps": getattr(item, "_bench_plan_steps", {}),
                         "plan_step_timings": getattr(item, "_bench_plan_step_timings", {})}
+    report_errors = list(getattr(item, "_bench_report_errors", []))
+    report_errors.extend(error for _, app in sessions for error in getattr(app, "report_errors", []))
     directory = getattr(item, "_bench_artifacts", "")
     if directory:
         result = {}
-        path = Path(directory) / "report.json"
-        if path.exists():
-            result = json.loads(path.read_text(encoding="utf-8"))
-        if sessions:
-            result = merge_session_evidence(result, sessions, event_path=os.environ.get("TESTBENCH_EVENTS"),
-                                            case_id=item.nodeid)
-        elif status == "failed" and not result.get("截图"):
-            result["截图"] = [{"name": "case-failure.png", "description": "用例失败现场",
-                "expected": "未提供业务预期现象", "actual": message or "未建立桌面测试实例",
-                "status": status, "capture_status": "missing", "error": "未建立桌面测试实例，无法保存现场",
-                "time": datetime.now().astimezone().isoformat(timespec="seconds")}]
-        result.setdefault("截图", [])
-        if getattr(item, "_bench_evidence_errors", None):
-            result["证据采集错误"] = item._bench_evidence_errors
-        if cleanup_errors:
-            result["测试资源清理错误"] = cleanup_errors
-        result.update({"用例ID": item.nodeid, "用例": (getattr(item.obj, "__doc__", "") or item.name).strip(),
-                       "结果": STATUS_LABELS[status], "步骤": result.get("步骤", []),
-                       "阶段结果": [{"阶段": part.when, "结果": "失败" if part.failed else "跳过" if part.skipped else "通过",
-                                   "错误": str(part.longrepr) if not part.passed else ""} for part in reports],
-                       "结束时间": elapsed.get("finished_at", datetime.now().astimezone().isoformat(timespec="seconds"))})
-        if elapsed:
-            result.update({"开始时间": elapsed["started_at"], "耗时秒": elapsed["duration"]})
-        if message:
-            result["错误"] = message
-        if executable_flow is not None:
-            result.update({"flow": executable_flow, **plan_details})
-        write_case_report(directory, result)
-        print(f"[报告] 已保存用例报告：{item.nodeid}（{STATUS_LABELS[status]}）", flush=True)
+        try:
+            saved = json.loads((Path(directory) / "report.json").read_text(encoding="utf-8"))
+            if not isinstance(saved, dict):
+                raise ValueError("用例报告应为 JSON 对象")
+            result = saved
+        except FileNotFoundError:
+            pass
+        except Exception as error:
+            record_case_report_error(report_errors, "读取已有用例报告", error)
+        try:
+            if sessions:
+                result = merge_session_evidence(result, sessions, event_path=os.environ.get("TESTBENCH_EVENTS"),
+                                                case_id=item.nodeid)
+            elif status == "failed" and not result.get("截图"):
+                result["截图"] = [{"name": "case-failure.png", "description": "用例失败现场",
+                    "expected": "未提供业务预期现象", "actual": message or "未建立桌面测试实例",
+                    "status": status, "capture_status": "missing", "error": "未建立桌面测试实例，无法保存现场",
+                    "time": datetime.now().astimezone().isoformat(timespec="seconds")}]
+            result.setdefault("截图", [])
+            if getattr(item, "_bench_evidence_errors", None):
+                result["证据采集错误"] = item._bench_evidence_errors
+            if cleanup_errors:
+                result["测试资源清理错误"] = cleanup_errors
+            if report_errors:
+                result["报告生成错误"] = list(report_errors)
+            result.update({"用例ID": item.nodeid, "用例": (getattr(item.obj, "__doc__", "") or item.name).strip(),
+                           "结果": STATUS_LABELS[status], "步骤": result.get("步骤", []),
+                           "阶段结果": [{"阶段": part.when, "结果": "失败" if part.failed else "跳过" if part.skipped else "通过",
+                                        "错误": str(part.longrepr) if not part.passed else ""} for part in reports],
+                           "结束时间": elapsed.get("finished_at", datetime.now().astimezone().isoformat(timespec="seconds"))})
+            if elapsed:
+                result.update({"开始时间": elapsed["started_at"], "耗时秒": elapsed["duration"]})
+            if message:
+                result["错误"] = message
+            if executable_flow is not None:
+                result.update({"flow": executable_flow, **plan_details})
+            write_case_report(directory, result)
+        except Exception as error:
+            record_case_report_error(report_errors, "生成最终用例报告", error)
+        else:
+            print(f"[报告] 已保存用例报告：{item.nodeid}（{STATUS_LABELS[status]}）", flush=True)
     event = {"type": "case_finished", "case_id": item.nodeid, "status": status,
              "message": message, "artifacts_dir": getattr(item, "_bench_artifacts", ""), **elapsed, **plan_details}
     if cleanup_errors:
         event["cleanup_errors"] = cleanup_errors
+    if report_errors:
+        event["report_errors"] = report_errors
     item.config._bench_results[item.nodeid] = event
     emit(event)
+    if report_errors:
+        title = (getattr(item.obj, "__doc__", "") or item.name).strip()
+        emit({"type": "warning", "case_id": item.nodeid,
+              "message": f"{title}的报告生成异常，详情见诊断资料。"})
 
 
 def pytest_sessionfinish(session, exitstatus):

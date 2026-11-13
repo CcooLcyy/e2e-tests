@@ -270,6 +270,7 @@ def broken_cleanup():
 '''
     (suite / "conftest.py").write_text(conftest, encoding="utf-8")
     (suite / "test_cases.py").write_text('''
+from decimal import Decimal
 import pytest
 def test_pass(desktop):
     """无需手工截图的通过用例。"""
@@ -288,14 +289,22 @@ def test_teardown_failure(desktop, broken_cleanup):
     assert True
 def test_body_and_teardown_failure(desktop, broken_cleanup):
     assert False, "正文和清理同时失败"
+def test_report_error_after_pass(desktop):
+    value = Decimal("0.9")
+    desktop.check("模拟控制值", value, value)
+def test_report_error_after_failure(desktop):
+    value = Decimal("0.9")
+    desktop.check("模拟控制值", value, value)
+    assert False, "报告出错时仍保留原始断言"
 def test_without_desktop():
     assert True
 ''', encoding="utf-8")
     artifacts = tmp_path / "artifacts"
     summary = tmp_path / "summary.json"
+    events_path = tmp_path / "events.jsonl"
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("TESTBENCH_", "PYTEST_"))}
-    env.update(PYTHONPATH=str(ROOT), PYTHONUTF8="1", TESTBENCH_SUMMARY=str(summary),
+    env.update(PYTHONPATH=str(ROOT), PYTHONUTF8="1", TESTBENCH_SUMMARY=str(summary), TESTBENCH_EVENTS=str(events_path),
                PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
     plugin_args = ["-p", "testbench.pytest_plugin"] if explicit_plugin else []
     result = subprocess.run([sys.executable, "-m", "pytest", *plugin_args,
@@ -305,16 +314,32 @@ def test_without_desktop():
         cwd=suite, env=env, encoding="utf-8", capture_output=True, timeout=25)
     assert result.returncode == 1, result.stdout + result.stderr
     cases = {case["case_id"].split("::")[-1]: case for case in json.loads(summary.read_text(encoding="utf-8"))["cases"]}
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    finished = [event for event in events if event["type"] == "case_finished"]
+    assert [event["case_id"] for event in finished] == [case["case_id"] for case in cases.values()]
     expected = {"test_pass": ("passed", "通过"), "test_plain_failure": ("failed", "失败"),
                 "test_setup_failure": ("failed", "失败"), "test_skip": ("skipped", "跳过"),
                 "test_setup_failure_after_desktop": ("failed", "失败"),
                 "test_skip_with_desktop": ("skipped", "跳过"),
                 "test_body_and_teardown_failure": ("failed", "失败"),
-                "test_teardown_failure": ("failed", "失败"), "test_without_desktop": ("passed", "通过")}
+                 "test_teardown_failure": ("failed", "失败"), "test_without_desktop": ("passed", "通过"),
+                 "test_report_error_after_pass": ("passed", "通过"),
+                 "test_report_error_after_failure": ("failed", "失败")}
     assert cases.keys() == expected.keys()
+    assert list(cases)[-1] == "test_without_desktop"
     for name, (status, label) in expected.items():
         case = cases[name]
         directory = Path(case["artifacts_dir"])
+        if name.startswith("test_report_error_"):
+            assert case["status"] == status and not case.get("cleanup_errors")
+            assert len(case["report_errors"]) == 2
+            assert "生成桌面会话报告" in case["report_errors"][0]
+            assert "生成最终用例报告" in case["report_errors"][1]
+            assert all("TypeError" in error and "Decimal" in error for error in case["report_errors"])
+            assert (directory / "order.txt").read_text().splitlines()[-1] == "cleanup"
+            if status == "failed":
+                assert "报告出错时仍保留原始断言" in case["message"]
+            continue
         report = report_at(directory)
         assert case["status"] == status and report["结果"] == label
         assert (directory / "report.md").is_file()

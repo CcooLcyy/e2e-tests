@@ -10,6 +10,13 @@ from urllib.parse import quote
 STATUS_LABELS = {"passed": "通过", "failed": "失败", "skipped": "跳过", "cancelled": "已停止", "unknown": "未判定"}
 
 
+def record_case_report_error(errors, action, error):
+    """记录报告异常及堆栈，供用例结果和诊断资料引用。"""
+    message = f"{action}失败：{type(error).__name__}：{error}"
+    errors.append(message)
+    logging.getLogger(__name__).exception("%s", message)
+
+
 def _plan_table(result):
     flow = _records(result, "flow")
     states = result.get("plan_steps")
@@ -270,6 +277,9 @@ def write_task_report(directory, summary, task):
     cleanup_errors = summary.get("cleanup_errors") or [error for case in cases for error in case.get("cleanup_errors", [])]
     if cleanup_errors:
         lines.extend(["", "## 测试资源清理未完成", "", *[f"- {_cell(error)}" for error in cleanup_errors]])
+    report_error_count = sum(bool(case.get("report_errors")) for case in cases)
+    if report_error_count:
+        lines.extend(["", f"{report_error_count} 项用例报告生成时发生异常，详情见诊断资料。"])
     if version := _business_text(task.get("testbench_version"), ""):
         lines.extend(["", f"测试上位机版本 {_cell(version)}"])
     pack = task.get("case_pack")

@@ -38,6 +38,7 @@ class ReleaseDesktop:
         self.process = None
         self.application_log = None
         self.cleanup_failure = None
+        self.report_errors = []
         self.steps = []
         self.failure = None
         self.started = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -460,7 +461,11 @@ class ReleaseDesktop:
                     self.application_log = None
             if self.cleanup_failure:
                 self.finish_case("failed", self.cleanup_failure, "清理测试实例失败现场")
-            self._write_report()
+            try:
+                self._write_report()
+            except Exception as error:
+                from testbench.reporting import record_case_report_error
+                record_case_report_error(self.report_errors, "生成桌面会话报告", error)
 
     def _stop_owned_app(self):
         """只清理执行路径等于本次副本的进程，不按程序名清理。"""
