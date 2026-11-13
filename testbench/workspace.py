@@ -16,7 +16,7 @@ CONFIG_FILES = (
     "agc-direction-block.json",
 )
 EVIDENCE_EXTENSIONS = {".json", ".jsonl", ".xml", ".log", ".md", ".txt", ".png", ".jpg", ".jpeg"}
-TRANSIENT_DIRECTORIES = {"runtime", "temp", "pytest-cache", "__pycache__"}
+TRANSIENT_DIRECTORIES = {"runtime", "master104-runtime", "temp", "pytest-cache", "pytest-tmp", "__pycache__"}
 FINAL_RESULTS = ("passed", "failed", "cancelled")
 SITE_MANAGER_ADDRESS = "192.168.1.219:17000"
 
@@ -24,6 +24,44 @@ SITE_MANAGER_ADDRESS = "192.168.1.219:17000"
 def local_config(name):
     root = Path(os.environ.get("TESTBENCH_DATA_ROOT") or Path(__file__).resolve().parent.parent)
     return root / "local" / name
+
+
+def legacy_installed_data_root():
+    local = os.environ.get("LOCALAPPDATA")
+    return Path(local) / "com.mskdsp.testbench" if local else None
+
+
+def managed_driver_path(value, data_root):
+    if not isinstance(value, str) or not value:
+        return False
+    path = Path(value)
+    roots = (data_root, legacy_installed_data_root())
+    return ".." not in path.parts and any(
+        root is not None and path.is_relative_to(root / ".tools" / "msedgedriver") for root in roots
+    )
+
+
+def installed_workspace_path(value, data_root, *, required=False):
+    """解析安装版的工作区，并兼容升级前保存在 AppData 下的工作区。"""
+    root = data_root / "local" / "workspaces"
+    if isinstance(value, str) and value:
+        path = Path(value)
+        if not path.anchor:
+            path = root / path
+        elif legacy := legacy_installed_data_root():
+            legacy_workspaces = legacy / "local" / "workspaces"
+            if path.is_relative_to(legacy_workspaces):
+                path = root / path.relative_to(legacy_workspaces)
+        try:
+            if (path != root and path.is_relative_to(root) and ".." not in path.parts
+                    and path.resolve() == path):
+                return str(path)
+        except (OSError, RuntimeError):
+            if required:
+                raise ValueError(f"无法访问固定工作区，请在 {root} 下选择专用子目录") from None
+    if required:
+        raise ValueError(f"固定工作区必须选择 {root} 下的专用子目录")
+    return value
 
 
 def _is_plain(path, predicate):
@@ -113,22 +151,79 @@ def import_workspace(source, destination):
                 else:
                     counts["configs"] += 1
 
-        if _is_plain(source_artifacts, source_artifacts.is_dir):
-            for run in source_artifacts.iterdir():
-                target = target_artifacts / run.name
-                summary = run / "summary.json"
-                if not _is_plain(run, run.is_dir) or not _finished_run(summary):
-                    continue
-                if target.exists() or target.is_symlink():
-                    counts["skipped"] += 1
-                    continue
-                copy = staging / "run"
-                _copy_evidence(run, copy)
-                try:
-                    copy.rename(target)
-                except FileExistsError:
-                    shutil.rmtree(copy)
-                    counts["skipped"] += 1
-                else:
-                    counts["reports"] += 1
+        _import_runs(source_artifacts, target_artifacts, staging, counts)
     return counts
+
+
+def _import_runs(source, destination, staging, counts):
+    if not _is_plain(source, source.is_dir):
+        return
+    for run in source.iterdir():
+        target = destination / run.name
+        if not _is_plain(run, run.is_dir) or not _finished_run(run / "summary.json"):
+            continue
+        if target.exists() or target.is_symlink():
+            counts["skipped"] += 1
+            continue
+        copy = staging / "run"
+        _copy_evidence(run, copy)
+        try:
+            copy.rename(target)
+        except FileExistsError:
+            shutil.rmtree(copy)
+            counts["skipped"] += 1
+        else:
+            counts["reports"] += 1
+
+
+def _copy_installed_data(source, destination):
+    destination.mkdir()
+    for entry in source.iterdir():
+        target = destination / entry.name
+        if _is_plain(entry, entry.is_dir):
+            _copy_installed_data(entry, target)
+        elif _is_plain(entry, entry.is_file):
+            shutil.copy2(entry, target)
+
+
+def prepare_installed_data(source, destination):
+    """安装器首次升级时复制旧设置和证据，后续覆盖安装保留当前数据。"""
+    source = Path(source).absolute()
+    destination = Path(destination).absolute()
+    if (destination.resolve() != destination or source.resolve() != source
+            or source.is_relative_to(destination) or destination.is_relative_to(source)):
+        raise ValueError("安装数据目录不能重叠或指向链接")
+    destination.mkdir(parents=True, exist_ok=True)
+    if not _is_plain(destination, destination.is_dir):
+        raise ValueError("安装数据目录必须是普通目录")
+    for name in ("local", ".tools", ".case-packs", "artifacts", "temp"):
+        directory = destination / name
+        if (directory.exists() or directory.is_symlink()) and not _is_plain(directory, directory.is_dir):
+            raise ValueError(f"安装数据子目录必须是普通目录：{name}")
+    marker = destination / ".mskdsp-testbench-data"
+    with tempfile.TemporaryDirectory(prefix=".migration-", dir=destination) as temporary:
+        if _is_plain(marker, marker.is_file):
+            return
+        staging = Path(temporary)
+        if _is_plain(source, source.is_dir):
+            for name in ("local", ".tools", ".case-packs"):
+                entry, target = source / name, destination / name
+                if _is_plain(entry, entry.is_dir) and not target.exists() and not target.is_symlink():
+                    copy = staging / name
+                    _copy_installed_data(entry, copy)
+                    copy.rename(target)
+            if (source / "artifacts").is_dir():
+                artifacts = destination / "artifacts"
+                artifacts.mkdir(exist_ok=True)
+                if not _is_plain(artifacts, artifacts.is_dir):
+                    raise ValueError("测试产物目录必须是普通目录")
+                _import_runs(source / "artifacts", artifacts, staging, {"reports": 0, "skipped": 0})
+        pending = staging / marker.name
+        pending.touch()
+        pending.rename(marker)
+
+
+if __name__ == "__main__":
+    import sys
+
+    prepare_installed_data(*sys.argv[1:])

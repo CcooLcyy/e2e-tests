@@ -91,8 +91,15 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   Push $0
+  DetailPrint "Preparing the testbench data directory."
+  nsExec::ExecToLog '"$INSTDIR\runtime\python\python.exe" -X utf8 -B -m testbench.workspace "$LOCALAPPDATA\${BUNDLEID}" "$INSTDIR\data"'
+  Pop $0
+  ${If} $0 != "0"
+    Pop $0
+    Abort "Could not prepare the testbench data directory. Use a writable installation directory and retry."
+  ${EndIf}
   DetailPrint "Preparing Microsoft Edge WebDriver."
-  nsExec::ExecToLog '"$INSTDIR\runtime\python\python.exe" -X utf8 -B -m testbench.webview_driver "$LOCALAPPDATA\${BUNDLEID}\.tools"'
+  nsExec::ExecToLog '"$INSTDIR\runtime\python\python.exe" -X utf8 -B -m testbench.webview_driver "$INSTDIR\data\.tools"'
   Pop $0
   ${If} $0 != "0"
     DetailPrint "WebDriver could not be prepared. Select a matching driver in Test Environment."

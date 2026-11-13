@@ -36,7 +36,27 @@ def wait_task(controller, timeout=25):
 def test_runner_keeps_failure_and_continues(tmp_path):
     """真实子进程失败后继续执行后续独立用例，不将失败误报为成功。"""
     tmp_path = accessible_root()
-    env = make_suite(tmp_path, 'def test_fail():\n    assert False, "预期失败"\ndef test_pass():\n    assert True\n')
+    env = make_suite(tmp_path, '''import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+def test_fail():
+    assert False, "预期失败"
+
+def test_pass(tmp_path):
+    run = Path(os.environ["TESTBENCH_TASK"]).parent
+    assert tmp_path.is_relative_to(run / "pytest-tmp")
+    temporary = str(run / "temp")
+    assert tempfile.gettempdir() == temporary
+    assert all(os.environ[name] == temporary for name in ("TEMP", "TMP", "TMPDIR"))
+    child_temp = subprocess.check_output(
+        [sys.executable, "-X", "utf8", "-c", "import tempfile; print(tempfile.gettempdir())"],
+        encoding="utf-8",
+    ).strip()
+    assert Path(child_temp) == run / "temp"
+''')
     cases = discover_cases(tmp_path)
     controller = TaskController(tmp_path)
     controller.start(env, [case.id for case in cases])

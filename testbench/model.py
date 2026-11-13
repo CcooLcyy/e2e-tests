@@ -149,12 +149,19 @@ class CaseInfo:
     execution_logic: str = ""
 
 
-def save_environment(path, environment, *, private_webview_pair=None):
+def save_environment(path, environment, *, private_webview_pair=None, workspace_root=None, automatic_driver=False):
     environment.validate(private_webview_pair=private_webview_pair)
+    document = environment.to_dict()
+    if workspace_root is not None and isinstance(environment.workspace_path, str) and environment.workspace_path:
+        workspace = Path(environment.workspace_path)
+        if workspace != workspace_root and workspace.is_relative_to(workspace_root):
+            document["workspace_path"] = workspace.relative_to(workspace_root).as_posix()
+    if automatic_driver:
+        document["driver_path"] = ""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".pending")
-    temporary.write_text(json.dumps(environment.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(target)
     logging.getLogger(__name__).info("已保存测试环境，截图自动标注：%s", environment.annotation_enabled)
     logging.getLogger(__name__).info("已保存 104 主站环境，启用：%s", environment.master104_enabled)

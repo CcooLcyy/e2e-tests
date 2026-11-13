@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 
 SOURCE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SOURCE))
@@ -28,6 +29,11 @@ def main():
     log = (run / "pytest.log").open("w", encoding="utf-8", buffering=1)
     sys.stdout = sys.stderr = log
     try:
+        temp_dir = run / "temp"
+        temp_dir.mkdir()
+        temp_path = str(temp_dir)
+        os.environ.update(TEMP=temp_path, TMP=temp_path, TMPDIR=temp_path)
+        tempfile.tempdir = temp_path
         privileges = {}
         if sys.platform == "win32":
             from windows_privileges import prepare_standard_worker
@@ -38,7 +44,8 @@ def main():
         os.chdir(case_root)
         env = task["environment"]
         code = int(pytest.main([*task["case_ids"], *pytest_root_options(case_root), "-q", "-s", "-p", "testbench.pytest_plugin",
-                               "-o", f"cache_dir={run / 'pytest-cache'}", "--junitxml", str(run / "junit.xml"),
+                               "-o", f"cache_dir={run / 'pytest-cache'}", "--basetemp", str(run / "pytest-tmp"),
+                               "--junitxml", str(run / "junit.xml"),
                                "--app-path", env["app_path"], "--driver-path", env["driver_path"],
                                "--artifacts-dir", str(run), "--ui-timeout", str(env["timeout"])]))
         status = "cancelled" if (run / "stop").exists() else ("passed" if code == 0 else "failed")

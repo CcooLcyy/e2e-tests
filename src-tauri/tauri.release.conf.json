@@ -1,4 +1,7 @@
 {
+  "app": {
+    "appDirectoriesOverride": "./data"
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],

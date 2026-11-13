@@ -162,6 +162,9 @@
 .settings-dialog .field > span { display: block; margin-bottom: 7px; }
 .settings-dialog p { margin-top: 10px; overflow-wrap: anywhere; }
 .settings-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.history-actions { display: flex; gap: 8px; }
+.history-cleanup-skipped { margin-top: 10px; }
+.history-cleanup-skipped ul { max-height: 180px; overflow: auto; overflow-wrap: anywhere; padding-inline-start: 20px; }
 
 .case-flow { margin: 0; padding-inline-start: 24px; }
 .case-flow li { padding: 8px 0 12px 4px; border-bottom: 1px solid #edf1f6; line-height: 1.7; }

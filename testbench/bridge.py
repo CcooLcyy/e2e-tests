@@ -10,6 +10,7 @@ import logging
 import math
 import os
 from pathlib import Path
+import secrets
 import sys
 import threading
 import time
@@ -19,10 +20,11 @@ import webbrowser
 
 from .catalog import discover_cases
 from .controller import TaskController
+from .history_cleanup import apply_cleanup, preview_cleanup
 from .model import Environment, load_environment, save_environment, validate_slavesim_url
 from .reporting import STATUS_LABELS, business_case
 from .webview_driver import installed_runtime, matching_cached_driver, private_webview
-from .workspace import import_workspace
+from .workspace import import_workspace, installed_workspace_path, managed_driver_path
 
 
 class TestbenchBridge:
@@ -33,6 +35,7 @@ class TestbenchBridge:
         self.data_root = Path(data_root).resolve() if data_root is not None else self.root
         self.installed = self.data_root != self.root
         self.artifacts = self.data_root / "artifacts"
+        self._cleanup_preview = None
         self.controller = TaskController(self.root, self.data_root)
         self.environment_path = self.data_root / "local" / "environment.json"
         self._master104_check = None
@@ -139,12 +142,14 @@ class TestbenchBridge:
                 raise ValueError("测试运行期间不能更改环境")
             if method == "load_environment":
                 env = load_environment(Path(payload["path"]))
+                self._prepare_workspace(env)
                 pair = self._select_webview(env, self._installed_webview())
                 env.validate(private_webview_pair=pair)
             else:
                 env = Environment.from_dict(payload["environment"])
+                self._prepare_workspace(env)
                 pair = self._select_webview(env, self._installed_webview())
-                save_environment(self.environment_path, env, private_webview_pair=pair)
+                self._save_environment(env, pair)
             return env.to_dict()
         if method == "start":
             if self._master104_check is not None:
@@ -152,6 +157,7 @@ class TestbenchBridge:
             if self.controller.active:
                 raise ValueError("已有测试任务正在运行")
             env = Environment.from_dict(payload["environment"])
+            self._prepare_workspace(env)
             pair = self._select_webview(env, self._installed_webview())
             env.validate(private_webview_pair=pair)
             ids = payload.get("case_ids")
@@ -161,7 +167,7 @@ class TestbenchBridge:
             available = {case.id for case in discover_cases(self.controller.case_store.current().root)}
             if not set(ids).issubset(available):
                 raise ValueError("所选用例已经变化，请刷新用例列表后重试")
-            save_environment(self.environment_path, env, private_webview_pair=pair)
+            self._save_environment(env, pair)
             return {"run_dir": str(self.controller.start(env, ids, private_webview_pair=pair))}
         if method == "poll":
             events = self.controller.poll()
@@ -175,6 +181,18 @@ class TestbenchBridge:
             return self._history_snapshot()["history"]
         if method == "history_snapshot":
             return self._history_snapshot()
+        if method in ("preview_history_cleanup", "apply_history_cleanup"):
+            if self.controller.active or self._master104_check is not None:
+                raise ValueError("测试任务和 104 主站检查结束后才能清理历史记录")
+            preview, self._cleanup_preview = self._cleanup_preview, None
+            if method == "preview_history_cleanup":
+                result, snapshot = preview_cleanup(self.artifacts, payload.get("days"))
+                token = secrets.token_urlsafe(24)
+                self._cleanup_preview = (token, snapshot)
+                return {**result, "token": token}
+            if preview is None or preview[0] != payload.get("token"):
+                raise ValueError("清理预览已失效，请重新预览")
+            return apply_cleanup(self.artifacts, preview[1])
         if method == "history_detail":
             directory = self._artifact_directory(payload["run_dir"])
             summary = self._read_object(directory / "summary.json")
@@ -296,13 +314,25 @@ class TestbenchBridge:
         """刷新安装版自动选择，私有组合独立于环境中的共用驱动。"""
         if not self.installed:
             return None
-        cache = self.data_root / ".tools"
-        if env.driver_path and not (isinstance(env.driver_path, str) and
-                                    Path(env.driver_path).is_relative_to(cache / "msedgedriver")):
+        if env.driver_path and not managed_driver_path(env.driver_path, self.data_root):
             return None
         driver, pair = webview
         env.driver_path = str(driver) if driver else ""
         return pair
+
+    def _prepare_workspace(self, env, *, require_valid=True):
+        if self.installed:
+            env.workspace_path = installed_workspace_path(
+                env.workspace_path, self.data_root, required=require_valid and env.mode == "workspace",
+            )
+
+    def _save_environment(self, env, private_webview_pair):
+        workspace_root = self.data_root / "local" / "workspaces" if self.installed else None
+        save_environment(
+            self.environment_path, env, private_webview_pair=private_webview_pair,
+            workspace_root=workspace_root,
+            automatic_driver=self.installed and managed_driver_path(env.driver_path, self.data_root),
+        )
 
     def _environment(self, webview=None):
         cache = self.data_root / ".tools"
@@ -314,6 +344,7 @@ class TestbenchBridge:
         else:
             env = Environment(name="本机测试环境", workspace_path=workspace)
         if self.installed:
+            self._prepare_workspace(env, require_valid=False)
             self._select_webview(env, self._installed_webview() if webview is None else webview)
             return env.to_dict()
         candidates = list((cache / "msedgedriver").glob("**/msedgedriver.exe"))

@@ -12,10 +12,10 @@ use sha2::{Digest, Sha256};
 use std::{
     cmp::Ordering,
     fs,
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tauri::{async_runtime::Mutex, AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
@@ -29,6 +29,81 @@ use tonic::transport::Endpoint;
 
 const MAX_INSTALLER_SIZE: u64 = 512 * 1024 * 1024;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const INSTALLER_TEMP_PREFIX: &str = "mskdsp-testbench-update-";
+const INSTALLER_TEMP_SUFFIX: &str = "-setup.exe";
+const INSTALLER_TEMP_RANDOM_LEN: usize = 6;
+const INSTALLER_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn is_reparse_point(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    metadata.file_type().is_symlink()
+}
+
+fn require_plain_directory(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || is_reparse_point(&metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "更新下载路径必须是普通目录",
+        ));
+    }
+    Ok(())
+}
+
+fn installer_download_dir(data_root: &Path, create: bool) -> io::Result<PathBuf> {
+    require_plain_directory(data_root)?;
+    let directory = data_root.join(".app-downloads");
+    if create {
+        fs::create_dir_all(&directory)?;
+    }
+    require_plain_directory(&directory)?;
+    Ok(directory)
+}
+
+pub(crate) fn clean_expired_installers(data_root: &Path) {
+    let Ok(directory) = installer_download_dir(data_root, false) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let random = name.to_str().and_then(|name| {
+            name.strip_prefix(INSTALLER_TEMP_PREFIX)?
+                .strip_suffix(INSTALLER_TEMP_SUFFIX)
+        });
+        if !random.is_some_and(|part| {
+            part.len() == INSTALLER_TEMP_RANDOM_LEN
+                && part.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        }) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() || is_reparse_point(&metadata) {
+            continue;
+        }
+        if metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= INSTALLER_RETENTION)
+        {
+            // Windows leaves a running installer's executable in place when deletion fails.
+            let _ = fs::remove_file(path);
+        }
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct PendingUpdate {
@@ -272,10 +347,13 @@ pub(crate) async fn download_update(app: AppHandle, id: String) -> Result<bool, 
     };
     let key = decode_public_key(key)?;
     let mut catalog = Catalog::connect(endpoint).await?;
+    let directory = installer_download_dir(app.state::<ShellState>().data_root(), true)
+        .map_err(|e| format!("准备更新下载目录失败：{e}"))?;
     let temporary = Builder::new()
-        .prefix("mskdsp-testbench-update-")
-        .suffix("-setup.exe")
-        .tempfile()
+        .prefix(INSTALLER_TEMP_PREFIX)
+        .suffix(INSTALLER_TEMP_SUFFIX)
+        .rand_bytes(INSTALLER_TEMP_RANDOM_LEN)
+        .tempfile_in(directory)
         .map_err(|e| format!("创建临时安装包失败：{e}"))?;
     let (installer, signature) = download_verified_package(
         &mut catalog, &candidate.id, &candidate.metadata, &key, temporary,
@@ -485,6 +563,10 @@ fn verify_signed_identity(
 
 #[cfg(windows)]
 fn launch_installer(installer: &Path) -> Result<(), String> {
+    // /R can start the app while the installer is still running.
+    if let Ok(file) = fs::OpenOptions::new().write(true).open(installer) {
+        let _ = file.set_modified(SystemTime::now());
+    }
     std::process::Command::new(installer)
         .args(["/P", "/R", "/UPDATE"])
         .spawn()

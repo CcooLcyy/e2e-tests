@@ -32,6 +32,8 @@ const METHODS: &[&str] = &[
     "history_detail",
     "case_detail",
     "migrate_workspace",
+    "preview_history_cleanup",
+    "apply_history_cleanup",
     "shutdown",
 ];
 fn allowed_method(method: &str) -> bool {
@@ -79,7 +81,14 @@ impl BridgeProcess {
             .stdout(Stdio::piped())
             .stderr(errors);
         if installed {
-            command.arg("--data-root").arg(data_root);
+            let temp = data_root.join("temp");
+            fs::create_dir_all(&temp).map_err(|e| format!("创建测试临时目录失败：{e}"))?;
+            command
+                .arg("--data-root")
+                .arg(data_root)
+                .env("TEMP", &temp)
+                .env("TMP", &temp)
+                .env("TMPDIR", &temp);
         }
         #[cfg(windows)]
         {
@@ -131,7 +140,10 @@ impl BridgeProcess {
         self.input
             .flush()
             .map_err(|e| format!("刷新内核通道失败：{e}"))?;
-        let timeout = if method == "migrate_workspace" {
+        let timeout = if matches!(
+            method,
+            "migrate_workspace" | "preview_history_cleanup" | "apply_history_cleanup"
+        ) {
             Duration::from_secs(1800)
         } else {
             Duration::from_secs(90)
@@ -397,6 +409,7 @@ pub fn run() {
                 let runtime = app.path().resource_dir()?.join("runtime");
                 let root = runtime.join("suite");
                 let data_root = app.path().app_local_data_dir()?;
+                update::clean_expired_installers(&data_root);
                 let python = runtime.join("python/python.exe");
                 (root, data_root, python)
             } else {

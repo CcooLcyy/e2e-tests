@@ -229,4 +229,8 @@ def install_driver(cache):
 
 
 if __name__ == "__main__":
-    raise SystemExit(install_driver(Path(sys.argv[1])))
+    cache = Path(sys.argv[1]).resolve()
+    temporary = cache.parent / "temp"
+    temporary.mkdir(parents=True, exist_ok=True)
+    os.environ.update(TEMP=str(temporary), TMP=str(temporary), TMPDIR=str(temporary))
+    raise SystemExit(install_driver(cache))

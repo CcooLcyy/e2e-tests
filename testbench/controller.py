@@ -16,6 +16,7 @@ from .catalog import discover_cases
 from .events import timestamp
 from .reporting import write_task_report
 from .modbus_environment import RTU_OBSERVATION_CASE_IDS, validate_modbus_observation
+from .workspace import installed_workspace_path
 
 
 class TaskController:
@@ -47,6 +48,10 @@ class TaskController:
     def start(self, environment, case_ids, *, private_webview_pair=None):
         if self.active:
             raise ValueError("已有测试任务正在执行")
+        if self.data_root != self.root and environment.mode == "workspace":
+            environment.workspace_path = installed_workspace_path(
+                environment.workspace_path, self.data_root, required=True,
+            )
         if private_webview_pair is None:
             environment.validate()
         else:

@@ -5,12 +5,36 @@ import pytest
 
 from testbench.bridge import TestbenchBridge
 from testbench.model import CaseInfo
-from testbench.workspace import local_config
+from testbench.workspace import local_config, prepare_installed_data
 
 
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def test_installer_data_migration_keeps_existing_data_and_does_not_restore_deleted_history(tmp_path):
+    legacy = tmp_path / "legacy"
+    data = tmp_path / "installation" / "data"
+    write_json(legacy / "local" / "environment.json", {"name": "旧配置"})
+    write_json(legacy / ".case-packs" / "active.json", {"directory": "active"})
+    run = legacy / "artifacts" / "20261101-100000-00000001"
+    write_json(run / "summary.json", {"status": "passed", "cases": []})
+    write_json(run / "runtime" / "data" / "settings.json", {})
+
+    prepare_installed_data(legacy, data)
+    assert (data / ".case-packs" / "active.json").read_bytes() == (legacy / ".case-packs" / "active.json").read_bytes()
+    assert (data / "local" / "environment.json").read_bytes() == (legacy / "local" / "environment.json").read_bytes()
+    imported = data / "artifacts" / run.name
+    assert (imported / "summary.json").read_bytes() == (run / "summary.json").read_bytes()
+    assert not (imported / "runtime").exists()
+
+    (imported / "summary.json").unlink()
+    imported.rmdir()
+    write_json(data / "local" / "environment.json", {"name": "新配置"})
+    prepare_installed_data(legacy, data)
+    assert not imported.exists()
+    assert json.loads((data / "local" / "environment.json").read_text(encoding="utf-8")) == {"name": "新配置"}
 
 
 def test_installed_bridge_uses_editable_data_separately(tmp_path, monkeypatch):
@@ -38,6 +62,8 @@ def test_installed_bridge_uses_editable_data_separately(tmp_path, monkeypatch):
 
 def test_private_webview_is_only_selected_for_installed_dsp_task(tmp_path, monkeypatch):
     bridge = TestbenchBridge(tmp_path / "resources", tmp_path / "app-data")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    legacy_driver = tmp_path / "local-app-data" / "com.mskdsp.testbench" / ".tools" / "msedgedriver" / "old.exe"
     system_runtime = tmp_path / "160.0.4444.22" / "msedgewebview2.exe"
     fixed_runtime = bridge.data_root / ".tools/fixed-webview2/157.0.4341.46/msedgewebview2.exe"
     fixed_driver = bridge.data_root / ".tools/msedgedriver/win64/157.0.4341.46/msedgedriver.exe"
@@ -66,13 +92,43 @@ def test_private_webview_is_only_selected_for_installed_dsp_task(tmp_path, monke
     system_driver.parent.mkdir()
     system_driver.touch()
     assert bridge.handle("bootstrap")["private_webview_version"] == ""
-    bridge.handle("start", {"environment": environment, "case_ids": [case_id]})
+    bridge.handle("start", {"environment": {**environment, "driver_path": str(legacy_driver)}, "case_ids": [case_id]})
     assert selected == [("", (fixed_runtime, fixed_driver)), (str(manual), None), (str(system_driver), None)]
+    assert json.loads(bridge.environment_path.read_text(encoding="utf-8"))["driver_path"] == ""
 
     source = TestbenchBridge(tmp_path / "resources")
     assert source.handle("bootstrap")["private_webview_version"] == ""
     with pytest.raises(ValueError, match="驱动必须选择"):
         source.handle("save_environment", {"environment": environment})
+
+
+def test_installed_workspace_relocates_old_settings_and_rejects_external_targets(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    legacy = tmp_path / "local-app-data" / "com.mskdsp.testbench"
+    bridge = TestbenchBridge(tmp_path / "resources", tmp_path / "data")
+    monkeypatch.setattr(bridge, "_installed_webview", lambda: (None, None))
+    executable = tmp_path / "desktop.exe"
+    executable.touch()
+    environment = {"app_path": str(executable), "driver_path": str(executable),
+                   "mode": "workspace", "workspace_path": str(legacy / "local" / "workspaces" / "default")}
+    write_json(bridge.environment_path, environment)
+
+    workspaces = bridge.data_root / "local" / "workspaces"
+    workspace = workspaces / "default"
+    loaded = bridge.handle("get_environment")
+    assert loaded["workspace_path"] == str(workspace)
+    assert bridge.handle("save_environment", {"environment": loaded})["workspace_path"] == str(workspace)
+    saved = json.loads(bridge.environment_path.read_text(encoding="utf-8"))
+    assert saved["workspace_path"] == "default"
+    assert bridge.handle("load_environment", {"path": str(bridge.environment_path)}) == loaded
+
+    for path in (tmp_path / "external", workspaces, workspaces / ".." / "escape"):
+        with pytest.raises(ValueError, match="固定工作区"):
+            bridge.handle("save_environment", {"environment": {**loaded, "workspace_path": str(path)}})
+        with pytest.raises(ValueError, match="固定工作区"):
+            bridge.handle("start", {"environment": {**loaded, "workspace_path": str(path)}})
+    assert not workspace.exists()
+    assert json.loads(bridge.environment_path.read_text(encoding="utf-8")) == saved
 
 
 def test_workspace_import_preserves_existing_data_and_raw_evidence(tmp_path):
